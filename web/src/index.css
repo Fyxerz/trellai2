@@ -13,15 +13,17 @@
   --color-zinc-100: #eef0f3;
   --color-zinc-200: #dfe2e7;
   --color-zinc-300: #c3c7cf;
-  --color-zinc-400: #969ba6;
-  --color-zinc-500: #6c717c;
-  --color-zinc-600: #4b4f58;
+  --color-zinc-400: #b0b6c2;
+  --color-zinc-500: #979eac;
+  --color-zinc-600: #7d8595;
   --color-zinc-700: #30333a;
   --color-zinc-800: #22252b;
-  --color-zinc-900: #16181c;
-  --color-zinc-950: #0c0d10;
+  --color-zinc-900: #22262f;
+  --color-zinc-950: #14171d;
 
-  --radius-card: 10px;
+  --color-ui-ink: #ffffff;
+  --color-panel: #1b1e25;
+  --radius-card: 12px;
   --shadow-card: 0 1px 0 0 rgb(255 255 255 / 0.03) inset, 0 1px 2px rgb(0 0 0 / 0.4);
   --shadow-lift: 0 1px 0 0 rgb(255 255 255 / 0.04) inset, 0 8px 24px -6px rgb(0 0 0 / 0.6);
   --shadow-pop: 0 24px 64px -12px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
@@ -35,7 +37,8 @@
 
 @layer base {
 html, body, #root { height: 100%; }
-html { font-size: 14px; }
+html { font-size: 16px; color-scheme: dark; }
+html[data-density="compact"] { font-size: 14px; }
 body {
   @apply text-zinc-200 antialiased;
   background:
@@ -54,7 +57,7 @@ button, select, input, textarea { font: inherit; }
 
 @layer components {
 /* Surfaces */
-.surface { background: rgb(255 255 255 / 0.022); border: 1px solid rgb(255 255 255 / 0.055); }
+.surface { background: color-mix(in srgb, var(--color-ui-ink) 3%, transparent); border: 1px solid color-mix(in srgb, var(--color-ui-ink) 9%, transparent); }
 .glass { background: rgb(12 13 16 / 0.72); backdrop-filter: blur(14px) saturate(1.4); }
 
 /* Card that an agent is working on: animated hairline */
@@ -68,27 +71,74 @@ button, select, input, textarea { font: inherit; }
 }
 
 /* Markdown */
-.md { @apply text-[13.5px] leading-relaxed; }
+.md { @apply text-sm leading-relaxed; }
 .md p { @apply my-1.5; }
 .md ul { @apply list-disc pl-5 my-1.5; }
 .md ol { @apply list-decimal pl-5 my-1.5; }
 .md li { @apply my-0.5; }
-.md code { @apply font-mono text-[0.84em] bg-white/[0.06] rounded px-1 py-0.5 text-zinc-100; }
-.md pre { @apply bg-zinc-950 border border-white/[0.06] rounded-lg p-3 overflow-x-auto my-2; }
+.md code { @apply font-mono text-[0.84em] bg-ui-ink/[0.06] rounded px-1 py-0.5 text-zinc-100; }
+.md pre { @apply bg-zinc-950 border border-ui-ink/[0.06] rounded-lg p-3 overflow-x-auto my-2; }
 .md pre code { @apply bg-transparent p-0; }
 .md h1, .md h2, .md h3 { @apply font-semibold text-zinc-100 mt-3 mb-1; }
 .md h1 { @apply text-[15px]; } .md h2 { @apply text-sm; } .md h3 { @apply text-sm; }
 .md strong { @apply text-zinc-100 font-semibold; }
 .md a { @apply text-indigo-300 underline decoration-indigo-300/40 underline-offset-2; }
 .md table { @apply text-xs border-collapse my-2; }
-.md td, .md th { @apply border border-white/[0.08] px-2 py-1; }
-.md blockquote { @apply border-l-2 border-white/10 pl-3 text-zinc-400; }
+.md td, .md th { @apply border border-ui-ink/[0.08] px-2 py-1; }
+.md blockquote { @apply border-l-2 border-ui-ink/10 pl-3 text-zinc-400; }
 
 }
 
 /* Scrollbars */
-* { scrollbar-width: thin; scrollbar-color: #30333a transparent; }
+* { scrollbar-width: thin; scrollbar-color: var(--color-zinc-700) transparent; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: #2a2d33; border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
-::-webkit-scrollbar-thumb:hover { background: #3a3e46; background-clip: padding-box; border: 2px solid transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-zinc-700); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-zinc-600); background-clip: padding-box; border: 2px solid transparent; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* Semantic neutrals: shared utility classes work in both themes. */
+html[data-theme="light"] {
+  color-scheme: light;
+  --color-ui-ink: #172033;
+  --color-panel: #ffffff;
+  --color-zinc-50: #172033;
+  --color-zinc-100: #202a3d;
+  --color-zinc-200: #334155;
+  --color-zinc-300: #46546a;
+  --color-zinc-400: #55637a;
+  --color-zinc-500: #647086;
+  --color-zinc-600: #6d778a;
+  --color-zinc-700: #c9d1de;
+  --color-zinc-800: #e8edf5;
+  --color-zinc-900: #ffffff;
+  --color-zinc-950: #f3f5f9;
+  --shadow-card: 0 1px 3px rgb(23 32 51 / 0.07);
+  --shadow-lift: 0 8px 24px rgb(23 32 51 / 0.12);
+  --shadow-pop: 0 20px 60px rgb(23 32 51 / 0.18), 0 0 0 1px rgb(23 32 51 / 0.08);
+}
+/* Text accents have darker equivalents; backgrounds keep their status hues. */
+html[data-theme="light"] :is([class*="text-indigo-"], [class*="text-violet-"]) { color: #6343bc; }
+html[data-theme="light"] :is([class*="text-emerald-"], [class*="text-teal-"]) { color: #087663; }
+html[data-theme="light"] :is([class*="text-amber-"], [class*="text-orange-"]) { color: #98600c; }
+html[data-theme="light"] [class*="text-red-"] { color: #bb3545; }
+html[data-theme="light"] [class*="text-sky-"] { color: #036a99; }
+html[data-theme="light"] .glass { background: rgb(255 255 255 / 0.85); }
+.app-header { background: var(--color-panel); flex-wrap: wrap; padding-block: 0.5rem; }
+.work-panel { width: var(--panel-width, 540px); max-width: 75vw; position: relative; }
+.work-panel.expanded { width: min(960px, 85vw); max-width: 85vw; }
+.panel-resizer { position: absolute; inset: 0 auto 0 -4px; width: 8px; cursor: col-resize; z-index: 10; touch-action: none; }
+.panel-resizer:hover, .panel-resizer:focus-visible { background: rgb(129 140 248 / 0.35); }
+button { cursor: pointer; }
+button:disabled { cursor: default; }
+[data-card] .group:focus-within button { opacity: 1; }
+@media (max-width: 1000px) {
+  .work-panel, .work-panel.expanded { position: fixed; inset: 0 0 0 auto; z-index: 40; width: min(720px, 100vw); max-width: 100vw; }
+  .panel-resizer { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+html[data-density="compact"] .app-header { min-height: 3rem; }
+
+.group\/row:focus-within button { opacity: 1; }

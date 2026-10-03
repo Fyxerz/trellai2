@@ -3,6 +3,7 @@
  * that into well-described cards — or updates the ones that already exist.
  */
 import { z } from "zod";
+import { prettyModel } from "../shared/models.js";
 import { COLUMN_LABELS, type Column } from "../shared/types.js";
 import * as db from "./db.js";
 import { emitAssistantMessage, emitAssistantStatus, emitCard, emitCheckpoints } from "./events.js";
@@ -14,6 +15,8 @@ import { modelLabel, runEngine, type ToolSpec } from "./engine.js";
 type Mode = db.AssistantMode;
 const running = new Map<string, AbortController>();
 const key = (projectId: string, mode: Mode) => `${projectId}:${mode}`;
+/** Exact model last announced in each conversation. */
+const lastModel = new Map<string, string>();
 
 export function assistantRunning(projectId: string, mode: Mode) {
   return running.has(key(projectId, mode));
@@ -233,6 +236,11 @@ async function run(projectId: string, mode: Mode, text: string): Promise<void> {
         signal: abort.signal,
         onText: (t) => log("assistant", t),
         onTool: (t) => log("tool", t),
+        onModel: (model) => {
+          if (lastModel.get(key(projectId, mode)) === model) return;
+          lastModel.set(key(projectId, mode), model);
+          log("system", `🤖 ${prettyModel(model)} · \`${model.replace(/^codex:/, "")}\``);
+        },
       });
       if (res.sessionId) db.setAssistantSession(projectId, mode, res.sessionId);
       if (res.error) log("system", `⛔ ${res.error}`);

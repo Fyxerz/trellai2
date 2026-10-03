@@ -14,6 +14,7 @@ import type {
   Note,
   Project,
   Question,
+  Tag,
 } from "../shared/types.js";
 
 const DB_PATH = resolve(process.env.TRELLAI_DB ?? "data/trellai.db");
@@ -113,11 +114,18 @@ addColumn("cards", "model", "model TEXT");
 addColumn("projects", "preview_card_id", "preview_card_id TEXT");
 addColumn("projects", "preview_prev", "preview_prev TEXT");
 addColumn("projects", "preview_sha", "preview_sha TEXT");
+/** Stash with Pedro's uncommitted edits while "Ver esta rama" is on. */
+addColumn("projects", "preview_stash", "preview_stash TEXT");
 addColumn("projects", "remote_url", "remote_url TEXT");
 /** Which computer runs this card's agent and holds its worktree. */
 addColumn("cards", "machine", "machine TEXT");
 /** Another computer asked the owner to stop the agent (value: the owner's name). */
 addColumn("cards", "stop_req", "stop_req TEXT");
+/** JSON: the project's tags (Tag[]) and each card's tag ids (string[]). */
+addColumn("projects", "tags", "tags TEXT NOT NULL DEFAULT '[]'");
+addColumn("cards", "tags", "tags TEXT NOT NULL DEFAULT '[]'");
+/** Exact model id of the card agent's latest run. */
+addColumn("cards", "agent_model", "agent_model TEXT");
 
 /** Tables whose rows use a local INTEGER id; `uid` identifies them across computers. */
 export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages"] as const;
@@ -132,12 +140,33 @@ const now = () => new Date().toISOString();
 
 // ---------- projects ----------
 
+type ProjectRow = Omit<Project, "tags"> & { tags: string };
+
+function toProject(row: ProjectRow | undefined): Project | undefined {
+  return row && { ...row, tags: safeJson<Tag[]>(row.tags, []) };
+}
+
 export function listProjects(): Project[] {
-  return db.prepare("SELECT * FROM projects ORDER BY created_at").all() as Project[];
+  return (db.prepare("SELECT * FROM projects ORDER BY created_at").all() as ProjectRow[]).map((r) => toProject(r)!);
 }
 
 export function getProject(id: string): Project | undefined {
-  return db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as Project | undefined;
+  return toProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined);
+}
+
+export function setProjectTags(id: string, tags: Tag[]): Tag[] {
+  db.prepare("UPDATE projects SET tags = ? WHERE id = ?").run(JSON.stringify(tags), id);
+  return tags;
+}
+
+/** The project's tag with this name (case-insensitive), created if missing. */
+export function ensureTag(projectId: string, name: string, color: string): Tag {
+  const tags = getProject(projectId)!.tags;
+  const found = tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
+  if (found) return found;
+  const tag = { id: nanoid(8), name, color };
+  setProjectTags(projectId, [...tags, tag]);
+  return tag;
 }
 
 export function createProject(p: { name: string; repo_path: string; base_branch: string; remote_url?: string | null }): Project {
@@ -167,7 +196,7 @@ export function deleteProject(id: string) {
 
 // ---------- cards ----------
 
-type CardRow = Omit<Card, "files"> & { files: string; pending_input: string };
+type CardRow = Omit<Card, "files" | "tags"> & { files: string; tags: string; pending_input: string };
 
 /** Card columns plus checkpoint counters. */
 const CARD_SELECT = `SELECT c.*,
@@ -177,8 +206,8 @@ const CARD_SELECT = `SELECT c.*,
 
 function toCard(row: CardRow | undefined): Card | undefined {
   if (!row) return undefined;
-  const { pending_input: _p, files, ...rest } = row;
-  return { ...rest, files: safeJson(files, []) };
+  const { pending_input: _p, files, tags, ...rest } = row;
+  return { ...rest, files: safeJson(files, []), tags: safeJson(tags, []) };
 }
 
 function safeJson<T>(s: string, fallback: T): T {
@@ -236,6 +265,8 @@ export interface CardPatch {
   files?: string[];
   machine?: string | null;
   stop_req?: string | null;
+  tags?: string[];
+  agent_model?: string | null;
 }
 
 export function updateCard(id: string, patch: CardPatch): Card {
@@ -243,7 +274,7 @@ export function updateCard(id: string, patch: CardPatch): Card {
   if (entries.length) {
     const sets = entries.map(([k]) => `"${k}" = @${k}`).join(", ");
     const params: Record<string, unknown> = { id, updated_at: now() };
-    for (const [k, v] of entries) params[k] = k === "files" ? JSON.stringify(v) : v;
+    for (const [k, v] of entries) params[k] = k === "files" || k === "tags" ? JSON.stringify(v) : v;
     db.prepare(`UPDATE cards SET ${sets}, updated_at = @updated_at WHERE id = @id`).run(params);
   }
   return getCard(id)!;

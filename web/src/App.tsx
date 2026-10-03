@@ -1,3 +1,6 @@
+import { Notifications, reportError } from "./notifications";
+import { useMessageDraft, useChatScroll } from "./chat";
+import { projectName, MOD, Appearance, useDialogFocus } from "./preferences";
 import { useEffect, useRef, useState } from "react";
 import { COLUMNS, type Column, type Project } from "../../shared/types";
 import { api, useBoard, useProjects, type Board as BoardState } from "./api";
@@ -11,18 +14,19 @@ import { Home } from "./Home";
 import {
   ChevronRight,
   Eye,
-  GitBranch,
   Keyboard,
   MessageCircleQuestion,
   PanelLeft,
   Radio,
   SlidersHorizontal,
   Sparkles,
+  Search,
+  X,
 } from "lucide-react";
 import { ProjectSettings } from "./models";
 import { Sidebar } from "./Sidebar";
 import { BranchStatus, SyncIndicator, UnlinkedBanner } from "./SyncUI";
-import { Button, Kbd, ProjectAvatar, timeAgo } from "./ui";
+import { Button, ChatHint, chatKeyDown, Kbd, ProjectAvatar, timeAgo } from "./ui";
 
 const LAST_PROJECT = "trellai:project";
 const SIDEBAR_OPEN = "trellai:sidebar";
@@ -70,6 +74,13 @@ export default function App() {
   const [view, setView] = useState<"home" | "board">(() => (store.get(VIEW) === "home" ? "home" : "board"));
   const [homeCursor, setHomeCursor] = useState(0);
   const board = useBoard(projectId);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
+  const visibleBoard = { ...board, cards: Object.fromEntries(Object.entries(board.cards).filter(([, c]) =>
+    (!query.trim() || `${c.title} ${c.spec}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())) &&
+    (filter === "all" || (filter === "waiting" ? c.status === "waiting" : filter === "review" ? c.column === "review" : c.status === "error"))
+  )) };
+  useEffect(() => { setQuery(""); setFilter("all"); }, [projectId]);
 
   useEffect(() => {
     if (!projects) return;
@@ -115,20 +126,34 @@ export default function App() {
 
   // ------------------------------------------------------------------ keyboard
   // Everything the handler needs, read through a ref so the listener is attached once.
-  const st = useRef({ projects, projectId, zone, sideCursor, cursor, board, selected, sidebarOpen, showHelp, showNew, adding, view, homeCursor });
-  st.current = { projects, projectId, zone, sideCursor, cursor, board, selected, sidebarOpen, showHelp, showNew, adding, view, homeCursor };
+  const st = useRef({ projects, projectId, zone, sideCursor, cursor, board: visibleBoard, selected, sidebarOpen, showHelp, showNew, adding, view, homeCursor });
+  st.current = { projects, projectId, zone, sideCursor, cursor, board: visibleBoard, selected, sidebarOpen, showHelp, showNew, adding, view, homeCursor };
+
+  // Clicking anywhere outside the open card's panel (or a card on the board) closes it.
+  useEffect(() => {
+    if (!selected) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Element | null;
+      if (!t?.isConnected || document.querySelector("[data-modal]")) return;
+      if (t.closest('[aria-label="Detalle de tarjeta"], [data-card], [role="alert"], [role="status"]')) return;
+      setSelected(null);
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [selected]);
   const actions = useRef({ openProject, goHome });
   actions.current = { openProject, goHome };
   const pendingG = useRef(0);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || e.repeat) return;
       const s = st.current;
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key;
 
-      // ⌘B works everywhere, even while typing
-      if (mod && key.toLowerCase() === "b") {
+      // Keep editor shortcuts intact while typing.
+      if (mod && key.toLowerCase() === "b" && !isTyping(e) && !document.querySelector("[data-modal]")) {
         e.preventDefault();
         if (s.sidebarOpen && s.zone === "sidebar") {
           setSidebarOpen(false);
@@ -148,9 +173,16 @@ export default function App() {
         if (key === "Escape") {
           setShowSettings(false);
           setShowHelp(false);
+          if (s.projects?.length) setShowNew(false);
         }
         return;
       }
+      if (key === "Escape") {
+        setSelected(null); setShowAssistant(false); setShowNotes(false);
+        if (s.zone === "sidebar") setZone("board");
+        return;
+      }
+      if ((e.target as HTMLElement)?.closest("button, a")) return;
       if (s.showHelp) {
         if (key === "Escape" || key === "?") setShowHelp(false);
         return;
@@ -187,6 +219,11 @@ export default function App() {
       if (key === "a") {
         if (st.current.view === "home") setView("board");
         setShowAssistant(false);
+        // The open card hides the channel: close it so the channel shows.
+        if (st.current.selected) {
+          setSelected(null);
+          return setShowNotes(true);
+        }
         return setShowNotes((v) => !v);
       }
       if (key === "t" || key === "d") {
@@ -292,7 +329,7 @@ export default function App() {
         const next = list[i + 1] ?? list[i - 1];
         confirmDeleteCard(target).then((ok) => {
           if (!ok) return;
-          api(`/api/cards/${target.id}`, undefined, "DELETE").catch((err) => alert(err.message));
+          api(`/api/cards/${target.id}`, undefined, "DELETE").catch((err) => reportError(err.message));
           if (st.current.selected === target.id) setSelected(null);
           setCursor({ col: cur.col, id: next?.id ?? null });
         });
@@ -334,44 +371,45 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-white/[0.05] px-3">
+      <header className="app-header flex min-h-16 shrink-0 items-center gap-2 border-b border-ui-ink/[0.05] px-3">
         <button
           onClick={() => setSidebarOpen((v) => !v)}
-          className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200"
-          title="Barra de proyectos (⌘B)"
+          className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-ui-ink/[0.06] hover:text-zinc-200"
+          title={`${MOD}+B · Barra de proyectos`}
         >
           <PanelLeft className="h-4 w-4" />
         </button>
-        <button onClick={goHome} className="flex items-center gap-2 rounded-lg px-1.5 py-1 transition hover:bg-white/[0.04]" title="Todos los proyectos (p)">
+        <button onClick={goHome} className="flex items-center gap-2 rounded-lg px-1.5 py-1 transition hover:bg-ui-ink/[0.04]" title="Todos los proyectos (p)">
           <Logo />
           <span className="text-[14px] font-semibold tracking-tight text-zinc-100">Trellai</span>
         </button>
         {inBoard && (
           <>
             <ChevronRight className="h-3.5 w-3.5 text-zinc-600" />
-            <ProjectAvatar id={project!.id} name={project!.name} size={20} />
-            <span className="text-[13.5px] font-medium text-zinc-100">{project!.name}</span>
+            <ProjectAvatar id={project!.id} name={projectName(project!.name)} size={30} />
+            <span title={project!.repo_path || project!.name} className="max-w-[28rem] truncate text-2xl font-bold tracking-tight text-zinc-50">{projectName(project!.name)}</span>
             <BranchStatus project={project!} board={board} />
           </>
         )}
         {view === "home" && (
           <>
             <ChevronRight className="h-3.5 w-3.5 text-zinc-600" />
-            <span className="text-[13.5px] font-medium text-zinc-300">Proyectos</span>
+            <span className="text-sm font-medium text-zinc-300">Proyectos</span>
           </>
         )}
 
         <div className="ml-auto flex items-center gap-1.5">
+          <Appearance />
           <SyncIndicator />
           {inBoard && project?.preview_card_id && (
-            <span className="mr-1 flex items-center gap-2 rounded-full bg-teal-400/10 py-1 pr-1 pl-2.5 text-[11.5px] text-teal-100 ring-1 ring-teal-300/20">
+            <span className="mr-1 flex items-center gap-2 rounded-full bg-teal-400/10 py-1 pr-1 pl-2.5 text-[11.5px] text-teal-300 ring-1 ring-teal-300/20">
               <Eye className="h-3.5 w-3.5 text-teal-300" />
               <span className="max-w-[260px] truncate">
                 Tu repo muestra: <button className="font-medium hover:underline" onClick={() => previewCard && setSelected(previewCard.id)}>{previewCard?.title ?? "otra rama"}</button>
               </span>
               <button
                 onClick={() => togglePreview({ id: project.preview_card_id!, project_id: project.id, title: "" }, true)}
-                className="rounded-full bg-teal-300/15 px-2 py-0.5 font-medium text-teal-100 transition hover:bg-teal-300/25"
+                className="rounded-full bg-teal-300/15 px-2 py-0.5 font-medium text-teal-300 transition hover:bg-teal-300/25"
               >
                 Volver a {project.base_branch}
               </button>
@@ -391,27 +429,30 @@ export default function App() {
           )}
           {inBoard && (
             <>
+              {/* An open card hides these panels: opening one closes the card. */}
               <HeaderButton
-                active={showAssistant}
+                active={showAssistant && !card}
                 icon={<Sparkles className="h-3.5 w-3.5" />}
                 label="Asistente"
                 kbd="t"
                 onClick={() => {
                   setShowNotes(false);
-                  setShowAssistant(!showAssistant);
+                  setShowAssistant(!!card || !showAssistant);
+                  setSelected(null);
                 }}
               />
               <HeaderButton
-                active={showNotes}
+                active={showNotes && !card}
                 icon={<Radio className="h-3.5 w-3.5" />}
                 label={`Canal${board.notes.length ? ` · ${board.notes.length}` : ""}`}
                 kbd="a"
                 onClick={() => {
                   setShowAssistant(false);
-                  setShowNotes(!showNotes);
+                  setShowNotes(!!card || !showNotes);
+                  setSelected(null);
                 }}
               />
-              <span className="mx-1 h-4 w-px bg-white/[0.08]" />
+              <span className="mx-1 h-4 w-px bg-ui-ink/[0.08]" />
               <IconButton title="Modelos del proyecto" onClick={() => setShowSettings(true)}>
                 <SlidersHorizontal className="h-4 w-4" />
               </IconButton>
@@ -446,11 +487,16 @@ export default function App() {
             <Home projects={projects} cursor={homeCursor} onOpen={openProject} onNew={() => setShowNew(true)} onRemoved={reload} />
           ) : projectId && project ? (
             <div className="flex h-full flex-col">
+            <div className="flex flex-wrap items-center gap-3 px-4 pb-3">
+              <label className="flex min-w-48 max-w-sm flex-1 items-center gap-2 rounded-lg border border-ui-ink/10 bg-panel px-3 py-2"><Search className="h-4 w-4 text-zinc-500" /><input aria-label="Buscar tarjetas" placeholder="Buscar tarjetas…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); if (query) setQuery(""); else e.currentTarget.blur(); } }} className="min-w-0 flex-1 bg-transparent text-sm outline-none" />{query && <button aria-label="Limpiar búsqueda" className="text-zinc-500" onClick={() => setQuery("")}>×</button>}</label>
+              <div role="group" aria-label="Filtrar tarjetas" className="flex flex-wrap gap-1">{[["all", "Todas"], ["waiting", "Te necesitan"], ["review", "Por revisar"], ["error", "Errores"]].map(([value, label]) => <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)} className={`rounded-lg px-3 py-2 text-sm transition ${filter === value ? "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}>{label}</button>)}</div>
+              {(query || filter !== "all") && <span role="status" className="text-xs text-zinc-500">{Object.keys(visibleBoard.cards).length} resultados</span>}
+            </div>
             {!project.repo_path && <UnlinkedBanner project={project} onLinked={reload} />}
             <div className="min-h-0 flex-1">
             <Board
               projectId={projectId}
-              board={board}
+              board={visibleBoard}
               onOpen={setSelected}
               selectedId={selected}
               adding={adding}
@@ -477,11 +523,13 @@ export default function App() {
             setMode={setAssistantMode}
             project={project}
             onProjectChange={reload}
+            onClose={() => setShowAssistant(false)}
           />
         )}
-        {inBoard && showNotes && projectId && !card && <NotesPanel projectId={projectId} board={board} onOpen={setSelected} />}
+        {inBoard && showNotes && projectId && !card && <NotesPanel key={projectId} projectId={projectId} board={board} onOpen={setSelected} onClose={() => setShowNotes(false)} />}
       </main>
 
+      <Notifications />
       <ConfirmHost />
       {showHelp && <Help onClose={() => setShowHelp(false)} />}
       {showSettings && project && <ProjectSettings project={project} onClose={() => setShowSettings(false)} onSaved={reload} />}
@@ -500,17 +548,26 @@ export default function App() {
   );
 }
 
-function NotesPanel({ projectId, board, onOpen }: { projectId: string; board: BoardState; onOpen: (id: string) => void }) {
-  const [text, setText] = useState("");
-  const end = useRef<HTMLDivElement>(null);
-  useEffect(() => end.current?.scrollIntoView({ block: "end" }), [board.notes.length]);
+function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; board: BoardState; onOpen: (id: string) => void; onClose: () => void }) {
+  const { text, setText, current } = useMessageDraft(`notes-draft:${projectId}`);
+  const scroll = useChatScroll(board.notes.length);
+  const busy = useRef(false);
+  const [sending, setSending] = useState(false);
+  const send = async () => {
+    const submitted = current.current;
+    if (!submitted.trim() || busy.current) return;
+    busy.current = true; setSending(true);
+    try { await api(`/api/projects/${projectId}/notes`, { content: submitted.trim() }); if (current.current === submitted) setText(""); }
+    catch (e) { reportError((e as Error).message); }
+    finally { busy.current = false; setSending(false); }
+  };
   return (
-    <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-white/[0.06] bg-[#0f1014] shadow-[-24px_0_48px_-24px_rgb(0_0_0/0.6)]">
+    <aside className="work-panel flex h-full w-[360px] shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel shadow-[-24px_0_48px_-24px_rgb(0_0_0/0.6)]">
       <div className="border-b border-zinc-800 px-4 py-3">
-        <h2 className="text-sm font-semibold text-zinc-100">Canal de agentes</h2>
+        <div className="flex items-center justify-between"><h2 className="text-sm font-semibold text-zinc-100">Canal de agentes</h2><button aria-label="Cerrar canal" onClick={onClose} className="rounded-lg p-2 text-zinc-400 hover:bg-ui-ink/5"><X className="h-4 w-4" /></button></div>
         <p className="text-xs text-zinc-500">Lo que se cuentan entre ellos mientras trabajan en paralelo.</p>
       </div>
-      <div className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
+      <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
         {board.notes.length === 0 && <p className="text-sm text-zinc-500">Todavía nada.</p>}
         {board.notes.map((n) => (
           <div key={n.id} className="text-sm">
@@ -527,29 +584,19 @@ function NotesPanel({ projectId, board, onOpen }: { projectId: string; board: Bo
             <div className="text-zinc-300">{n.content}</div>
           </div>
         ))}
-        <div ref={end} />
+        <div ref={scroll.end} />
       </div>
-      <form
-        className="border-t border-zinc-800 p-3"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if (!text.trim()) return;
-          await api(`/api/projects/${projectId}/notes`, { content: text });
-          setText("");
-        }}
-      >
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Avisa a todos los agentes…"
-          className="w-full rounded-md bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
-        />
-      </form>
+      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300">Nuevos mensajes ↓</button>}
+      <div className="border-t border-zinc-800 p-3">
+        <textarea aria-label="Mensaje al canal de agentes" rows={2} value={text} onChange={e => setText(e.target.value)} onKeyDown={e => chatKeyDown(e, send, setText)} placeholder="Avisa a todos los agentes…" className="w-full resize-y rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-500" />
+        <div className="mt-2 flex items-center justify-between gap-2"><p className="text-xs text-zinc-500"><ChatHint /></p><Button onClick={send} disabled={!text.trim() || sending}>Enviar</Button></div>
+      </div>
     </aside>
   );
 }
 
 function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onCreated: (p: Project) => void; canClose: boolean }) {
+  const dialogRef = useDialogFocus<HTMLFormElement>();
   const [repo, setRepo] = useState<{ path: string; isRepo: boolean } | null>(null);
   const [name, setName] = useState("");
   const [base, setBase] = useState("");
@@ -559,7 +606,7 @@ function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onC
 
   const pick = (path: string, isRepo: boolean) => {
     setRepo({ path, isRepo });
-    setName(path.split("/").filter(Boolean).pop() ?? "");
+    setName(projectName(path));
     setInit(!isRepo);
     setError("");
   };
@@ -567,10 +614,14 @@ function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onC
   return (
     <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={() => canClose && onClose()}>
       <form
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Nuevo proyecto"
         onClick={(e) => e.stopPropagation()}
         onSubmit={async (e) => {
           e.preventDefault();
-          if (!repo) return;
+          if (!repo || saving || (!repo.isRepo && !init)) return;
           setError("");
           setSaving(true);
           try {
@@ -581,7 +632,7 @@ function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onC
             setSaving(false);
           }
         }}
-        className="w-full max-w-xl space-y-4 rounded-2xl bg-zinc-900 p-5 ring-1 ring-white/[0.08] shadow-[var(--shadow-pop)]"
+        className="w-full max-w-xl space-y-4 rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]"
       >
         <div>
           <h2 className="text-base font-semibold text-zinc-100">Nuevo proyecto</h2>
@@ -645,7 +696,7 @@ function HeaderButton({ active, icon, label, kbd, onClick }: { active: boolean; 
     <button
       onClick={onClick}
       className={`flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] transition ${
-        active ? "bg-white/[0.09] text-zinc-50 ring-1 ring-white/[0.1]" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-100"
+        active ? "bg-ui-ink/[0.09] text-zinc-50 ring-1 ring-ui-ink/[0.1]" : "text-zinc-400 hover:bg-ui-ink/[0.05] hover:text-zinc-100"
       }`}
     >
       {icon}
@@ -659,7 +710,7 @@ function HeaderButton({ active, icon, label, kbd, onClick }: { active: boolean; 
 
 function IconButton({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button onClick={onClick} title={title} className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200">
+    <button onClick={onClick} title={title} className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-ui-ink/[0.06] hover:text-zinc-200">
       {children}
     </button>
   );

@@ -1,13 +1,22 @@
+import { useMessageDraft, useChatScroll } from "./chat";
+import { readPreference, writePreference } from "./preferences";
+import { registerDraft } from "./drafts";
+import { TagPicker, useProjectTags } from "./tags";
+import { reportError } from "./notifications";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MachineChip } from "./SyncUI";
 import { COLUMN_LABELS, type Card, type Checkpoint, type Column, type Message, type Project, type Question } from "../../shared/types";
 import { ModelPicker, modelLabel } from "./models";
+import { prettyModel } from "../../shared/models";
 import { confirmDeleteCard, togglePreview } from "./Confirm";
 import {
   ArrowRight,
+  Bot,
   Eye,
   EyeOff,
   FileDiff,
+  Maximize2,
+  Minimize2,
   FileText,
   GitMerge,
   Hammer,
@@ -20,25 +29,29 @@ import {
   X,
 } from "lucide-react";
 import { api, useCardDetail, type Board } from "./api";
-import { Button, chatKeyDown, COLUMN_HEX, COLUMN_ICON, Markdown, Spinner, StatusBadge } from "./ui";
+import { Button, ChatHint, chatKeyDown, COLUMN_HEX, COLUMN_ICON, Markdown, Spinner, StatusBadge } from "./ui";
 
 type Tab = "spec" | "activity" | "diff";
 
 export function CardPanel({ card, board, project, onClose }: { card: Card; board: Board; project?: Project; onClose: () => void }) {
   const previewing = project?.preview_card_id === card.id;
   const { messages, questions, checkpoints, setCheckpoints } = useCardDetail(board, card.id);
+  const tags = useProjectTags(card.project_id, board);
   const open = questions.filter((q) => q.answer === null);
-  const defaultTab: Tab = card.column === "backlog" || card.column === "plan" ? "spec" : "activity";
+  const defaultTab: Tab = card.column === "review" ? "diff" : card.column === "backlog" || card.column === "plan" ? "spec" : "activity";
   const [tab, setTab] = useState<Tab>(defaultTab);
   useEffect(() => setTab(defaultTab), [card.id]);
   const [editSignal, setEditSignal] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const [width, setWidth] = useState(() => Math.max(400, Math.min(900, Number(readPreference("panel-width", "540")) || 540)));
+  const resize = useRef<{ x: number; width: number } | null>(null);
 
   // Keyboard shortcuts while a card is open (global ones live in App).
   useEffect(() => {
     const focus = (sel: string) => setTimeout(() => document.querySelector<HTMLElement>(sel)?.focus(), 30);
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (e.metaKey || e.ctrlKey || e.altKey || t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+      if (e.defaultPrevented || e.isComposing || e.repeat || e.metaKey || e.ctrlKey || e.altKey || t.closest("input, textarea, select, button, a") || t.isContentEditable) return;
       if (document.querySelector("[data-modal]")) return;
       const k = e.key;
       if (k === "1") setTab("spec");
@@ -62,15 +75,26 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const move = (column: Column) => api(`/api/cards/${card.id}/move`, { column }).catch((e) => alert(e.message));
+  const move = (column: Column) => api(`/api/cards/${card.id}/move`, { column }).catch((e) => reportError(e.message));
 
   return (
-    <aside className="flex h-full w-[min(640px,100vw)] shrink-0 flex-col border-l border-white/[0.06] bg-[#0f1014] shadow-[-24px_0_48px_-24px_rgb(0_0_0/0.6)]">
-      <header className="border-b border-white/[0.06] px-6 pt-4 pb-4">
+    <aside aria-label="Detalle de tarjeta" style={{ "--panel-width": `${width}px` } as React.CSSProperties} className={`work-panel ${expanded ? "expanded" : ""} flex h-full shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel shadow-[var(--shadow-lift)]`}>
+      {!expanded && <div role="separator" aria-label="Ancho del panel" aria-orientation="vertical" aria-valuemin={400} aria-valuemax={900} aria-valuenow={width} tabIndex={0} className="panel-resizer" onKeyDown={e => {
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); e.stopPropagation(); const next = Math.max(400, Math.min(900, width + (e.key === "ArrowLeft" ? 40 : -40))); setWidth(next); writePreference("panel-width", String(next)); }
+      }} onPointerDown={e => { resize.current = { x: e.clientX, width }; e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={e => { if (resize.current) setWidth(Math.max(400, Math.min(900, resize.current.width + resize.current.x - e.clientX))); }} onPointerUp={e => { resize.current = null; writePreference("panel-width", String(width)); e.currentTarget.releasePointerCapture(e.pointerId); }} onPointerCancel={() => { resize.current = null; }} /> }
+      <header className="border-b border-ui-ink/[0.06] px-6 pt-4 pb-4">
         <div className="flex items-center gap-2 text-xs text-zinc-400">
           <ColumnChip column={card.column} />
           <StatusBadge card={card} />
           <MachineChip machine={card.machine} />
+          {card.agent_model && (
+            <span
+              className="flex items-center gap-1 rounded-md bg-ui-ink/[0.05] px-1.5 py-0.5 text-[11px] text-zinc-300"
+              title={`${card.status === "running" ? "Modelo que está usando el agente" : "Modelo de la última ejecución del agente"}: ${card.agent_model}`}
+            >
+              <Bot className="h-3 w-3" /> {prettyModel(card.agent_model)}
+            </span>
+          )}
           <ModelPicker
             className="ml-auto"
             value={card.model}
@@ -80,18 +104,20 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
           />
           <button
             onClick={async () => {
-              if (await confirmDeleteCard(card)) api(`/api/cards/${card.id}`, undefined, "DELETE").then(onClose);
+              if (await confirmDeleteCard(card)) api(`/api/cards/${card.id}`, undefined, "DELETE").then(onClose).catch(e => reportError(e.message));
             }}
             className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-red-500/10 hover:text-red-300"
             title="Eliminar tarjeta"
           >
             <Trash2 className="h-4 w-4" />
           </button>
-          <button onClick={onClose} className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200" title="Cerrar (Esc)">
+          <button aria-label={expanded ? "Reducir panel" : "Ampliar panel"} title={expanded ? "Reducir panel" : "Ampliar para leer"} onClick={() => setExpanded(!expanded)} className="rounded-lg p-2 text-zinc-400 hover:bg-ui-ink/5">{expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}</button>
+          <button aria-label="Cerrar tarjeta" onClick={onClose} className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-ui-ink/[0.06] hover:text-zinc-200" title="Cerrar (Esc)">
             <X className="h-4 w-4" />
           </button>
         </div>
         <TitleInput card={card} />
+        <TagPicker card={card} tags={tags} />
         {card.status_text && card.status !== "running" && (
           <p className={`mt-1 text-[12.5px] ${card.status === "error" ? "text-red-300" : "text-zinc-400"}`}>{card.status_text}</p>
         )}
@@ -144,14 +170,16 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
 
       <Checkpoints card={card} items={checkpoints} setItems={setCheckpoints} />
 
-      <nav className="flex gap-1 border-b border-white/[0.06] px-5">
+      <nav role="tablist" aria-label="Contenido de tarjeta" className="flex gap-1 border-b border-ui-ink/[0.06] px-5">
         {(["spec", "activity", "diff"] as Tab[]).map((t, i) => {
           const Icon = { spec: FileText, activity: MessagesSquare, diff: FileDiff }[t];
           return (
             <button
               key={t}
+              role="tab"
+              aria-selected={tab === t}
               onClick={() => setTab(t)}
-              className={`-mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-2.5 text-[13px] transition ${
+              className={`-mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-2.5 text-sm transition ${
                 tab === t ? "border-indigo-400 text-zinc-50" : "border-transparent text-zinc-500 hover:text-zinc-300"
               }`}
             >
@@ -175,39 +203,70 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
 
 function TitleInput({ card }: { card: Card }) {
   const [v, setV] = useState(card.title);
+  const [error, setError] = useState("");
+  const cancel = useRef(false);
   useEffect(() => setV(card.title), [card.id, card.title]);
-  return (
-    <input
-      value={v}
-      onChange={(e) => setV(e.target.value)}
-      onBlur={() => v.trim() && v !== card.title && api(`/api/cards/${card.id}`, { title: v }, "PATCH")}
-      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-      className="mt-2.5 w-full bg-transparent text-[20px] leading-tight font-semibold tracking-tight text-zinc-50 outline-none"
-    />
-  );
+  const save = async () => {
+    if (cancel.current) { cancel.current = false; return; }
+    if (!v.trim()) { setV(card.title); return; }
+    if (v.trim() === card.title) return;
+    try { await api(`/api/cards/${card.id}`, { title: v.trim() }, "PATCH"); setError(""); }
+    catch (e) { setError((e as Error).message); }
+  };
+  return <>
+    <textarea aria-label="Título de tarjeta" rows={2} value={v} onChange={e => setV(e.target.value.replace(/\n/g, " "))} onBlur={save} onKeyDown={e => {
+      if (e.nativeEvent.isComposing) return;
+      if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+      if (e.key === "Escape") { e.stopPropagation(); cancel.current = true; setV(card.title); setError(""); e.currentTarget.blur(); }
+    }} className="mt-3 w-full resize-none rounded-lg bg-transparent text-xl leading-snug font-semibold tracking-tight text-zinc-50" />
+    {error && <p role="alert" className="text-xs text-red-300">{error}</p>}
+  </>;
 }
 
 function SpecTab({ card, questions, editSignal }: { card: Card; questions: Question[]; editSignal: number }) {
-  const [spec, setSpec] = useState(card.spec);
-  const [editing, setEditing] = useState(!card.spec);
-  useEffect(() => {
-    if (editSignal) setEditing(true);
-  }, [editSignal]);
-  const [saved, setSaved] = useState(true);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-
-  useEffect(() => {
-    setSpec(card.spec);
-    setEditing(!card.spec);
-  }, [card.id]);
-
-  const save = (value: string) => {
+  const key = `spec-draft:${card.id}`;
+  const initialDraft = readPreference(key, card.spec);
+  const [spec, setSpec] = useState(initialDraft);
+  const [editing, setEditing] = useState(!card.spec || initialDraft !== card.spec);
+  useEffect(() => { if (editSignal) setEditing(true); }, [editSignal]);
+  const [saveState, setSaveState] = useState<"saved" | "saving" | "error">(initialDraft === card.spec ? "saved" : "saving");
+  const [error, setError] = useState("");
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pending = useRef<string | null>(initialDraft === card.spec ? null : initialDraft);
+  const inflight = useRef<Promise<void> | null>(null);
+  const flush = (): Promise<void> => {
     clearTimeout(timer.current);
-    setSaved(false);
-    timer.current = setTimeout(async () => {
-      await api(`/api/cards/${card.id}`, { spec: value }, "PATCH");
-      setSaved(true);
-    }, 600);
+    if (inflight.current) return inflight.current;
+    if (pending.current === null) return Promise.resolve();
+    setSaveState("saving"); setError("");
+    const work = async () => {
+      while (pending.current !== null) {
+        const value = pending.current;
+        await api(`/api/cards/${card.id}`, { spec: value }, "PATCH");
+        if (pending.current === value) pending.current = null;
+      }
+      try { localStorage.removeItem(`trellai:${key}`); } catch { /* optional */ }
+      setSaveState("saved");
+    };
+    inflight.current = work().catch(e => { setSaveState("error"); setError((e as Error).message); throw e; }).finally(() => { inflight.current = null; });
+    return inflight.current;
+  };
+  const latestFlush = useRef(flush); latestFlush.current = flush;
+  useEffect(() => {
+    const unregister = registerDraft(card.id, () => latestFlush.current());
+    if (pending.current !== null) timer.current = setTimeout(() => void latestFlush.current().catch(() => {}), 600);
+    return () => {
+      clearTimeout(timer.current);
+      // Keep a failed flusher available so a workflow transition cannot bypass it.
+      void latestFlush.current().then(unregister).catch(e => reportError(`No se guardó la especificación. El borrador está conservado. ${(e as Error).message}`));
+    };
+  }, [card.id]);
+  const save = (value: string) => {
+    pending.current = value;
+    writePreference(key, value);
+    setSaveState("saving");
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => void latestFlush.current().catch(() => {}), 600);
   };
   const answered = questions.filter((q) => q.answer !== null);
 
@@ -215,13 +274,17 @@ function SpecTab({ card, questions, editSignal }: { card: Card; questions: Quest
     <div className="h-full overflow-y-auto px-5 py-4">
       <div className="mb-2 flex items-center gap-2">
         <h3 className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">Especificación</h3>
-        <span className="text-[11px] text-zinc-600">{saved ? "guardado" : "guardando…"}</span>
+        <span className="text-[11px] text-zinc-600">{{ saved: "Guardado", saving: "Guardando…", error: "Error al guardar" }[saveState]}</span>
         <button onClick={() => setEditing(!editing)} className="ml-auto text-xs text-indigo-400 hover:underline">
           {editing ? "Vista previa" : "Editar"}
         </button>
       </div>
+      {error && <div role="alert" className="mb-3 rounded-lg bg-red-500/10 p-3 text-sm text-red-300">{error} <button className="ml-2 underline" onClick={() => void flush().catch(() => {})}>Reintentar</button></div>}
       {editing ? (
         <textarea
+          aria-label="Especificación"
+          onBlur={() => void flush().catch(() => {})}
+          onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) { e.preventDefault(); void flush().catch(() => {}); } }}
           data-kb="spec"
           value={spec}
           onChange={(e) => {
@@ -229,7 +292,7 @@ function SpecTab({ card, questions, editSignal }: { card: Card; questions: Quest
             save(e.target.value);
           }}
           placeholder={"Describe la feature como quieras: qué quieres, por qué, cómo debería comportarse, casos raros…\n\nMarkdown soportado."}
-          className="min-h-[50vh] w-full resize-y rounded-lg bg-zinc-900 p-3 font-mono text-[13px] leading-relaxed text-zinc-200 ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
+          className="min-h-[50vh] w-full resize-y rounded-lg bg-zinc-900 p-3 font-mono text-sm leading-relaxed text-zinc-200 ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
         />
       ) : (
         <div className="rounded-lg bg-zinc-900/50 p-3 ring-1 ring-zinc-800">
@@ -271,58 +334,126 @@ function SpecTab({ card, questions, editSignal }: { card: Card; questions: Quest
   );
 }
 
+/** Claude's questions one at a time: answer, it moves to the next; all are sent at the end. */
 function Questions({ card, questions }: { card: Card; questions: Question[] }) {
   const [answers, setAnswers] = useState<Record<number, string>>({});
+  const [step, setStep] = useState(0);
   const [sending, setSending] = useState(false);
-  const ready = questions.every((q) => answers[q.id]?.trim());
+  const input = useRef<HTMLInputElement>(null);
+  const ids = questions.map((q) => q.id).join(",");
+  useEffect(() => setStep(0), [ids]); // a new batch of questions starts at the first one
+  const i = Math.min(step, questions.length - 1);
+  const q = questions[i];
+  const last = i === questions.length - 1;
+  const answered = (k: number) => !!answers[questions[k]?.id]?.trim();
+  const ready = questions.every((_, k) => answered(k));
+  const typed = q && !q.options.includes(answers[q.id] ?? "") ? (answers[q.id] ?? "") : "";
+  // Moving between questions puts the cursor in the answer box (not on first render: Esc should still close the card).
+  const moved = useRef(false);
+  useEffect(() => {
+    if (moved.current) input.current?.focus({ preventScroll: true });
+    moved.current = true;
+  }, [i]);
+  if (!q) return null;
+
+  const send = async () => {
+    if (!ready || sending) return;
+    setSending(true);
+    await api(`/api/cards/${card.id}/answers`, { answers }).catch((e) => reportError(e.message));
+    setSending(false);
+    setAnswers({});
+    setStep(0);
+  };
+  // After answering: the next unanswered question, or stay on the last one to send.
+  const advance = (next: Record<number, string>) => {
+    const rest = questions.findIndex((x, k) => k > i && !next[x.id]?.trim());
+    const any = questions.findIndex((x) => !next[x.id]?.trim());
+    setStep(rest >= 0 ? rest : any >= 0 ? any : questions.length - 1);
+  };
+  const choose = (o: string) => {
+    const next = { ...answers, [q.id]: o };
+    setAnswers(next);
+    if (!last) setTimeout(() => advance(next), 150); // let the choice show for a moment
+  };
+
   return (
     <div className="border-b border-violet-500/30 bg-violet-500/[0.07] px-5 py-4">
-      <h3 className="mb-3 text-sm font-semibold text-violet-200">Claude tiene {questions.length === 1 ? "una pregunta" : `${questions.length} preguntas`}</h3>
-      <div className="space-y-4">
-        {questions.map((q) => (
-          <div key={q.id}>
-            <p className="mb-2 text-sm text-zinc-100">{q.question}</p>
-            <div className="flex flex-wrap gap-1.5">
-              {q.options.map((o) => (
-                <button
-                  key={o}
-                  onClick={() => setAnswers({ ...answers, [q.id]: o })}
-                  className={`rounded-md px-2.5 py-1 text-sm ring-1 transition ${answers[q.id] === o ? "bg-violet-500 text-white ring-violet-400" : "bg-zinc-900 text-zinc-300 ring-zinc-700 hover:ring-violet-500"}`}
-                >
-                  {o}
-                </button>
-              ))}
-            </div>
-            <input
-              value={q.options.includes(answers[q.id] ?? "") ? "" : (answers[q.id] ?? "")}
-              onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })}
-              placeholder="…o escribe tu respuesta"
-              className="mt-2 w-full rounded-md bg-zinc-900 px-2.5 py-1.5 text-sm ring-1 ring-zinc-700 outline-none focus:ring-violet-500"
-            />
+      <div className="mb-3 flex items-center gap-3">
+        <h3 className="text-sm font-semibold text-violet-200">
+          {questions.length === 1 ? "Claude tiene una pregunta" : `Pregunta ${i + 1} de ${questions.length}`}
+        </h3>
+        {questions.length > 1 && (
+          <div className="ml-auto flex items-center gap-1.5" role="tablist" aria-label="Preguntas">
+            {questions.map((x, k) => (
+              <button
+                key={x.id}
+                role="tab"
+                aria-selected={k === i}
+                aria-label={`Pregunta ${k + 1}${answered(k) ? " (respondida)" : ""}`}
+                title={x.question}
+                onClick={() => setStep(k)}
+                className={`h-2 rounded-full transition-all ${k === i ? "w-5 bg-violet-300" : answered(k) ? "w-2 bg-violet-400/70" : "w-2 bg-zinc-600 hover:bg-zinc-500"}`}
+              />
+            ))}
           </div>
-        ))}
+        )}
       </div>
-      <Button
-        variant="primary"
-        className="mt-4 !bg-violet-500 hover:!bg-violet-400 !text-white"
-        disabled={!ready || sending}
-        onClick={async () => {
-          setSending(true);
-          await api(`/api/cards/${card.id}/answers`, { answers }).catch((e) => alert(e.message));
-          setSending(false);
-          setAnswers({});
+
+      <p className="mb-3 text-[15px] leading-relaxed text-zinc-100">{q.question}</p>
+      {q.options.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {q.options.map((o) => (
+            <button
+              key={o}
+              onClick={() => choose(o)}
+              className={`rounded-md px-2.5 py-1 text-sm ring-1 transition ${answers[q.id] === o ? "bg-violet-500 text-white ring-violet-400" : "bg-zinc-900 text-zinc-300 ring-zinc-700 hover:ring-violet-500"}`}
+            >
+              {o}
+            </button>
+          ))}
+        </div>
+      )}
+      <input
+        ref={input}
+        value={typed}
+        onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" || e.nativeEvent.isComposing || !answers[q.id]?.trim()) return;
+          e.preventDefault();
+          if (last || ready) void send();
+          else advance(answers);
         }}
-      >
-        Responder y continuar
-      </Button>
+        placeholder={q.options.length ? "…o escribe tu respuesta" : "Escribe tu respuesta"}
+        aria-label={`Respuesta a: ${q.question}`}
+        className="mt-2 w-full rounded-md bg-zinc-900 px-2.5 py-1.5 text-sm ring-1 ring-zinc-700 outline-none focus:ring-violet-500"
+      />
+
+      <div className="mt-4 flex items-center gap-2">
+        {i > 0 && (
+          <Button onClick={() => setStep(i - 1)} className="!py-1">
+            ← Anterior
+          </Button>
+        )}
+        {!last && (
+          <Button onClick={() => setStep(i + 1)} disabled={!answered(i)} className="!py-1">
+            Siguiente →
+          </Button>
+        )}
+        {(last || ready) && (
+          <Button variant="primary" className="ml-auto !bg-violet-500 hover:!bg-violet-400 !text-white" disabled={!ready || sending} onClick={send}>
+            {sending ? "Enviando…" : ready ? "Responder y continuar" : `Faltan ${questions.filter((_, k) => !answered(k)).length}`}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
 
 function Activity({ card, messages }: { card: Card; messages: Message[] }) {
-  const [text, setText] = useState("");
-  const end = useRef<HTMLDivElement>(null);
-  useEffect(() => end.current?.scrollIntoView({ block: "end" }), [messages.length, card.id]);
+  const { text, setText, current } = useMessageDraft(`chat-draft:${card.id}`);
+  const scroll = useChatScroll(messages.length);
+  const busy = useRef(false);
+  const [sending, setSending] = useState(false);
 
   const placeholder: Record<Column, string> = {
     backlog: "Comentario…",
@@ -334,18 +465,18 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
   };
 
   const send = async () => {
-    if (!text.trim()) return;
-    const t = text;
-    setText("");
-    await api(`/api/cards/${card.id}/message`, { text: t }).catch((e) => {
-      alert(e.message);
-      setText(t);
-    });
+    const t = current.current.trim();
+    if (!t || busy.current) return;
+    busy.current = true; setSending(true);
+    const submitted = current.current;
+    try { await api(`/api/cards/${card.id}/message`, { text: t }); if (current.current === submitted) setText(""); }
+    catch (e) { reportError((e as Error).message); }
+    finally { busy.current = false; setSending(false); }
   };
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex-1 space-y-2 overflow-y-auto px-5 py-4">
+      <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-4">
         {messages.length === 0 && (
           <p className="pt-8 text-center text-sm text-zinc-500">
             {card.column === "plan" || card.column === "backlog"
@@ -361,11 +492,13 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
             <Spinner /> trabajando…
           </div>
         )}
-        <div ref={end} />
+        <div ref={scroll.end} />
       </div>
+      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300">Nuevos mensajes ↓</button>}
       <div className="border-t border-zinc-800 p-3">
         <div className="flex items-end gap-2">
           <textarea
+            aria-label="Mensaje al agente"
             data-kb="chat"
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -374,11 +507,11 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
             placeholder={placeholder[card.column]}
             className="flex-1 resize-none rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
           />
-          <Button variant={card.column === "review" ? "primary" : "default"} onClick={send} disabled={!text.trim()}>
+          <Button variant={card.column === "review" ? "primary" : "default"} onClick={send} disabled={!text.trim() || sending}>
             {card.column === "review" ? "Pedir cambios" : "Enviar"}
           </Button>
         </div>
-        <p className="mt-1 text-[10px] text-zinc-600">Enter envía · ⌘Enter nueva línea</p>
+        <p className="mt-1 text-xs text-zinc-500"><ChatHint /></p>
       </div>
     </div>
   );
@@ -394,14 +527,14 @@ function MessageRow({ m }: { m: Message }) {
     );
   if (m.role === "system")
     return (
-      <div className="flex items-start gap-2 border-l-2 border-white/[0.08] py-0.5 pl-2.5 text-[12px] whitespace-pre-wrap text-zinc-400">
+      <div className="flex items-start gap-2 border-l-2 border-ui-ink/[0.08] py-0.5 pl-2.5 text-[12px] whitespace-pre-wrap text-zinc-400">
         <InlineCode text={m.content} />
       </div>
     );
   if (m.role === "user")
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-indigo-500/15 px-3.5 py-2 text-sm text-indigo-50 ring-1 ring-indigo-400/20">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-indigo-500/15 px-3.5 py-2 text-sm text-zinc-100 ring-1 ring-indigo-400/20">
           <Markdown>{m.content}</Markdown>
         </div>
       </div>
@@ -439,7 +572,7 @@ function DiffTab({ card }: { card: Card }) {
             {f.name}
             <span className="ml-2 text-emerald-400">+{f.add}</span> <span className="text-red-400">−{f.del}</span>
           </summary>
-          <pre className="overflow-x-auto bg-zinc-950 py-1 font-mono text-[11.5px] leading-[1.45]">
+          <pre className="overflow-x-auto bg-zinc-950 py-1 font-mono text-[13px] leading-relaxed">
             {f.lines.map((l, i) => (
               <div
                 key={i}
@@ -483,18 +616,22 @@ function parseDiff(diff: string) {
 function Checkpoints({ card, items, setItems }: { card: Card; items: Checkpoint[]; setItems: (c: Checkpoint[]) => void }) {
   const [text, setText] = useState("");
   const [collapsed, setCollapsed] = useState(false);
+  const adding = useRef(false);
+  const [error, setError] = useState("");
   const done = items.filter((c) => c.done).length;
   const pct = items.length ? Math.round((done / items.length) * 100) : 0;
 
   const toggle = (c: Checkpoint) => {
     setItems(items.map((x) => (x.id === c.id ? { ...x, done: !x.done } : x)));
-    api(`/api/checkpoints/${c.id}`, { done: !c.done }, "PATCH");
+    api(`/api/checkpoints/${c.id}`, { done: !c.done }, "PATCH").catch(e => { setItems(items); reportError(e.message); });
   };
   const add = async () => {
     const t = text.trim();
-    if (!t) return;
-    setText("");
-    await api(`/api/cards/${card.id}/checkpoints`, { text: t });
+    if (!t || adding.current) return;
+    adding.current = true; setError("");
+    try { await api(`/api/cards/${card.id}/checkpoints`, { text: t }); setText(""); }
+    catch (e) { setError((e as Error).message); }
+    finally { adding.current = false; }
   };
 
   return (
@@ -525,15 +662,17 @@ function Checkpoints({ card, items, setItems }: { card: Card; items: Checkpoint[
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                add();
+                if (!e.repeat) add();
               }
             }}
+            aria-label="Añadir checkpoint"
             data-kb="checkpoint"
             placeholder={items.length ? "+ Añadir checkpoint…" : "+ Añade los pasos que quieres ver hechos (Enter). Claude también añadirá los suyos."}
             className="mt-1 w-full rounded-md bg-transparent px-2 py-1.5 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 hover:bg-zinc-900 focus:bg-zinc-900 focus:ring-1 focus:ring-zinc-700"
           />
+          {error && <p role="alert" className="mt-1 text-xs text-red-300">{error}</p>}
         </>
       )}
     </section>
@@ -544,10 +683,16 @@ function CheckpointRow({ c, onToggle }: { c: Checkpoint; onToggle: () => void })
   const [editing, setEditing] = useState(false);
   const [v, setV] = useState(c.text);
   useEffect(() => setV(c.text), [c.text]);
-  const save = () => {
-    setEditing(false);
-    if (v.trim() && v.trim() !== c.text) api(`/api/checkpoints/${c.id}`, { text: v.trim() }, "PATCH");
-    else setV(c.text);
+  const busy = useRef(false);
+  const canceled = useRef(false);
+  const save = async () => {
+    if (canceled.current) { canceled.current = false; return; }
+    if (busy.current) return;
+    if (!v.trim() || v.trim() === c.text) { setV(c.text); setEditing(false); return; }
+    busy.current = true;
+    try { await api(`/api/checkpoints/${c.id}`, { text: v.trim() }, "PATCH"); setEditing(false); }
+    catch (e) { reportError((e as Error).message); }
+    finally { busy.current = false; }
   };
   return (
     <li className="group flex items-start gap-2 rounded-md px-2 py-1 hover:bg-zinc-900">
@@ -559,9 +704,10 @@ function CheckpointRow({ c, onToggle }: { c: Checkpoint; onToggle: () => void })
           onChange={(e) => setV(e.target.value)}
           onBlur={save}
           onKeyDown={(e) => {
-            if (e.key === "Enter") save();
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); save(); }
             if (e.key === "Escape") {
               e.stopPropagation();
+              canceled.current = true;
               setV(c.text);
               setEditing(false);
             }
@@ -569,9 +715,9 @@ function CheckpointRow({ c, onToggle }: { c: Checkpoint; onToggle: () => void })
           className="flex-1 bg-transparent text-sm text-zinc-100 outline-none"
         />
       ) : (
-        <span onClick={() => setEditing(true)} className={`flex-1 cursor-text text-sm leading-snug ${c.done ? "text-zinc-500 line-through" : "text-zinc-200"}`}>
+        <button onClick={() => { canceled.current = false; setEditing(true); }} className={`flex-1 cursor-text text-left text-sm leading-snug ${c.done ? "text-zinc-500 line-through" : "text-zinc-200"}`}>
           <InlineCode text={c.text} />
-        </span>
+        </button>
       )}
       {c.source === "agent" && (
         <span className="mt-0.5 shrink-0 rounded bg-violet-500/10 px-1.5 text-[10px] text-violet-300/80" title="Añadido por Claude">
@@ -579,7 +725,7 @@ function CheckpointRow({ c, onToggle }: { c: Checkpoint; onToggle: () => void })
         </span>
       )}
       <button
-        onClick={() => api(`/api/checkpoints/${c.id}`, undefined, "DELETE")}
+        onClick={() => api(`/api/checkpoints/${c.id}`, undefined, "DELETE").catch(e => reportError(e.message))}
         className="shrink-0 text-xs text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-red-300"
         title="Eliminar"
       >
@@ -610,7 +756,7 @@ function InlineCode({ text }: { text: string }) {
 function ColumnChip({ column }: { column: Column }) {
   const Icon = COLUMN_ICON[column];
   return (
-    <span className="flex items-center gap-1.5 rounded-md bg-white/[0.04] px-2 py-1 text-[11.5px] font-medium text-zinc-300 ring-1 ring-white/[0.06]">
+    <span className="flex items-center gap-1.5 rounded-md bg-ui-ink/[0.04] px-2 py-1 text-[11.5px] font-medium text-zinc-300 ring-1 ring-ui-ink/[0.06]">
       <Icon className="h-3.5 w-3.5" style={{ color: COLUMN_HEX[column] }} />
       {COLUMN_LABELS[column]}
     </span>

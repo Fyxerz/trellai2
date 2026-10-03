@@ -1,9 +1,10 @@
+import { projectName } from "./preferences";
 import { Activity, FolderGit2, GitBranch, Plus, Trash2 } from "lucide-react";
 import { confirmDeleteProject } from "./Confirm";
 import { useEffect, useRef } from "react";
 import { COLUMNS, COLUMN_LABELS, type Project } from "../../shared/types";
 import { api } from "./api";
-import { modelLabel } from "./models";
+import { modelLabel, useEngines } from "./models";
 import { useProjectSummaries, type ProjectSummary } from "./Sidebar";
 import { Button, COLUMN_HEX, COLUMN_ICON, Kbd, ProjectAvatar, Spinner, timeAgo } from "./ui";
 
@@ -57,7 +58,7 @@ export function Home({
           ))}
           <button
             onClick={onNew}
-            className="flex min-h-[230px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-white/[0.08] text-[13px] text-zinc-500 transition hover:border-white/[0.16] hover:bg-white/[0.02] hover:text-zinc-300"
+            className="flex min-h-[230px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-ui-ink/[0.08] text-[13px] text-zinc-500 transition hover:border-ui-ink/[0.16] hover:bg-ui-ink/[0.02] hover:text-zinc-300"
           >
             <Plus className="h-5 w-5" />
             Añadir proyecto
@@ -94,18 +95,18 @@ function ProjectCard({
       onClick={onOpen}
       style={{ boxShadow: "var(--shadow-card)" }}
       className={`group relative flex min-h-[230px] cursor-pointer flex-col rounded-2xl border bg-zinc-900/80 p-4 transition-all duration-150 hover:-translate-y-0.5 hover:bg-zinc-900 ${
-        cursor ? "border-indigo-400/70 ring-2 ring-indigo-400/20" : "border-white/[0.06] hover:border-white/[0.12]"
+        cursor ? "border-indigo-400/70 ring-2 ring-indigo-400/20" : "border-ui-ink/[0.06] hover:border-ui-ink/[0.12]"
       }`}
     >
       {/* header */}
       <div className="flex items-start gap-3">
-        <ProjectAvatar id={p.id} name={p.name} size={34} />
+        <ProjectAvatar id={p.id} name={projectName(p.name)} size={34} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[15px] font-semibold tracking-tight text-zinc-50">{p.name}</div>
+          <div className="truncate text-[15px] font-semibold tracking-tight text-zinc-50">{projectName(p.name)}</div>
           <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px] text-zinc-500">
             <span className="flex min-w-0 items-center gap-1 font-mono" title={p.repo_path}>
               <FolderGit2 className="h-3 w-3 shrink-0" />
-              <span className="truncate">{p.repo_path.replace(/^\/Users\/[^/]+/, "~")}</span>
+              <span className="truncate">{p.repo_path ? projectName(p.repo_path) : "—"}</span>
             </span>
             <span className="flex shrink-0 items-center gap-1 font-mono">
               <GitBranch className="h-3 w-3" />
@@ -129,7 +130,7 @@ function ProjectCard({
 
       {/* pipeline bar */}
       <div className="mt-4">
-        <div className="flex h-1.5 overflow-hidden rounded-full bg-white/[0.05]">
+        <div className="flex h-1.5 overflow-hidden rounded-full bg-ui-ink/[0.05]">
           {total > 0 &&
             COLUMNS.map((c) =>
               s?.columns[c] ? (
@@ -181,7 +182,7 @@ function ProjectCard({
       </div>
 
       {/* footer */}
-      <div className="mt-4 flex items-center gap-2 border-t border-white/[0.05] pt-3 text-[11px] text-zinc-500">
+      <div className="mt-4 flex items-center gap-2 border-t border-ui-ink/[0.05] pt-3 text-[11px] text-zinc-500">
         <Activity className="h-3 w-3" />
         {s?.last_activity ? (timeAgo(s.last_activity) === "ahora" ? "Activo ahora mismo" : `Última actividad hace ${timeAgo(s.last_activity)}`) : "Sin actividad"}
         <span className="ml-auto flex items-center gap-1.5">
@@ -194,6 +195,7 @@ function ProjectCard({
 }
 
 function ModelChip({ spec, title }: { spec: string; title: string }) {
+  useEngines(); // shows the exact version ("Opus 5.5") once known
   const gpt = spec.startsWith("codex");
   return (
     <span

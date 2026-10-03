@@ -121,8 +121,17 @@ Pulsa `?` para ver todos los atajos. Los principales:
 
 - `⌘B` abre la barra de proyectos (`j`/`k` + `Enter`, o `1`–`9`); `[` y `]` saltan al proyecto anterior/siguiente.
 - En el tablero: `h`/`l` columnas, `j`/`k` tarjetas, `Enter` abrir, `n` nueva tarjeta, `⇧H`/`⇧L` mover de columna, `⇧J`/`⇧K` reordenar, `x` eliminar (con confirmación).
-- En los chats (Actividad, Asistente): `Enter` envía, `⌘Enter` nueva línea.
+- En los chats (Actividad, Asistente y Canal): `Enter` envía y `Shift+Enter` añade una línea. En **Apariencia y teclado** puedes elegir `Ctrl/⌘+Enter` para enviar y dejar `Enter` para escribir varias líneas.
+- Al editar una spec: `Ctrl/⌘+Enter` guarda inmediatamente. Las transiciones de columna esperan a que se guarde la última versión.
 - Con una tarjeta abierta: `1`/`2`/`3` pestañas, `e` editar spec, `c` checkpoint, `i` escribir al agente, `Esc` cerrar.
+
+## Comodidad y apariencia
+
+El botón **Apariencia y teclado** de la cabecera permite elegir tema **Claro**, **Oscuro** o **Sistema**, densidad **Cómoda** o **Compacta**, y cómo enviar mensajes. Se recuerda la preferencia en cada navegador.
+
+El tablero tiene búsqueda por título y spec y filtros para tarjetas que te necesitan, pendientes de revisión o con errores. Puedes redimensionar el panel de tarjeta arrastrando su borde izquierdo (o enfocarlo con Tab y usar las flechas) y ampliarlo para leer. Las tarjetas en revisión abren el diff directamente.
+
+Los mensajes sin enviar y las specs pendientes de guardar conservan un borrador local. Al leer mensajes antiguos, los nuevos no desplazan la conversación; aparece un botón para volver al final. Crear una tarjeta requiere Enter o **Añadir**; salir del campo no la crea.
 
 ## Requisitos para Merged
 

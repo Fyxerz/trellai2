@@ -42,8 +42,19 @@ export interface Project {
   preview_card_id: string | null;
   /** git remote (to find/clone the repo on another computer) */
   remote_url: string | null;
+  /** tags you can put on this project's cards */
+  tags: Tag[];
   created_at: string;
 }
+
+export interface Tag {
+  id: string;
+  name: string;
+  /** hex color */
+  color: string;
+}
+
+export const TAG_COLORS = ["#f87171", "#fb923c", "#facc15", "#4ade80", "#2dd4bf", "#60a5fa", "#a78bfa", "#f472b6", "#a1a1aa"];
 
 export type ModelRole = "model_prep" | "model_dev" | "model_plan" | "model_do" | "model_ui";
 
@@ -66,10 +77,14 @@ export interface Card {
   files: string[];
   /** Model override for this card (null = project default) */
   model: string | null;
+  /** Exact model of the agent's latest run, e.g. "claude-opus-5-5" or "codex:gpt-5-codex" */
+  agent_model: string | null;
   /** computer that runs this card's agent / holds its worktree (null = none yet) */
   machine: string | null;
   /** another computer asked `machine` to stop the agent */
   stop_req?: string | null;
+  /** ids of the project's tags on this card */
+  tags: string[];
   checkpoints_total: number;
   checkpoints_done: number;
   created_at: string;
@@ -138,6 +153,7 @@ export type ServerEvent =
   | { type: "assistant_message"; message: AssistantMessage }
   | { type: "assistant_status"; mode: "plan" | "do"; running: boolean }
   | { type: "preview"; cardId: string | null }
+  | { type: "tags"; tags: Tag[] }
   /** another computer changed things: reload the board */
   | { type: "sync" };
 

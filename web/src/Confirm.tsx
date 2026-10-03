@@ -1,11 +1,10 @@
 import { TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { Button } from "./ui";
 
 /**
  * In-app confirmation dialog.
  *   if (await confirmDialog({ title: "¿Eliminar?", body: "…", danger: true })) …
- * Enter confirms, Esc cancels.
+ * Enter activates the focused button; destructive dialogs start on Cancelar.
  */
 interface Request {
   title: string;
@@ -45,27 +44,43 @@ export function ConfirmHost() {
     () => current,
   );
   const okRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!req) return;
-    okRef.current?.focus();
+    const previous = document.activeElement as HTMLElement | null;
+    (req.danger && !req.notice ? cancelRef : okRef).current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" || e.key === "Enter") {
+      if (e.key === "Escape") {
         e.preventDefault();
         e.stopImmediatePropagation();
-        close(e.key === "Enter");
+        close(false);
+      } else if (e.key === "Enter") {
+        // Native button activation respects Cancelar as well as Confirmar.
+        e.stopPropagation();
+        if (e.repeat || e.isComposing) e.preventDefault();
+      } else if (e.key === "Tab") {
+        const buttons = Array.from(dialogRef.current?.querySelectorAll<HTMLButtonElement>("button") || []);
+        const first = buttons[0], last = buttons[buttons.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
       }
     };
     window.addEventListener("keydown", onKey, true); // capture: before the app's shortcuts
-    return () => window.removeEventListener("keydown", onKey, true);
+    return () => { window.removeEventListener("keydown", onKey, true); if (previous?.isConnected) previous.focus(); };
   }, [req]);
 
   if (!req) return null;
   return (
     <div data-modal className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={() => close(false)}>
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-sm rounded-2xl bg-zinc-900 p-5 shadow-[var(--shadow-pop)] ring-1 ring-white/[0.08]"
+        className="w-full max-w-sm rounded-2xl bg-zinc-900 p-5 shadow-[var(--shadow-pop)] ring-1 ring-ui-ink/[0.08]"
       >
         <div className="flex items-start gap-3">
           {req.danger && (
@@ -74,15 +89,15 @@ export function ConfirmHost() {
             </span>
           )}
           <div className="min-w-0">
-            <h2 className="text-[15px] font-semibold text-zinc-50">{req.title}</h2>
+            <h2 id="confirm-title" className="text-[15px] font-semibold text-zinc-50">{req.title}</h2>
             {req.body && <p className="mt-1.5 text-[13px] leading-relaxed whitespace-pre-line text-zinc-400">{req.body}</p>}
           </div>
         </div>
         <div className="mt-5 flex justify-end gap-2">
           {!req.notice && (
-            <Button variant="ghost" onClick={() => close(false)}>
+            <button ref={cancelRef} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-ui-ink/5" onClick={() => close(false)}>
               Cancelar <span className="ml-1 font-mono text-[10px] text-zinc-500">esc</span>
-            </Button>
+            </button>
           )}
           <button
             ref={okRef}
@@ -125,9 +140,12 @@ export function notice(title: string, body?: string) {
 /** Toggle "Ver esta rama" for a card, showing any git problem in a dialog. */
 export async function togglePreview(card: { id: string; project_id: string; title: string }, active: boolean) {
   const { api } = await import("./api");
+  const { reportInfo } = await import("./notifications");
   try {
-    if (active) await api(`/api/projects/${card.project_id}/preview/stop`, {});
-    else await api(`/api/cards/${card.id}/preview`, {});
+    const r = active
+      ? await api<{ message?: string }>(`/api/projects/${card.project_id}/preview/stop`, {})
+      : await api<{ message?: string }>(`/api/cards/${card.id}/preview`, {});
+    if (r.message) reportInfo(r.message);
   } catch (e) {
     await notice(active ? "No pude volver a tu rama" : "No pude cambiar a la rama", (e as Error).message);
   }

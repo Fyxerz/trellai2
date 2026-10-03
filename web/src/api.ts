@@ -1,7 +1,19 @@
 import { useEffect, useRef, useState } from "react";
+import { flushDraft } from "./drafts";
 import type { Card, Checkpoint, Message, Note, Project, Question, ServerEvent } from "../../shared/types";
 
 export async function api<T = unknown>(path: string, body?: unknown, method?: string): Promise<T> {
+  const transition = path.match(/^\/api\/cards\/([^/]+)\/(?:move|copy)$/);
+  if (transition && !(await flushDraft(transition[1]))) {
+    // Recover a draft after a reload, even if the editor has not been opened yet.
+    const key = `trellai:spec-draft:${transition[1]}`;
+    let draft: string | null = null;
+    try { draft = localStorage.getItem(key); } catch { /* optional storage */ }
+    if (draft !== null) {
+      await api(`/api/cards/${transition[1]}`, { spec: draft }, "PATCH");
+      try { if (localStorage.getItem(key) === draft) localStorage.removeItem(key); } catch { /* optional storage */ }
+    }
+  }
   const r = await fetch(path, {
     method: method ?? (body !== undefined ? "POST" : "GET"),
     headers: body !== undefined ? { "content-type": "application/json" } : undefined,

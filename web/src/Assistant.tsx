@@ -1,9 +1,12 @@
+import { X } from "lucide-react";
+import { useMessageDraft, useChatScroll } from "./chat";
+import { reportError } from "./notifications";
 import { useEffect, useRef, useState } from "react";
 import type { AssistantMessage, Project } from "../../shared/types";
 import { ModelPicker } from "./models";
 import { confirmDialog } from "./Confirm";
 import { api, type Board } from "./api";
-import { Button, chatKeyDown, Markdown, Spinner } from "./ui";
+import { Button, ChatHint, chatKeyDown, Markdown, Spinner } from "./ui";
 
 export type AssistantMode = AssistantMessage["mode"];
 
@@ -87,6 +90,7 @@ export function AssistantPanel({
   setMode,
   project,
   onProjectChange,
+  onClose,
 }: {
   projectId: string;
   board: Board;
@@ -95,10 +99,11 @@ export function AssistantPanel({
   setMode: (m: AssistantMode) => void;
   project?: Project;
   onProjectChange: () => void;
+  onClose: () => void;
 }) {
   const roleKey = mode === "plan" ? "model_plan" : "model_do";
   return (
-    <aside className="flex h-full w-[min(480px,100vw)] shrink-0 flex-col border-l border-white/[0.06] bg-[#0f1014] shadow-[-24px_0_48px_-24px_rgb(0_0_0/0.6)]">
+    <aside className="work-panel flex h-full w-[min(480px,100vw)] shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel shadow-[-24px_0_48px_-24px_rgb(0_0_0/0.6)]">
       <div className="flex gap-1 border-b border-zinc-800 px-3 pt-2">
         {(["plan", "do"] as AssistantMode[]).map((m) => (
           <button
@@ -121,6 +126,7 @@ export function AssistantPanel({
             }}
           />
         )}
+        <button onClick={onClose} aria-label="Cerrar asistente" className="mb-1 rounded-lg p-2 text-zinc-400 hover:bg-ui-ink/5"><X className="h-4 w-4" /></button>
       </div>
       <Chat key={mode} projectId={projectId} board={board} onOpenCard={onOpenCard} mode={mode} />
     </aside>
@@ -130,20 +136,22 @@ export function AssistantPanel({
 function Chat({ projectId, board, onOpenCard, mode }: { projectId: string; board: Board; onOpenCard: (id: string) => void; mode: AssistantMode }) {
   const { messages, setMessages, running } = useAssistant(board, projectId, mode);
   const copy = COPY[mode];
-  const [text, setText] = useState("");
-  const end = useRef<HTMLDivElement>(null);
+  const { text, setText, current } = useMessageDraft(`assistant-draft:${projectId}:${mode}`);
+  const scroll = useChatScroll(messages.length);
+  const busy = useRef(false);
+  const [sending, setSending] = useState(false);
   const dictation = useDictation(setText);
-  useEffect(() => end.current?.scrollIntoView({ block: "end" }), [messages.length, running]);
+
 
   const send = async () => {
-    const t = text.trim();
-    if (!t) return;
+    const t = current.current.trim();
+    if (!t || busy.current) return;
     if (dictation.listening) dictation.stop();
-    setText("");
-    await api(`/api/projects/${projectId}/assistant`, { text: t, mode }).catch((e) => {
-      alert(e.message);
-      setText(t);
-    });
+    busy.current = true; setSending(true);
+    const submitted = current.current;
+    try { await api(`/api/projects/${projectId}/assistant`, { text: t, mode }); if (current.current === submitted) setText(""); }
+    catch (e) { reportError((e as Error).message); }
+    finally { busy.current = false; setSending(false); }
   };
 
   return (
@@ -165,7 +173,7 @@ function Chat({ projectId, board, onOpenCard, mode }: { projectId: string; board
         )}
       </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+      <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3">
         {messages.length === 0 && mode === "do" && (
           <div className="space-y-2 pt-6 text-sm text-zinc-500">
             <p>Para lo que no merece una tarjeta. Por ejemplo:</p>
@@ -203,12 +211,14 @@ function Chat({ projectId, board, onOpenCard, mode }: { projectId: string; board
             </button>
           </div>
         )}
-        <div ref={end} />
+        <div ref={scroll.end} />
       </div>
 
+      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300">Nuevos mensajes ↓</button>}
       <div className="border-t border-zinc-800 p-3">
         <div className={`flex items-end gap-2 rounded-lg bg-zinc-900 p-1.5 ring-1 ${dictation.listening ? "ring-red-500/60" : "ring-zinc-800 focus-within:ring-indigo-600"}`}>
           <textarea
+            aria-label="Mensaje al asistente"
             data-kb="assistant"
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -227,14 +237,14 @@ function Chat({ projectId, board, onOpenCard, mode }: { projectId: string; board
                 {dictation.listening ? "■" : "🎙"}
               </button>
             )}
-            <Button variant="primary" onClick={send} disabled={!text.trim()} className="!px-2.5 !py-1.5">
+            <Button variant="primary" onClick={send} disabled={!text.trim() || sending} className="!px-2.5 !py-1.5">
               ↑
             </Button>
           </div>
         </div>
-        <p className="mt-1 text-[10px] text-zinc-600">
-          Enter envía · ⌘Enter nueva línea ·{" "}
-          {dictation.supported ? "🎙 para dictar" : "para dictar usa el dictado de macOS (pulsa dos veces fn / 🌐)"}
+        <p className="mt-2 text-xs text-zinc-500">
+          <ChatHint /> ·{" "}
+          {dictation.supported ? "🎙 para dictar" : "puedes usar el dictado del sistema"}
         </p>
       </div>
     </>
@@ -245,7 +255,7 @@ function Row({ m, onOpenCard }: { m: AssistantMessage; onOpenCard: (id: string) 
   if (m.role === "user")
     return (
       <div className="flex justify-end">
-        <div className="max-w-[88%] rounded-lg bg-indigo-500/15 px-3 py-2 text-sm whitespace-pre-wrap text-indigo-50 ring-1 ring-indigo-500/20">{m.content}</div>
+        <div className="max-w-[88%] rounded-lg bg-indigo-500/15 px-3 py-2 text-sm whitespace-pre-wrap text-zinc-100 ring-1 ring-indigo-500/20">{m.content}</div>
       </div>
     );
   if (m.role === "tool")

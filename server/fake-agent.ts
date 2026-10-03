@@ -8,7 +8,7 @@
  *   contains "shared"  → writes to SHARED.md (to provoke merge conflicts)
  */
 import { execSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RunOptions, makeToolkit } from "./agents.js";
 import { slugify } from "./git.js";
@@ -89,7 +89,7 @@ function rebaseResolvingConflicts(cwd: string, base: string) {
   for (let i = 0; i < 20; i++) {
     const file = join(cwd, "SHARED.md");
     if (existsSync(file)) {
-      const text = execSync(`cat SHARED.md`, { cwd }).toString();
+      const text = readFileSync(file, "utf8");
       writeFileSync(file, text.split("\n").filter((l) => !/^(<<<<<<<|=======|>>>>>>>)/.test(l)).join("\n"));
     }
     run("git add -A");
