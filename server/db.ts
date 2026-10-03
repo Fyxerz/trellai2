@@ -3,11 +3,14 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import type {
+  AssistantMessage,
   Card,
+  Checkpoint,
   CardStatus,
   Column,
   Message,
   MessageRole,
+  ModelRole,
   Note,
   Project,
   Question,
@@ -69,10 +72,61 @@ CREATE TABLE IF NOT EXISTS notes (
   content TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS checkpoints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  done INTEGER NOT NULL DEFAULT 0,
+  position REAL NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT 'user',
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS assistant_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  card_id TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_project ON assistant_messages(project_id);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_card ON checkpoints(card_id);
 CREATE INDEX IF NOT EXISTS idx_cards_project ON cards(project_id);
 CREATE INDEX IF NOT EXISTS idx_messages_card ON messages(card_id);
 CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id);
 `);
+
+// Columns added after the first release.
+function addColumn(table: string, column: string, ddl: string) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+addColumn("projects", "assistant_session_id", "assistant_session_id TEXT");
+addColumn("projects", "assistant_pending", "assistant_pending TEXT NOT NULL DEFAULT '[]'");
+addColumn("projects", "direct_session_id", "direct_session_id TEXT");
+addColumn("projects", "direct_pending", "direct_pending TEXT NOT NULL DEFAULT '[]'");
+addColumn("assistant_messages", "mode", "mode TEXT NOT NULL DEFAULT 'plan'");
+for (const role of ["model_prep", "model_dev", "model_plan", "model_do"])
+  addColumn("projects", role, `${role} TEXT NOT NULL DEFAULT 'claude'`);
+addColumn("projects", "model_ui", "model_ui TEXT");
+addColumn("cards", "model", "model TEXT");
+addColumn("projects", "preview_card_id", "preview_card_id TEXT");
+addColumn("projects", "preview_prev", "preview_prev TEXT");
+addColumn("projects", "preview_sha", "preview_sha TEXT");
+addColumn("projects", "remote_url", "remote_url TEXT");
+/** Which computer runs this card's agent and holds its worktree. */
+addColumn("cards", "machine", "machine TEXT");
+/** Another computer asked the owner to stop the agent (value: the owner's name). */
+addColumn("cards", "stop_req", "stop_req TEXT");
+
+/** Tables whose rows use a local INTEGER id; `uid` identifies them across computers. */
+export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages"] as const;
+for (const t of UID_TABLES) {
+  addColumn(t, "uid", "uid TEXT");
+  db.exec(`UPDATE ${t} SET uid = lower(hex(randomblob(8))) WHERE uid IS NULL`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_${t}_uid ON ${t}(uid)`);
+}
+const uid = () => nanoid(14);
 
 const now = () => new Date().toISOString();
 
@@ -86,12 +140,25 @@ export function getProject(id: string): Project | undefined {
   return db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as Project | undefined;
 }
 
-export function createProject(p: { name: string; repo_path: string; base_branch: string }): Project {
-  const project: Project = { id: nanoid(10), created_at: now(), ...p };
+export function createProject(p: { name: string; repo_path: string; base_branch: string; remote_url?: string | null }): Project {
+  const id = nanoid(10);
   db.prepare(
-    "INSERT INTO projects (id, name, repo_path, base_branch, created_at) VALUES (@id, @name, @repo_path, @base_branch, @created_at)",
-  ).run(project);
-  return project;
+    "INSERT INTO projects (id, name, repo_path, base_branch, remote_url, created_at) VALUES (@id, @name, @repo_path, @base_branch, @remote_url, @created_at)",
+  ).run({ id, created_at: now(), remote_url: null, ...p });
+  return getProject(id)!;
+}
+
+export function updateProject(
+  id: string,
+  patch: Partial<Pick<Project, "name" | "base_branch" | "repo_path" | "remote_url" | ModelRole>>,
+): Project {
+  const allowed = ["name", "base_branch", "repo_path", "remote_url", "model_prep", "model_dev", "model_plan", "model_do", "model_ui"];
+  const entries = Object.entries(patch).filter(([k, v]) => allowed.includes(k) && v !== undefined);
+  if (entries.length) {
+    const sets = entries.map(([k]) => `${k} = @${k}`).join(", ");
+    db.prepare(`UPDATE projects SET ${sets} WHERE id = @id`).run({ id, ...Object.fromEntries(entries) });
+  }
+  return getProject(id)!;
 }
 
 export function deleteProject(id: string) {
@@ -101,6 +168,12 @@ export function deleteProject(id: string) {
 // ---------- cards ----------
 
 type CardRow = Omit<Card, "files"> & { files: string; pending_input: string };
+
+/** Card columns plus checkpoint counters. */
+const CARD_SELECT = `SELECT c.*,
+  (SELECT COUNT(*) FROM checkpoints k WHERE k.card_id = c.id) AS checkpoints_total,
+  (SELECT COUNT(*) FROM checkpoints k WHERE k.card_id = c.id AND k.done = 1) AS checkpoints_done
+  FROM cards c`;
 
 function toCard(row: CardRow | undefined): Card | undefined {
   if (!row) return undefined;
@@ -118,20 +191,20 @@ function safeJson<T>(s: string, fallback: T): T {
 
 export function listCards(projectId: string): Card[] {
   const rows = db
-    .prepare('SELECT * FROM cards WHERE project_id = ? ORDER BY "column", position')
+    .prepare(`${CARD_SELECT} WHERE c.project_id = ? ORDER BY c."column", c.position`)
     .all(projectId) as CardRow[];
   return rows.map((r) => toCard(r)!);
 }
 
 export function cardsInColumn(projectId: string, column: Column): Card[] {
   const rows = db
-    .prepare('SELECT * FROM cards WHERE project_id = ? AND "column" = ? ORDER BY position')
+    .prepare(`${CARD_SELECT} WHERE c.project_id = ? AND c."column" = ? ORDER BY c.position`)
     .all(projectId, column) as CardRow[];
   return rows.map((r) => toCard(r)!);
 }
 
 export function getCard(id: string): Card | undefined {
-  return toCard(db.prepare("SELECT * FROM cards WHERE id = ?").get(id) as CardRow | undefined);
+  return toCard(db.prepare(`${CARD_SELECT} WHERE c.id = ?`).get(id) as CardRow | undefined);
 }
 
 export function createCard(c: { project_id: string; title: string; spec?: string; column?: Column }): Card {
@@ -159,7 +232,10 @@ export interface CardPatch {
   worktree?: string | null;
   session_id?: string | null;
   prep_session_id?: string | null;
+  model?: string | null;
   files?: string[];
+  machine?: string | null;
+  stop_req?: string | null;
 }
 
 export function updateCard(id: string, patch: CardPatch): Card {
@@ -212,13 +288,13 @@ export function takePendingInput(id: string): string[] {
 export function addMessage(cardId: string, role: MessageRole, content: string): Message {
   const created_at = now();
   const r = db
-    .prepare("INSERT INTO messages (card_id, role, content, created_at) VALUES (?, ?, ?, ?)")
-    .run(cardId, role, content, created_at);
+    .prepare("INSERT INTO messages (uid, card_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)")
+    .run(uid(), cardId, role, content, created_at);
   return { id: Number(r.lastInsertRowid), card_id: cardId, role, content, created_at };
 }
 
 export function listMessages(cardId: string): Message[] {
-  return db.prepare("SELECT * FROM messages WHERE card_id = ? ORDER BY id").all(cardId) as Message[];
+  return db.prepare("SELECT * FROM messages WHERE card_id = ? ORDER BY created_at, id").all(cardId) as Message[];
 }
 
 // ---------- questions ----------
@@ -226,7 +302,8 @@ export function listMessages(cardId: string): Message[] {
 type QuestionRow = Omit<Question, "options"> & { options: string };
 
 export function addQuestion(cardId: string, question: string, options: string[]) {
-  db.prepare("INSERT INTO questions (card_id, question, options, created_at) VALUES (?, ?, ?, ?)").run(
+  db.prepare("INSERT INTO questions (uid, card_id, question, options, created_at) VALUES (?, ?, ?, ?, ?)").run(
+    uid(),
     cardId,
     question,
     JSON.stringify(options),
@@ -253,8 +330,8 @@ const NOTE_SELECT = `SELECT n.*, c.title AS card_title FROM notes n LEFT JOIN ca
 
 export function addNote(projectId: string, cardId: string | null, content: string): Note {
   const r = db
-    .prepare("INSERT INTO notes (project_id, card_id, content, created_at) VALUES (?, ?, ?, ?)")
-    .run(projectId, cardId, content, now());
+    .prepare("INSERT INTO notes (uid, project_id, card_id, content, created_at) VALUES (?, ?, ?, ?, ?)")
+    .run(uid(), projectId, cardId, content, now());
   return db.prepare(`${NOTE_SELECT} WHERE n.id = ?`).get(r.lastInsertRowid) as Note;
 }
 
@@ -276,4 +353,102 @@ export function notesSince(projectId: string, cardId: string, afterId: number): 
 export function lastNoteId(projectId: string): number {
   const r = db.prepare("SELECT MAX(id) AS m FROM notes WHERE project_id = ?").get(projectId) as { m: number | null };
   return r.m ?? 0;
+}
+
+// ---------- checkpoints ----------
+
+type CheckpointRow = Omit<Checkpoint, "done"> & { done: number };
+const toCheckpoint = (r: CheckpointRow): Checkpoint => ({ ...r, done: !!r.done });
+
+export function listCheckpoints(cardId: string): Checkpoint[] {
+  return (
+    db.prepare("SELECT * FROM checkpoints WHERE card_id = ? ORDER BY position, id").all(cardId) as CheckpointRow[]
+  ).map(toCheckpoint);
+}
+
+export function getCheckpoint(id: number): Checkpoint | undefined {
+  const r = db.prepare("SELECT * FROM checkpoints WHERE id = ?").get(id) as CheckpointRow | undefined;
+  return r && toCheckpoint(r);
+}
+
+export function addCheckpoint(cardId: string, text: string, source: "user" | "agent" = "user"): Checkpoint {
+  const max = db.prepare("SELECT MAX(position) AS m FROM checkpoints WHERE card_id = ?").get(cardId) as { m: number | null };
+  const r = db
+    .prepare("INSERT INTO checkpoints (uid, card_id, text, position, source, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(uid(), cardId, text, (max.m ?? -1) + 1, source, now());
+  return getCheckpoint(Number(r.lastInsertRowid))!;
+}
+
+export function updateCheckpoint(id: number, patch: { text?: string; done?: boolean }): Checkpoint | undefined {
+  if (patch.text !== undefined) db.prepare("UPDATE checkpoints SET text = ? WHERE id = ?").run(patch.text, id);
+  if (patch.done !== undefined) db.prepare("UPDATE checkpoints SET done = ? WHERE id = ?").run(patch.done ? 1 : 0, id);
+  return getCheckpoint(id);
+}
+
+export function deleteCheckpoint(id: number) {
+  db.prepare("DELETE FROM checkpoints WHERE id = ?").run(id);
+}
+
+export function moveCheckpoint(id: number, index: number) {
+  const cp = getCheckpoint(id);
+  if (!cp) return;
+  const others = listCheckpoints(cp.card_id).filter((c) => c.id !== id);
+  const i = Math.max(0, Math.min(index, others.length));
+  const ordered = [...others.slice(0, i), cp, ...others.slice(i)];
+  const stmt = db.prepare("UPDATE checkpoints SET position = ? WHERE id = ?");
+  db.transaction(() => ordered.forEach((c, pos) => stmt.run(pos, c.id)))();
+}
+
+// ---------- project assistant ----------
+// Two conversations per project: "plan" (turns ideas into cards) and "do" (small direct changes).
+
+export type AssistantMode = AssistantMessage["mode"];
+const SESSION_COL = { plan: "assistant_session_id", do: "direct_session_id" } as const;
+const PENDING_COL = { plan: "assistant_pending", do: "direct_pending" } as const;
+
+export function addAssistantMessage(
+  projectId: string,
+  mode: AssistantMode,
+  role: AssistantMessage["role"],
+  content: string,
+  cardId: string | null = null,
+): AssistantMessage {
+  const r = db
+    .prepare("INSERT INTO assistant_messages (uid, project_id, mode, role, content, card_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(uid(), projectId, mode, role, content, cardId, now());
+  return db.prepare("SELECT * FROM assistant_messages WHERE id = ?").get(r.lastInsertRowid) as AssistantMessage;
+}
+
+export function listAssistantMessages(projectId: string, mode: AssistantMode): AssistantMessage[] {
+  return db
+    .prepare("SELECT * FROM assistant_messages WHERE project_id = ? AND mode = ? ORDER BY created_at, id")
+    .all(projectId, mode) as AssistantMessage[];
+}
+
+export function clearAssistant(projectId: string, mode: AssistantMode) {
+  db.prepare("DELETE FROM assistant_messages WHERE project_id = ? AND mode = ?").run(projectId, mode);
+  db.prepare(`UPDATE projects SET ${SESSION_COL[mode]} = NULL, ${PENDING_COL[mode]} = '[]' WHERE id = ?`).run(projectId);
+}
+
+export function getAssistantSession(projectId: string, mode: AssistantMode): string | null {
+  const r = db.prepare(`SELECT ${SESSION_COL[mode]} AS s FROM projects WHERE id = ?`).get(projectId) as { s: string | null } | undefined;
+  return r?.s ?? null;
+}
+
+export function setAssistantSession(projectId: string, mode: AssistantMode, sessionId: string | null) {
+  db.prepare(`UPDATE projects SET ${SESSION_COL[mode]} = ? WHERE id = ?`).run(sessionId, projectId);
+}
+
+export function pushAssistantPending(projectId: string, mode: AssistantMode, text: string) {
+  const r = db.prepare(`SELECT ${PENDING_COL[mode]} AS p FROM projects WHERE id = ?`).get(projectId) as { p: string };
+  const list = safeJson<string[]>(r.p, []);
+  list.push(text);
+  db.prepare(`UPDATE projects SET ${PENDING_COL[mode]} = ? WHERE id = ?`).run(JSON.stringify(list), projectId);
+}
+
+export function takeAssistantPending(projectId: string, mode: AssistantMode): string[] {
+  const r = db.prepare(`SELECT ${PENDING_COL[mode]} AS p FROM projects WHERE id = ?`).get(projectId) as { p: string } | undefined;
+  if (!r) return [];
+  db.prepare(`UPDATE projects SET ${PENDING_COL[mode]} = '[]' WHERE id = ?`).run(projectId);
+  return safeJson<string[]>(r.p, []);
 }

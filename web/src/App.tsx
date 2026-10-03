@@ -1,18 +1,74 @@
 import { useEffect, useRef, useState } from "react";
-import type { Project } from "../../shared/types";
+import { COLUMNS, type Column, type Project } from "../../shared/types";
 import { api, useBoard, useProjects, type Board as BoardState } from "./api";
-import { Board } from "./Board";
+import { AssistantPanel, type AssistantMode } from "./Assistant";
+import { Board, CAN_ADD, columnCards, moveCard } from "./Board";
 import { CardPanel } from "./CardPanel";
-import { Button, timeAgo } from "./ui";
+import { FolderPicker } from "./FolderPicker";
+import { Help } from "./Help";
+import { ConfirmHost, confirmDeleteCard, togglePreview } from "./Confirm";
+import { Home } from "./Home";
+import {
+  ChevronRight,
+  Eye,
+  GitBranch,
+  Keyboard,
+  MessageCircleQuestion,
+  PanelLeft,
+  Radio,
+  SlidersHorizontal,
+  Sparkles,
+} from "lucide-react";
+import { ProjectSettings } from "./models";
+import { Sidebar } from "./Sidebar";
+import { BranchStatus, SyncIndicator, UnlinkedBanner } from "./SyncUI";
+import { Button, Kbd, ProjectAvatar, timeAgo } from "./ui";
 
 const LAST_PROJECT = "trellai:project";
+const SIDEBAR_OPEN = "trellai:sidebar";
+const VIEW = "trellai:view";
+
+const store = {
+  get(k: string) {
+    try {
+      return localStorage.getItem(k);
+    } catch {
+      return null;
+    }
+  },
+  set(k: string, v: string) {
+    try {
+      localStorage.setItem(k, v);
+    } catch {
+      /* ignore */
+    }
+  },
+};
+
+export function isTyping(e: KeyboardEvent) {
+  const t = e.target as HTMLElement | null;
+  return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+}
+
+type Zone = "board" | "sidebar";
 
 export default function App() {
   const { projects, reload } = useProjects();
-  const [projectId, setProjectId] = useState<string | null>(() => localStorage.getItem(LAST_PROJECT));
+  const [projectId, setProjectId] = useState<string | null>(() => store.get(LAST_PROJECT));
   const [showNew, setShowNew] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [showAssistant, setShowAssistant] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [assistantMode, setAssistantMode] = useState<AssistantMode>("plan");
   const [selected, setSelected] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(() => store.get(SIDEBAR_OPEN) !== "0");
+  const [zone, setZone] = useState<Zone>("board");
+  const [sideCursor, setSideCursor] = useState(0);
+  const [cursor, setCursor] = useState<{ col: Column; id: string | null }>({ col: "plan", id: null });
+  const [adding, setAdding] = useState<Column | null>(null);
+  const [view, setView] = useState<"home" | "board">(() => (store.get(VIEW) === "home" ? "home" : "board"));
+  const [homeCursor, setHomeCursor] = useState(0);
   const board = useBoard(projectId);
 
   useEffect(() => {
@@ -21,71 +77,414 @@ export default function App() {
     else if (!projects.some((p) => p.id === projectId)) setProjectId(projects[0].id);
   }, [projects]);
   useEffect(() => {
-    if (projectId) localStorage.setItem(LAST_PROJECT, projectId);
+    if (projectId) store.set(LAST_PROJECT, projectId);
     setSelected(null);
+    setAdding(null);
+    setCursor((c) => ({ col: c.col, id: null }));
   }, [projectId]);
+  useEffect(() => store.set(SIDEBAR_OPEN, sidebarOpen ? "1" : "0"), [sidebarOpen]);
+  useEffect(() => store.set(VIEW, view), [view]);
+  // "Ver esta rama" changes live on the project row
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setSelected(null);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    const off = board.on((e) => {
+      if (e.type === "preview" || e.type === "sync") reload();
+    });
+    return () => void off();
+  }, [projectId]);
+
+  const openProject = (id: string) => {
+    setProjectId(id);
+    setView("board");
+    setZone("board");
+  };
+  const goHome = () => {
+    setView("home");
+    setSelected(null);
+    setShowAssistant(false);
+    setShowNotes(false);
+    setZone("board");
+    setHomeCursor(Math.max(0, projects?.findIndex((p) => p.id === projectId) ?? 0));
+  };
 
   const project = projects?.find((p) => p.id === projectId);
+  const previewCard = project?.preview_card_id ? board.cards[project.preview_card_id] : undefined;
   const card = selected ? board.cards[selected] : undefined;
   const cards = Object.values(board.cards);
   const running = cards.filter((c) => c.status === "running").length;
   const waiting = cards.filter((c) => c.status === "waiting").length;
 
+  // ------------------------------------------------------------------ keyboard
+  // Everything the handler needs, read through a ref so the listener is attached once.
+  const st = useRef({ projects, projectId, zone, sideCursor, cursor, board, selected, sidebarOpen, showHelp, showNew, adding, view, homeCursor });
+  st.current = { projects, projectId, zone, sideCursor, cursor, board, selected, sidebarOpen, showHelp, showNew, adding, view, homeCursor };
+  const actions = useRef({ openProject, goHome });
+  actions.current = { openProject, goHome };
+  const pendingG = useRef(0);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const s = st.current;
+      const mod = e.metaKey || e.ctrlKey;
+      const key = e.key;
+
+      // ⌘B works everywhere, even while typing
+      if (mod && key.toLowerCase() === "b") {
+        e.preventDefault();
+        if (s.sidebarOpen && s.zone === "sidebar") {
+          setSidebarOpen(false);
+          setZone("board");
+        } else {
+          setSidebarOpen(true);
+          setZone("sidebar");
+          setSideCursor(Math.max(0, s.projects?.findIndex((p) => p.id === s.projectId) ?? 0));
+        }
+        return;
+      }
+      if (isTyping(e)) {
+        if (key === "Escape") (e.target as HTMLElement).blur();
+        return;
+      }
+      if (s.showNew || document.querySelector("[data-modal]")) {
+        if (key === "Escape") {
+          setShowSettings(false);
+          setShowHelp(false);
+        }
+        return;
+      }
+      if (s.showHelp) {
+        if (key === "Escape" || key === "?") setShowHelp(false);
+        return;
+      }
+      if (mod || e.altKey) {
+        // ⌘N is reserved by most browsers, but try anyway (works in app-mode windows)
+        if (mod && key.toLowerCase() === "n" && !e.shiftKey) {
+          e.preventDefault();
+          newCard();
+        }
+        return;
+      }
+
+      if (key === "?") return setShowHelp(true);
+      if (key === "p") {
+        if (s.view === "home" && s.projectId) actions.current.openProject(s.projectId);
+        else actions.current.goHome();
+        return;
+      }
+
+      // ---------------- projects overview
+      if (s.view === "home" && s.zone !== "sidebar") {
+        const n = s.projects?.length ?? 0;
+        if (!n) return;
+        if (["j", "l", "ArrowDown", "ArrowRight"].includes(key)) return e.preventDefault(), setHomeCursor((i) => Math.min(n - 1, i + 1));
+        if (["k", "h", "ArrowUp", "ArrowLeft"].includes(key)) return e.preventDefault(), setHomeCursor((i) => Math.max(0, i - 1));
+        if (key === "Enter" || key === "o") return actions.current.openProject(s.projects![s.homeCursor].id);
+        if (/^[1-9]$/.test(key) && Number(key) <= n) return actions.current.openProject(s.projects![Number(key) - 1].id);
+        if (key === "n") return setShowNew(true);
+        if (key === "[" || key === "]") return;
+        if (key !== "t" && key !== "d" && key !== "a") return;
+      }
+      if (key === "[" || key === "]") return switchProject(key === "]" ? 1 : -1);
+      if (key === "a") {
+        if (st.current.view === "home") setView("board");
+        setShowAssistant(false);
+        return setShowNotes((v) => !v);
+      }
+      if (key === "t" || key === "d") {
+        e.preventDefault();
+        if (st.current.view === "home") setView("board");
+        setShowNotes(false);
+        setSelected(null);
+        setShowAssistant(true);
+        setAssistantMode(key === "t" ? "plan" : "do");
+        setTimeout(() => document.querySelector<HTMLElement>('[data-kb="assistant"]')?.focus(), 30);
+        return;
+      }
+
+      // ---------------- sidebar
+      if (s.zone === "sidebar" && s.projects?.length) {
+        const n = s.projects.length;
+        if (key === "j" || key === "ArrowDown") return e.preventDefault(), setSideCursor((i) => Math.min(n - 1, i + 1));
+        if (key === "k" || key === "ArrowUp") return e.preventDefault(), setSideCursor((i) => Math.max(0, i - 1));
+        if (key === "Enter" || key === "l" || key === "ArrowRight") return actions.current.openProject(s.projects[s.sideCursor].id);
+        if (/^[1-9]$/.test(key) && Number(key) <= n) return actions.current.openProject(s.projects[Number(key) - 1].id);
+        if (key === "n") return setShowNew(true);
+        if (key === "Escape" || key === "h" || key === "ArrowLeft") return setZone("board");
+        return;
+      }
+
+      // ---------------- board
+      const cur = resolveCursor();
+      const colIdx = COLUMNS.indexOf(cur.col);
+      const list = columnCards(s.board.cards, cur.col);
+      const follow = (id: string | null) => {
+        if (s.selected && id) setSelected(id);
+      };
+      const go = (col: Column, id: string | null) => {
+        setCursor({ col, id });
+        follow(id);
+      };
+
+      if (key === "Escape") {
+        if (s.selected) setSelected(null);
+        return;
+      }
+      if (e.shiftKey && (key === "H" || key === "L")) {
+        if (!cur.id) return;
+        const to = COLUMNS[colIdx + (key === "L" ? 1 : -1)];
+        if (!to) return;
+        moveCard(s.board, cur.id, to, Number.MAX_SAFE_INTEGER);
+        setCursor({ col: to, id: cur.id });
+        return;
+      }
+      if (e.shiftKey && (key === "J" || key === "K")) {
+        if (!cur.id) return;
+        const i = list.findIndex((c) => c.id === cur.id);
+        const j = i + (key === "J" ? 1 : -1);
+        if (j < 0 || j >= list.length) return;
+        moveCard(s.board, cur.id, cur.col, j);
+        return;
+      }
+      if (key === "h" || key === "l" || key === "ArrowLeft" || key === "ArrowRight") {
+        e.preventDefault();
+        const dir = key === "l" || key === "ArrowRight" ? 1 : -1;
+        const col = COLUMNS[Math.max(0, Math.min(COLUMNS.length - 1, colIdx + dir))];
+        const target = columnCards(s.board.cards, col);
+        const pos = Math.max(0, list.findIndex((c) => c.id === cur.id));
+        go(col, target[Math.min(pos, target.length - 1)]?.id ?? null);
+        return;
+      }
+      if (key === "j" || key === "k" || key === "ArrowDown" || key === "ArrowUp") {
+        e.preventDefault();
+        if (!list.length) return;
+        const i = list.findIndex((c) => c.id === cur.id);
+        const dir = key === "j" || key === "ArrowDown" ? 1 : -1;
+        const next = i === -1 ? 0 : Math.max(0, Math.min(list.length - 1, i + dir));
+        go(cur.col, list[next].id);
+        return;
+      }
+      if (key === "g" || key === "G") {
+        if (!list.length) return;
+        if (key === "G") return go(cur.col, list[list.length - 1].id);
+        if (Date.now() - pendingG.current < 500) go(cur.col, list[0].id);
+        else pendingG.current = Date.now();
+        return;
+      }
+      if (key === "Enter" || key === "o") {
+        if (cur.id) setSelected(cur.id);
+        return;
+      }
+      if (key === "n") {
+        e.preventDefault();
+        newCard();
+        return;
+      }
+      if (key === "v" && cur.id) {
+        const target = s.board.cards[cur.id];
+        const proj = s.projects?.find((p) => p.id === s.projectId);
+        if (target?.branch) togglePreview(target, proj?.preview_card_id === target.id);
+        return;
+      }
+      if ((key === "x" || key === "Delete" || key === "Backspace") && cur.id) {
+        e.preventDefault();
+        const target = s.board.cards[cur.id];
+        if (!target) return;
+        const i = list.findIndex((c) => c.id === cur.id);
+        const next = list[i + 1] ?? list[i - 1];
+        confirmDeleteCard(target).then((ok) => {
+          if (!ok) return;
+          api(`/api/cards/${target.id}`, undefined, "DELETE").catch((err) => alert(err.message));
+          if (st.current.selected === target.id) setSelected(null);
+          setCursor({ col: cur.col, id: next?.id ?? null });
+        });
+      }
+    };
+
+    /** Cursor with a valid id (cards move under our feet when agents finish). */
+    function resolveCursor() {
+      const s = st.current;
+      const c = s.cursor;
+      const list = columnCards(s.board.cards, c.col);
+      if (c.id && list.some((x) => x.id === c.id)) return c;
+      return { col: c.col, id: list[0]?.id ?? null };
+    }
+
+    function newCard() {
+      const s = st.current;
+      if (!s.projectId) return;
+      const col = CAN_ADD.has(s.cursor.col) ? s.cursor.col : "plan";
+      setZone("board");
+      setCursor({ col, id: null });
+      setAdding(col);
+    }
+
+    function switchProject(dir: number) {
+      const s = st.current;
+      if (!s.projects?.length) return;
+      const i = s.projects.findIndex((p) => p.id === s.projectId);
+      const next = s.projects[(i + dir + s.projects.length) % s.projects.length];
+      setProjectId(next.id);
+      setSideCursor(s.projects.indexOf(next));
+    }
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const inBoard = view === "board" && !!project;
+
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 px-4 py-3">
-        <div className="flex items-center gap-2">
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-white/[0.05] px-3">
+        <button
+          onClick={() => setSidebarOpen((v) => !v)}
+          className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200"
+          title="Barra de proyectos (⌘B)"
+        >
+          <PanelLeft className="h-4 w-4" />
+        </button>
+        <button onClick={goHome} className="flex items-center gap-2 rounded-lg px-1.5 py-1 transition hover:bg-white/[0.04]" title="Todos los proyectos (p)">
           <Logo />
-          <span className="font-semibold tracking-tight text-zinc-100">Trellai</span>
-        </div>
-        {projects && projects.length > 0 && (
-          <select
-            value={projectId ?? ""}
-            onChange={(e) => (e.target.value === "__new" ? setShowNew(true) : setProjectId(e.target.value))}
-            className="rounded-md bg-zinc-900 px-2 py-1.5 text-sm ring-1 ring-zinc-800 outline-none"
-          >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-            <option value="__new">+ Nuevo proyecto…</option>
-          </select>
+          <span className="text-[14px] font-semibold tracking-tight text-zinc-100">Trellai</span>
+        </button>
+        {inBoard && (
+          <>
+            <ChevronRight className="h-3.5 w-3.5 text-zinc-600" />
+            <ProjectAvatar id={project!.id} name={project!.name} size={20} />
+            <span className="text-[13.5px] font-medium text-zinc-100">{project!.name}</span>
+            <BranchStatus project={project!} board={board} />
+          </>
         )}
-        {project && (
-          <span className="hidden truncate font-mono text-xs text-zinc-500 md:inline">
-            {project.repo_path} · {project.base_branch}
-          </span>
+        {view === "home" && (
+          <>
+            <ChevronRight className="h-3.5 w-3.5 text-zinc-600" />
+            <span className="text-[13.5px] font-medium text-zinc-300">Proyectos</span>
+          </>
         )}
-        <div className="ml-auto flex items-center gap-3 text-xs">
-          {running > 0 && <span className="text-amber-300">{running} agente{running > 1 ? "s" : ""} trabajando</span>}
-          {waiting > 0 && <span className="text-violet-300">{waiting} esperando respuesta</span>}
-          <span className={`h-2 w-2 rounded-full ${board.connected ? "bg-emerald-400" : "bg-red-500"}`} title={board.connected ? "Conectado" : "Desconectado"} />
-          {project && (
-            <Button variant={showNotes ? "default" : "ghost"} onClick={() => setShowNotes(!showNotes)}>
-              Canal de agentes{board.notes.length ? ` · ${board.notes.length}` : ""}
-            </Button>
+
+        <div className="ml-auto flex items-center gap-1.5">
+          <SyncIndicator />
+          {inBoard && project?.preview_card_id && (
+            <span className="mr-1 flex items-center gap-2 rounded-full bg-teal-400/10 py-1 pr-1 pl-2.5 text-[11.5px] text-teal-100 ring-1 ring-teal-300/20">
+              <Eye className="h-3.5 w-3.5 text-teal-300" />
+              <span className="max-w-[260px] truncate">
+                Tu repo muestra: <button className="font-medium hover:underline" onClick={() => previewCard && setSelected(previewCard.id)}>{previewCard?.title ?? "otra rama"}</button>
+              </span>
+              <button
+                onClick={() => togglePreview({ id: project.preview_card_id!, project_id: project.id, title: "" }, true)}
+                className="rounded-full bg-teal-300/15 px-2 py-0.5 font-medium text-teal-100 transition hover:bg-teal-300/25"
+              >
+                Volver a {project.base_branch}
+              </button>
+            </span>
           )}
+          {inBoard && running > 0 && (
+            <span className="mr-1 flex items-center gap-1.5 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11.5px] text-amber-200">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+              {running} trabajando
+            </span>
+          )}
+          {inBoard && waiting > 0 && (
+            <span className="mr-1 flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11.5px] text-violet-200">
+              <MessageCircleQuestion className="h-3 w-3" />
+              {waiting} te {waiting === 1 ? "necesita" : "necesitan"}
+            </span>
+          )}
+          {inBoard && (
+            <>
+              <HeaderButton
+                active={showAssistant}
+                icon={<Sparkles className="h-3.5 w-3.5" />}
+                label="Asistente"
+                kbd="t"
+                onClick={() => {
+                  setShowNotes(false);
+                  setShowAssistant(!showAssistant);
+                }}
+              />
+              <HeaderButton
+                active={showNotes}
+                icon={<Radio className="h-3.5 w-3.5" />}
+                label={`Canal${board.notes.length ? ` · ${board.notes.length}` : ""}`}
+                kbd="a"
+                onClick={() => {
+                  setShowAssistant(false);
+                  setShowNotes(!showNotes);
+                }}
+              />
+              <span className="mx-1 h-4 w-px bg-white/[0.08]" />
+              <IconButton title="Modelos del proyecto" onClick={() => setShowSettings(true)}>
+                <SlidersHorizontal className="h-4 w-4" />
+              </IconButton>
+            </>
+          )}
+          <IconButton title="Atajos de teclado (?)" onClick={() => setShowHelp(true)}>
+            <Keyboard className="h-4 w-4" />
+          </IconButton>
+          <span
+            className={`ml-1 h-1.5 w-1.5 rounded-full ${board.connected || view === "home" ? "bg-emerald-400" : "bg-red-500"}`}
+            title={board.connected ? "Conectado" : "Desconectado"}
+          />
         </div>
       </header>
 
       <main className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1">
-          {projectId && project ? (
-            <Board projectId={projectId} board={board} onOpen={setSelected} selectedId={selected} />
+        {sidebarOpen && projects && projects.length > 0 && (
+          <Sidebar
+            projects={projects}
+            currentId={projectId}
+            home={view === "home"}
+            focused={zone === "sidebar"}
+            cursor={sideCursor}
+            onPick={openProject}
+            onHome={goHome}
+            onNew={() => setShowNew(true)}
+            onRemoved={reload}
+          />
+        )}
+        <div className="min-w-0 flex-1 pt-3" onMouseDown={() => setZone("board")}>
+          {view === "home" && projects ? (
+            <Home projects={projects} cursor={homeCursor} onOpen={openProject} onNew={() => setShowNew(true)} onRemoved={reload} />
+          ) : projectId && project ? (
+            <div className="flex h-full flex-col">
+            {!project.repo_path && <UnlinkedBanner project={project} onLinked={reload} />}
+            <div className="min-h-0 flex-1">
+            <Board
+              projectId={projectId}
+              board={board}
+              onOpen={setSelected}
+              selectedId={selected}
+              adding={adding}
+              setAdding={setAdding}
+              cursor={cursor}
+              focused={zone === "board"}
+              onCursor={(col, id) => setCursor({ col, id })}
+              previewCardId={project?.preview_card_id}
+            />
+            </div>
+            </div>
           ) : (
             <div className="flex h-full items-center justify-center text-zinc-500">Crea un proyecto para empezar.</div>
           )}
         </div>
-        {card && <CardPanel key={card.id} card={card} board={board} onClose={() => setSelected(null)} />}
-        {showNotes && projectId && !card && <NotesPanel projectId={projectId} board={board} onOpen={setSelected} />}
+        {inBoard && card && <CardPanel key={card.id} card={card} board={board} project={project} onClose={() => setSelected(null)} />}
+        {inBoard && showAssistant && projectId && !card && (
+          <AssistantPanel
+            key={projectId}
+            projectId={projectId}
+            board={board}
+            onOpenCard={setSelected}
+            mode={assistantMode}
+            setMode={setAssistantMode}
+            project={project}
+            onProjectChange={reload}
+          />
+        )}
+        {inBoard && showNotes && projectId && !card && <NotesPanel projectId={projectId} board={board} onOpen={setSelected} />}
       </main>
 
+      <ConfirmHost />
+      {showHelp && <Help onClose={() => setShowHelp(false)} />}
+      {showSettings && project && <ProjectSettings project={project} onClose={() => setShowSettings(false)} onSaved={reload} />}
       {showNew && (
         <NewProject
           canClose={!!projects?.length}
@@ -93,7 +492,7 @@ export default function App() {
           onCreated={(p) => {
             setShowNew(false);
             reload();
-            setProjectId(p.id);
+            openProject(p.id);
           }}
         />
       )}
@@ -106,7 +505,7 @@ function NotesPanel({ projectId, board, onOpen }: { projectId: string; board: Bo
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => end.current?.scrollIntoView({ block: "end" }), [board.notes.length]);
   return (
-    <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-zinc-800 bg-zinc-950">
+    <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-white/[0.06] bg-[#0f1014] shadow-[-24px_0_48px_-24px_rgb(0_0_0/0.6)]">
       <div className="border-b border-zinc-800 px-4 py-3">
         <h2 className="text-sm font-semibold text-zinc-100">Canal de agentes</h2>
         <p className="text-xs text-zinc-500">Lo que se cuentan entre ellos mientras trabajan en paralelo.</p>
@@ -143,7 +542,7 @@ function NotesPanel({ projectId, board, onOpen }: { projectId: string; board: Bo
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder="Avisa a todos los agentes…"
-          className="w-full rounded-md bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-sky-600"
+          className="w-full rounded-md bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
         />
       </form>
     </aside>
@@ -151,49 +550,77 @@ function NotesPanel({ projectId, board, onOpen }: { projectId: string; board: Bo
 }
 
 function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onCreated: (p: Project) => void; canClose: boolean }) {
-  const [repo, setRepo] = useState("~/code/");
+  const [repo, setRepo] = useState<{ path: string; isRepo: boolean } | null>(null);
   const [name, setName] = useState("");
   const [base, setBase] = useState("");
+  const [init, setInit] = useState(false);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const pick = (path: string, isRepo: boolean) => {
+    setRepo({ path, isRepo });
+    setName(path.split("/").filter(Boolean).pop() ?? "");
+    setInit(!isRepo);
+    setError("");
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => canClose && onClose()}>
+    <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={() => canClose && onClose()}>
       <form
         onClick={(e) => e.stopPropagation()}
         onSubmit={async (e) => {
           e.preventDefault();
+          if (!repo) return;
           setError("");
+          setSaving(true);
           try {
-            onCreated(await api<Project>("/api/projects", { repo_path: repo, name, base_branch: base }));
+            onCreated(await api<Project>("/api/projects", { repo_path: repo.path, name, base_branch: base, init }));
           } catch (err) {
             setError((err as Error).message);
+          } finally {
+            setSaving(false);
           }
         }}
-        className="w-full max-w-md space-y-3 rounded-xl bg-zinc-900 p-5 ring-1 ring-zinc-800"
+        className="w-full max-w-xl space-y-4 rounded-2xl bg-zinc-900 p-5 ring-1 ring-white/[0.08] shadow-[var(--shadow-pop)]"
       >
-        <h2 className="text-base font-semibold text-zinc-100">Nuevo proyecto</h2>
-        <label className="block text-xs text-zinc-400">
-          Ruta del repo git
-          <input autoFocus value={repo} onChange={(e) => setRepo(e.target.value)} className="mt-1 w-full rounded-md bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-sky-500" />
-        </label>
-        <div className="flex gap-3">
-          <label className="block flex-1 text-xs text-zinc-400">
-            Nombre <span className="text-zinc-600">(opcional)</span>
-            <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-md bg-zinc-950 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-sky-500" />
-          </label>
-          <label className="block w-36 text-xs text-zinc-400">
-            Rama base <span className="text-zinc-600">(actual)</span>
-            <input value={base} onChange={(e) => setBase(e.target.value)} placeholder="main" className="mt-1 w-full rounded-md bg-zinc-950 px-3 py-2 font-mono text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-sky-500" />
-          </label>
+        <div>
+          <h2 className="text-base font-semibold text-zinc-100">Nuevo proyecto</h2>
+          <p className="text-xs text-zinc-500">Elige la carpeta del repo. Las carpetas con git salen en verde.</p>
         </div>
+
+        <FolderPicker onPick={pick} selected={repo?.path} />
+
+        {repo && (
+          <div className="space-y-3 rounded-lg bg-zinc-950 p-3 ring-1 ring-zinc-800">
+            <div className="truncate font-mono text-xs text-zinc-300">{repo.path}</div>
+            {!repo.isRepo && (
+              <label className="flex items-center gap-2 text-xs text-amber-200">
+                <input type="checkbox" checked={init} onChange={(e) => setInit(e.target.checked)} className="accent-amber-400" />
+                No es un repo git — inicializarlo aquí (git init + primer commit)
+              </label>
+            )}
+            <div className="flex gap-3">
+              <label className="block flex-1 text-xs text-zinc-400">
+                Nombre
+                <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-indigo-500" />
+              </label>
+              <label className="block w-40 text-xs text-zinc-400">
+                Rama base
+                <input value={base} onChange={(e) => setBase(e.target.value)} placeholder="la actual" className="mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 font-mono text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none placeholder:text-zinc-600 focus:ring-indigo-500" />
+              </label>
+            </div>
+          </div>
+        )}
+
         {error && <p className="text-sm text-red-300">{error}</p>}
-        <div className="flex justify-end gap-2 pt-1">
+        <div className="flex justify-end gap-2">
           {canClose && (
             <Button type="button" variant="ghost" onClick={onClose}>
               Cancelar
             </Button>
           )}
-          <Button variant="primary" type="submit">
-            Crear
+          <Button variant="primary" type="submit" disabled={!repo || (!repo.isRepo && !init) || saving}>
+            Crear proyecto
           </Button>
         </div>
       </form>
@@ -203,10 +630,37 @@ function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onC
 
 function Logo() {
   return (
-    <svg width="20" height="20" viewBox="0 0 32 32">
-      <rect x="3" y="5" width="7" height="22" rx="2" fill="#60a5fa" />
-      <rect x="12.5" y="5" width="7" height="14" rx="2" fill="#a78bfa" />
-      <rect x="22" y="5" width="7" height="18" rx="2" fill="#34d399" />
-    </svg>
+    <span className="flex h-6 w-6 items-center justify-center rounded-[7px] bg-gradient-to-br from-indigo-400 to-indigo-500 shadow-[0_1px_0_0_rgb(255_255_255/0.3)_inset,0_2px_8px_-2px_rgb(99_102_241/0.6)]">
+      <svg width="14" height="14" viewBox="0 0 32 32">
+        <rect x="4" y="6" width="6" height="20" rx="2" fill="white" />
+        <rect x="13" y="6" width="6" height="13" rx="2" fill="white" fillOpacity=".8" />
+        <rect x="22" y="6" width="6" height="16" rx="2" fill="white" fillOpacity=".6" />
+      </svg>
+    </span>
+  );
+}
+
+function HeaderButton({ active, icon, label, kbd, onClick }: { active: boolean; icon: React.ReactNode; label: string; kbd: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] transition ${
+        active ? "bg-white/[0.09] text-zinc-50 ring-1 ring-white/[0.1]" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-100"
+      }`}
+    >
+      {icon}
+      {label}
+      <span className="ml-0.5 hidden xl:inline-flex">
+        <Kbd>{kbd}</Kbd>
+      </span>
+    </button>
+  );
+}
+
+function IconButton({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button onClick={onClick} title={title} className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200">
+      {children}
+    </button>
   );
 }

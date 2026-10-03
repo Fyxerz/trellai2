@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { Card, Message, Note, ServerEvent } from "../shared/types.js";
+import type { AssistantMessage, Card, Message, Note, ServerEvent } from "../shared/types.js";
 import { getCard } from "./db.js";
 
 /** Per-project event bus feeding the SSE stream. */
@@ -34,4 +34,25 @@ export function emitQuestions(projectId: string, cardId: string) {
 
 export function emitNote(note: Note) {
   emit(note.project_id, { type: "note", note });
+}
+
+export function emitCheckpoints(projectId: string, cardId: string) {
+  emit(projectId, { type: "checkpoints", cardId });
+  emitCard(cardId); // counters on the card
+}
+
+export function emitAssistantMessage(message: AssistantMessage) {
+  emit(message.project_id, { type: "assistant_message", message });
+}
+
+export function emitAssistantStatus(projectId: string, mode: AssistantMessage["mode"], running: boolean) {
+  emit(projectId, { type: "assistant_status", mode, running });
+}
+
+export function emitPreview(projectId: string, cardId: string | null) {
+  emit(projectId, { type: "preview", cardId });
+}
+
+export function emitSync(projectId: string) {
+  emit(projectId, { type: "sync" });
 }

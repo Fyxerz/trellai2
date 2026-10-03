@@ -1,5 +1,16 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import {
+  Eye,
+  GitMerge,
+  Hammer,
+  Inbox,
+  MessageCircleQuestion,
+  PencilLine,
+  Sparkles,
+  TriangleAlert,
+  type LucideIcon,
+} from "lucide-react";
 import type { Card, Column } from "../../shared/types";
 
 export function Markdown({ children }: { children: string }) {
@@ -19,23 +30,42 @@ export const COLUMN_ACCENT: Record<Column, string> = {
   merged: "bg-zinc-600",
 };
 
+/** Hex colours per column (for bars and charts). */
+export const COLUMN_HEX: Record<Column, string> = {
+  backlog: "#6c717c",
+  plan: "#38bdf8",
+  preparation: "#a78bfa",
+  doing: "#fbbf24",
+  review: "#34d399",
+  merged: "#3f434b",
+};
+
+export const COLUMN_ICON: Record<Column, LucideIcon> = {
+  backlog: Inbox,
+  plan: PencilLine,
+  preparation: Sparkles,
+  doing: Hammer,
+  review: Eye,
+  merged: GitMerge,
+};
+
 export function StatusBadge({ card }: { card: Card }) {
   if (card.status === "running")
     return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-amber-300">
+      <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11px] font-medium text-amber-300">
         <Spinner /> {card.column === "preparation" ? "Preparando" : "Trabajando"}
       </span>
     );
   if (card.status === "waiting")
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-500/15 px-2 py-0.5 text-[11px] font-medium text-violet-300 ring-1 ring-violet-500/30">
-        <span className="h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse" /> Te necesita
+      <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-violet-500/12 px-2 py-0.5 text-[11px] font-medium text-violet-200 ring-1 ring-violet-400/25">
+        <MessageCircleQuestion className="h-3 w-3" /> Te necesita
       </span>
     );
   if (card.status === "error")
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-full bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-300 ring-1 ring-red-500/30">
-        Error
+      <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-red-500/12 px-2 py-0.5 text-[11px] font-medium text-red-200 ring-1 ring-red-400/25">
+        <TriangleAlert className="h-3 w-3" /> Error
       </span>
     );
   return null;
@@ -52,20 +82,65 @@ export function Spinner({ className = "h-3 w-3" }: { className?: string }) {
 
 export function Button({
   variant = "default",
+  size = "md",
   className = "",
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "default" | "primary" | "danger" | "ghost" }) {
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "default" | "primary" | "danger" | "ghost"; size?: "sm" | "md" }) {
   const styles = {
-    default: "bg-zinc-800 hover:bg-zinc-700 text-zinc-100 ring-1 ring-zinc-700",
-    primary: "bg-sky-500 hover:bg-sky-400 text-zinc-950 font-semibold",
-    danger: "bg-transparent hover:bg-red-500/10 text-red-300 ring-1 ring-red-500/30",
-    ghost: "bg-transparent hover:bg-zinc-800 text-zinc-300",
+    default: "bg-white/[0.05] hover:bg-white/[0.09] text-zinc-100 ring-1 ring-white/[0.08] hover:ring-white/[0.14]",
+    primary:
+      "bg-gradient-to-b from-indigo-400 to-indigo-500 hover:from-indigo-300 hover:to-indigo-500 text-white font-medium shadow-[0_1px_0_0_rgb(255_255_255/0.25)_inset,0_1px_2px_rgb(0_0_0/0.4)]",
+    danger: "bg-transparent hover:bg-red-500/10 text-red-300 ring-1 ring-red-400/25",
+    ghost: "bg-transparent hover:bg-white/[0.06] text-zinc-300 hover:text-zinc-100",
   }[variant];
+  const sizes = { sm: "h-7 px-2.5 text-xs", md: "h-8 px-3 text-[13px]" }[size];
   return (
     <button
       {...props}
-      className={`inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition disabled:opacity-40 disabled:pointer-events-none ${styles} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-lg transition-all disabled:pointer-events-none disabled:opacity-40 ${sizes} ${styles} ${className}`}
     />
+  );
+}
+
+export function Kbd({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-white/10 bg-white/[0.04] px-1 font-mono text-[10px] text-zinc-400">
+      {children}
+    </kbd>
+  );
+}
+
+const AVATAR_COLORS = ["#818cf8", "#38bdf8", "#34d399", "#fbbf24", "#f472b6", "#a78bfa", "#fb923c", "#2dd4bf"];
+
+export function projectColor(id: string) {
+  let h = 0;
+  for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+
+export function ProjectAvatar({ id, name, size = 22 }: { id: string; name: string; size?: number }) {
+  const color = projectColor(id);
+  const initials = name
+    .replace(/[^a-zA-Z0-9 \-_]/g, "")
+    .split(/[\s\-_]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0].toUpperCase())
+    .join("") || "?";
+  return (
+    <span
+      className="inline-flex shrink-0 items-center justify-center rounded-md font-semibold"
+      style={{
+        width: size,
+        height: size,
+        fontSize: size * 0.42,
+        color,
+        background: `color-mix(in oklab, ${color} 16%, transparent)`,
+        boxShadow: `inset 0 0 0 1px color-mix(in oklab, ${color} 30%, transparent)`,
+      }}
+    >
+      {initials}
+    </span>
   );
 }
 
@@ -75,4 +150,28 @@ export function timeAgo(iso: string) {
   if (s < 3600) return `${Math.floor(s / 60)} min`;
   if (s < 86400) return `${Math.floor(s / 3600)} h`;
   return `${Math.floor(s / 86400)} d`;
+}
+
+/**
+ * Chat textareas: Enter sends, ⌘/Ctrl+Enter (or ⇧Enter) inserts a new line.
+ */
+export function chatKeyDown(
+  e: React.KeyboardEvent<HTMLTextAreaElement>,
+  send: () => void,
+  setText: (v: string) => void,
+) {
+  if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+  if (e.shiftKey) return; // native newline
+  e.preventDefault();
+  if (e.metaKey || e.ctrlKey) {
+    const ta = e.currentTarget;
+    const { selectionStart: a, selectionEnd: b, value } = ta;
+    const next = value.slice(0, a) + "\n" + value.slice(b);
+    setText(next);
+    requestAnimationFrame(() => {
+      ta.selectionStart = ta.selectionEnd = a + 1;
+    });
+    return;
+  }
+  send();
 }

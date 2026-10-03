@@ -31,8 +31,21 @@ export interface Project {
   name: string;
   repo_path: string;
   base_branch: string;
+  /** Default models per role ("claude", "claude:opus", "codex", "codex:<model>") */
+  model_prep: string;
+  model_dev: string;
+  model_plan: string;
+  model_do: string;
+  /** Model for cards the assistant marks as interface/visual work (null = same as model_dev) */
+  model_ui: string | null;
+  /** Card whose branch is currently checked out in the main repo ("Ver esta rama") */
+  preview_card_id: string | null;
+  /** git remote (to find/clone the repo on another computer) */
+  remote_url: string | null;
   created_at: string;
 }
+
+export type ModelRole = "model_prep" | "model_dev" | "model_plan" | "model_do" | "model_ui";
 
 export interface Card {
   id: string;
@@ -51,8 +64,27 @@ export interface Card {
   /** preparation session (runs in the main checkout) */
   prep_session_id: string | null;
   files: string[];
+  /** Model override for this card (null = project default) */
+  model: string | null;
+  /** computer that runs this card's agent / holds its worktree (null = none yet) */
+  machine: string | null;
+  /** another computer asked `machine` to stop the agent */
+  stop_req?: string | null;
+  checkpoints_total: number;
+  checkpoints_done: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface Checkpoint {
+  id: number;
+  card_id: string;
+  text: string;
+  done: boolean;
+  position: number;
+  /** who created it */
+  source: "user" | "agent";
+  created_at: string;
 }
 
 export type MessageRole = "user" | "assistant" | "tool" | "system";
@@ -83,12 +115,31 @@ export interface Note {
   created_at: string;
 }
 
+/** A message in the project assistant conversation. */
+export interface AssistantMessage {
+  id: number;
+  project_id: string;
+  /** "plan": turns ideas into cards · "do": small direct changes in the repo */
+  mode: "plan" | "do";
+  role: "user" | "assistant" | "tool" | "system";
+  content: string;
+  /** set when the message refers to a card the assistant created/updated */
+  card_id: string | null;
+  created_at: string;
+}
+
 export type ServerEvent =
   | { type: "card"; card: Card }
   | { type: "card_deleted"; id: string }
   | { type: "message"; message: Message }
   | { type: "questions"; cardId: string }
-  | { type: "note"; note: Note };
+  | { type: "checkpoints"; cardId: string }
+  | { type: "note"; note: Note }
+  | { type: "assistant_message"; message: AssistantMessage }
+  | { type: "assistant_status"; mode: "plan" | "do"; running: boolean }
+  | { type: "preview"; cardId: string | null }
+  /** another computer changed things: reload the board */
+  | { type: "sync" };
 
 export function isColumn(v: unknown): v is Column {
   return typeof v === "string" && (COLUMNS as readonly string[]).includes(v);

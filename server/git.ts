@@ -61,10 +61,10 @@ function ensureExcluded(repo: string) {
   }
 }
 
-export function createWorktree(repo: string, base: string, cardId: string, title: string) {
+export function createWorktree(repo: string, base: string, cardId: string, title: string, existingBranch?: string) {
   ensureExcluded(repo);
-  const slug = `${slugify(title)}-${cardId.slice(0, 4).toLowerCase()}`;
-  const branch = `trellai/${slug}`;
+  const slug = existingBranch ? existingBranch.replace(/^trellai\//, "").replace(/[^\w.-]+/g, "-") : `${slugify(title)}-${cardId.slice(0, 4).toLowerCase()}`;
+  const branch = existingBranch ?? `trellai/${slug}`;
   const path = join(repo, ".trellai", "worktrees", slug);
   if (existsSync(path)) return { branch, path };
   mkdirSync(join(repo, ".trellai", "worktrees"), { recursive: true });
@@ -109,7 +109,7 @@ export function changedFiles(cwd: string, base: string): string[] {
   const status = git(cwd, ["status", "--porcelain"], { allowFail: true })
     .split("\n")
     .filter(Boolean)
-    .map((l) => l.slice(3).split(" -> ").pop()!);
+    .map((l) => porcelainPath(l));
   return [...new Set([...committed.split("\n").filter(Boolean), ...status])];
 }
 
@@ -146,4 +146,99 @@ export function mergeIntoBase(repo: string, base: string, branch: string, messag
     git(repo, ["merge", "--abort"], { allowFail: true });
     return { ok: false as const, reason: "conflict" as const, error: (err as Error).message };
   }
+}
+
+/** Turn a plain folder into a repo with one commit (worktrees need a commit to branch from). */
+export function initRepo(path: string) {
+  git(path, ["init", "-b", "main"]);
+  git(path, ["add", "-A"]);
+  git(path, ["-c", "user.name=Trellai", "-c", "user.email=trellai@localhost", "commit", "--allow-empty", "-m", "Initial commit"]);
+}
+
+export function hasCommits(repo: string): boolean {
+  return gitOk(repo, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+}
+
+/** Uncommitted paths and a content hash for each, to tell later which ones changed. */
+export function dirtySnapshot(repo: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const lines = git(repo, ["status", "--porcelain", "-uall"], { allowFail: true }).split("\n").filter(Boolean);
+  for (const l of lines) {
+    const path = porcelainPath(l);
+    const hash = git(repo, ["hash-object", "--", path], { allowFail: true }) || "deleted";
+    out.set(path, hash);
+  }
+  return out;
+}
+
+/**
+ * Commit only what changed since `before` (so your own uncommitted work is left alone).
+ * Returns the sha, or null when there was nothing new.
+ */
+export function commitChangedSince(repo: string, before: Map<string, string>, message: string): string | null {
+  const after = dirtySnapshot(repo);
+  const paths = [...after.entries()].filter(([p, h]) => before.get(p) !== h).map(([p]) => p);
+  if (!paths.length) return null;
+  git(repo, ["add", "-A", "--", ...paths]);
+  git(repo, ["-c", "user.name=Trellai", "-c", "user.email=trellai@localhost", "commit", "-m", message, "--no-verify", "--", ...paths]);
+  return git(repo, ["rev-parse", "HEAD"]);
+}
+
+/** Tracked changes in a checkout (untracked files don't block a checkout unless they collide). */
+export function trackedDirty(repo: string): string[] {
+  return git(repo, ["status", "--porcelain", "--untracked-files=no"], { allowFail: true }).split("\n").filter(Boolean);
+}
+
+/** Where HEAD points: a branch name, or a sha when detached. */
+export function headRef(repo: string): string {
+  const b = git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  return b === "HEAD" ? git(repo, ["rev-parse", "HEAD"]) : b;
+}
+
+/** Put the main checkout at `ref` (detached, so a branch used by a worktree is fine). */
+export function checkoutDetached(repo: string, ref: string) {
+  git(repo, ["checkout", "--detach", ref]);
+}
+
+export function checkoutRef(repo: string, ref: string) {
+  git(repo, ["checkout", ref]);
+}
+
+export function shaOf(repo: string, ref: string): string | null {
+  return git(repo, ["rev-parse", "--verify", "--quiet", ref], { allowFail: true }) || null;
+}
+
+/** Path from a `git status --porcelain` line (robust to the leading space being trimmed). */
+export function porcelainPath(line: string): string {
+  return line.replace(/^\s*[ MADRCU?!]{1,2}\s+/, "").split(" -> ").pop()!.replace(/^"|"$/g, "");
+}
+
+export function remoteUrlSync(repo: string): string | null {
+  const names = git(repo, ["remote"], { allowFail: true }).split("\n").filter(Boolean);
+  const r = names.includes("origin") ? "origin" : names[0];
+  return r ? git(repo, ["remote", "get-url", r], { allowFail: true }) || null : null;
+}
+
+/** git@github.com:a/b.git and https://github.com/a/b are the same remote. */
+export function sameRemoteSync(a: string | null, b: string | null): boolean {
+  const norm = (u: string) =>
+    u
+      .trim()
+      .replace(/^[a-z+]+:\/\//, "")
+      .replace(/^[^@/]+@/, "")
+      .replace(":", "/")
+      .replace(/\.git$/, "")
+      .replace(/\/+$/, "")
+      .toLowerCase();
+  return !!a && !!b && norm(a) === norm(b);
+}
+
+/** Diff of a branch vs base without a worktree (a card running on another computer). */
+export function diffBranch(repo: string, base: string, branch: string): { diff: string; files: string[] } {
+  if (!shaOf(repo, `refs/heads/${branch}`)) return { diff: "", files: [] };
+  const mb = git(repo, ["merge-base", base, branch], { allowFail: true }) || base;
+  return {
+    diff: git(repo, ["diff", "--no-color", mb, branch], { allowFail: true }),
+    files: git(repo, ["diff", "--name-only", mb, branch], { allowFail: true }).split("\n").filter(Boolean),
+  };
 }

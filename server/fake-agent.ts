@@ -41,7 +41,7 @@ export async function runFakeAgent(o: FakeOpts): Promise<string> {
       return sessionId;
     }
     o.log("assistant", "La spec está clara. Paso a desarrollo.");
-    o.kit.markReady(`1. Crear \`features/${slug}.md\`\n2. Verificar`, [`features/${slug}.md`]);
+    o.kit.markReady("", [`features/${slug}.md`], [`Crear features/${slug}.md`, "Verificar que existe"]);
     return sessionId;
   }
 
@@ -64,6 +64,10 @@ export async function runFakeAgent(o: FakeOpts): Promise<string> {
     }
   }
   await delay(600, o.signal);
+  for (const line of o.kit.listCheckpoints().split("\n")) {
+    const id = line.match(/\(id (\d+)\)/)?.[1];
+    if (id) o.kit.checkCheckpoint(Number(id));
+  }
   o.kit.reportDone(`Hecho: ${o.card.title}`);
   o.log("assistant", `Hecho: ${o.card.title}`);
   return sessionId;

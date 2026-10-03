@@ -73,9 +73,17 @@ afterAll(() => {
 describe("board flow", () => {
   it("clear spec: preparation → doing → review automatically", async () => {
     const c = await api<Card>("/api/cards", { project_id: projectId, title: "Login con email", spec: "Añadir login", column: "plan" });
+    await api(`/api/cards/${c.id}/checkpoints`, { text: "Pantalla de login" });
     await api(`/api/cards/${c.id}/move`, { column: "preparation" });
     const done = await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
-    expect(done.plan).toContain("features/");
+    const cps = await api<any[]>(`/api/cards/${c.id}/checkpoints`);
+    expect(cps.map((x) => x.source)).toEqual(["user", "agent", "agent"]);
+    expect(cps.every((x) => x.done)).toBe(true);
+    expect(done.checkpoints_total).toBe(3);
+    expect(done.checkpoints_done).toBe(3);
+    // each checked checkpoint with changes becomes its own commit
+    const log = sh(`git log --format=%s main..${done.branch}`, done.worktree!);
+    expect(log.split("\n")).toContain("Pantalla de login");
     expect(done.branch).toMatch(/^trellai\//);
     expect(existsSync(join(done.worktree!, "features", "login-con-email.md"))).toBe(true);
     const { diff } = await api(`/api/cards/${c.id}/diff`);
@@ -106,16 +114,16 @@ describe("board flow", () => {
     expect(notes.some((n) => n.content.includes("SHARED.md"))).toBe(true);
 
     await api(`/api/cards/${a.id}/move`, { column: "merged" });
-    await waitFor(a.id, (x) => x.column === "merged" && x.status_text.startsWith("Merge"));
+    await waitFor(a.id, (x) => x.column === "merged" && x.status_text.startsWith("Merge "));
 
     // B now conflicts with main → goes back to doing, agent rebases, back to review
     await api(`/api/cards/${b.id}/move`, { column: "merged" });
-    await waitFor(b.id, (x) => x.column === "review" || x.status_text.startsWith("Merge"), 10000);
+    await waitFor(b.id, (x) => x.column === "review" || x.status_text.startsWith("Merge "), 10000);
     const bNow = await card(b.id);
     if (bNow.column === "review") {
       await api(`/api/cards/${b.id}/move`, { column: "merged" });
     }
-    const merged = await waitFor(b.id, (x) => x.column === "merged" && x.status_text.startsWith("Merge"));
+    const merged = await waitFor(b.id, (x) => x.column === "merged" && x.status_text.startsWith("Merge "));
     expect(merged.worktree).toBeNull();
     const bMsgs = await api<any[]>(`/api/cards/${b.id}/messages`);
     expect(bMsgs.some((m) => m.content.includes("Conflicto"))).toBe(true);
@@ -135,5 +143,56 @@ describe("board flow", () => {
     await waitFor(c.id, (x) => x.column === "review");
     const msgs = await api<any[]>(`/api/cards/${c.id}/messages`);
     expect(msgs.some((m) => m.role === "user" && m.content === "Cambia el título")).toBe(true);
+  });
+
+  it("assistant turns a message into cards", async () => {
+    await api(`/api/projects/${projectId}/assistant`, { text: "Ideas:\n- dividir la cuenta\n- cierre de caja en PDF" });
+    const t0 = Date.now();
+    let r: any;
+    do {
+      await new Promise((res) => setTimeout(res, 100));
+      r = await api(`/api/projects/${projectId}/assistant`);
+    } while ((r.running || !r.messages.some((m: any) => m.role === "assistant")) && Date.now() - t0 < 8000);
+    const chips = r.messages.filter((m: any) => m.card_id);
+    expect(chips).toHaveLength(2);
+    const cards = await api<Card[]>(`/api/projects/${projectId}/cards`);
+    const created = cards.filter((c) => chips.some((m: any) => m.card_id === c.id));
+    expect(created.map((c) => c.title).sort()).toEqual(["Cierre de caja en PDF", "Dividir la cuenta"]);
+    expect(created.every((c) => c.column === "backlog" && c.checkpoints_total === 2)).toBe(true);
+  });
+
+  it("direct chat changes the repo and commits only its own changes", async () => {
+    writeFileSync(join(repo, "MINE.md"), "trabajo sin commitear de Pedro\n");
+    await api(`/api/projects/${projectId}/assistant`, { text: "Añade una línea a DIRECT.md", mode: "do" });
+    const t0 = Date.now();
+    let r: any;
+    do {
+      await new Promise((res) => setTimeout(res, 100));
+      r = await api(`/api/projects/${projectId}/assistant?mode=do`);
+    } while ((r.running || !r.messages.some((m: any) => m.content.startsWith("📌"))) && Date.now() - t0 < 8000);
+    expect(r.messages.some((m: any) => m.content.startsWith("📌 Commit"))).toBe(true);
+    expect(sh("git log -1 --format=%s")).toBe("Añade una línea a DIRECT.md");
+    expect(sh("git show --name-only --format= HEAD")).toBe("DIRECT.md");
+    expect(sh("git status --porcelain")).toContain("MINE.md"); // Pedro's own work untouched
+    // the plan conversation is separate
+    const plan = await api<any>(`/api/projects/${projectId}/assistant?mode=plan`);
+    expect(plan.messages.some((m: any) => m.content.includes("DIRECT.md"))).toBe(false);
+  });
+
+  it("'Ver esta rama' puts the card's branch in the main checkout and back", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Vista previa", spec: "x", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    const done = await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    const before = sh("git rev-parse --abbrev-ref HEAD");
+    await api(`/api/cards/${c.id}/preview`, {});
+    expect(sh("git rev-parse HEAD")).toBe(sh(`git rev-parse ${done.branch}`));
+    expect(existsSync(join(repo, "features", "vista-previa.md"))).toBe(true);
+    const projects = await api<any[]>("/api/projects");
+    expect(projects.find((p) => p.id === projectId).preview_card_id).toBe(c.id);
+    // merging while previewing returns the repo to its branch first
+    await api(`/api/cards/${c.id}/move`, { column: "merged" });
+    await waitFor(c.id, (x) => x.column === "merged" && x.status_text.startsWith("Merge "));
+    expect(sh("git rev-parse --abbrev-ref HEAD")).toBe(before);
+    expect((await api<any[]>("/api/projects")).find((p) => p.id === projectId).preview_card_id).toBeNull();
   });
 });
