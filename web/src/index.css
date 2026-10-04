@@ -83,8 +83,14 @@ button, select, input, textarea { font: inherit; }
 .md h1 { @apply text-[15px]; } .md h2 { @apply text-sm; } .md h3 { @apply text-sm; }
 .md strong { @apply text-zinc-100 font-semibold; }
 .md a { @apply text-indigo-300 underline decoration-indigo-300/40 underline-offset-2; }
-.md table { @apply text-xs border-collapse my-2; }
-.md td, .md th { @apply border border-ui-ink/[0.08] px-2 py-1; }
+.md .md-table { @apply max-w-full overflow-x-auto my-2 rounded-md border border-ui-ink/[0.08]; }
+.md table { @apply text-xs border-collapse min-w-full; }
+.md td, .md th { @apply border border-ui-ink/[0.08] px-2 py-1 align-top text-left min-w-[7rem] break-words; }
+.md th { @apply bg-ui-ink/[0.04] font-semibold text-zinc-200; }
+.md tr > :first-child { @apply border-l-0; } .md tr > :last-child { @apply border-r-0; }
+.md thead tr:first-child > *, .md table > tbody:first-child tr:first-child > * { @apply border-t-0; }
+.md tbody tr:last-child > * { @apply border-b-0; }
+.md td code, .md th code { @apply whitespace-normal; }
 .md blockquote { @apply border-l-2 border-ui-ink/10 pl-3 text-zinc-400; }
 
 }
