@@ -48,6 +48,7 @@ function dayKey(iso: string) {
 }
 
 function dayLabel(key: string, today: string) {
+  if (key === MERGING) return "Mergeando ahora";
   if (key === today) return "Hoy";
   const d = new Date(`${key}T12:00:00`);
   const yesterday = new Date();
@@ -57,11 +58,15 @@ function dayLabel(key: string, today: string) {
   return d.toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }) });
 }
 
-/** Group already-sorted merged cards by the day they were merged. */
+/** Merged cards still being merged (or having a merge conflict resolved) run an agent: they get their own group on top. */
+export const MERGING = "merging";
+const mergedGroup = (c: Card) => (c.status === "running" ? MERGING : dayKey(mergedAt(c)));
+
+/** Group already-sorted merged cards by the day they were merged (the ones being merged first, apart). */
 export function mergedDays(cards: Card[]): { day: string; cards: Card[] }[] {
   const groups: { day: string; cards: Card[] }[] = [];
   for (const c of cards) {
-    const day = dayKey(mergedAt(c));
+    const day = mergedGroup(c);
     if (groups.at(-1)?.day === day) groups.at(-1)!.cards.push(c);
     else groups.push({ day, cards: [c] });
   }
@@ -70,13 +75,14 @@ export function mergedDays(cards: Card[]): { day: string; cards: Card[] }[] {
 
 /**
  * A column's cards in screen order: by position, but the card being previewed (`pinnedId`) goes first.
- * Merged is newest first (grouped by day on screen), with no pinning.
+ * Merged is newest first (grouped by day on screen), with no pinning, but the cards being merged go on top.
  */
 export function columnCards(cards: Record<string, Card>, col: Column, pinnedId?: string | null): Card[] {
   const list = Object.values(cards)
     .filter((c) => c.column === col)
     .sort(col === "merged" ? (a, b) => mergedAt(b).localeCompare(mergedAt(a)) : (a, b) => a.position - b.position);
-  const i = pinnedId && col !== "merged" ? list.findIndex((c) => c.id === pinnedId) : -1;
+  if (col === "merged") return [...list.filter((c) => c.status === "running"), ...list.filter((c) => c.status !== "running")];
+  const i = pinnedId ? list.findIndex((c) => c.id === pinnedId) : -1;
   if (i > 0) list.unshift(...list.splice(i, 1));
   return list;
 }
@@ -169,10 +175,10 @@ export function Board({
   // Merged days: only today's start expanded; a click toggles any of them.
   const today = dayKey(new Date().toISOString());
   const [openDays, setOpenDays] = useState<Record<string, boolean>>({});
-  const isOpen = (day: string) => openDays[day] ?? day === today;
+  const isOpen = (day: string) => day === MERGING || (openDays[day] ?? day === today);
   // The keyboard cursor can land on a collapsed day's card: show it.
   const cursorCard = cursor.id ? board.cards[cursor.id] : undefined;
-  const cursorDay = cursorCard?.column === "merged" ? dayKey(mergedAt(cursorCard)) : null;
+  const cursorDay = cursorCard?.column === "merged" ? mergedGroup(cursorCard) : null;
   useEffect(() => {
     if (cursorDay && !isOpen(cursorDay)) setOpenDays((o) => ({ ...o, [cursorDay]: true }));
   }, [cursorDay, cursor.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -296,6 +302,7 @@ export function Board({
                           <div key={day} className="flex flex-col gap-2">
                             <button
                               onClick={() => setOpenDays((o) => ({ ...o, [day]: !open }))}
+                              disabled={day === MERGING}
                               className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11.5px] font-medium text-zinc-400 hover:bg-ui-ink/[0.05] hover:text-zinc-200"
                               aria-expanded={open}
                             >
