@@ -121,30 +121,59 @@ button, select, input, textarea { font: inherit; }
 /* Semantic neutrals: shared utility classes work in both themes. */
 html[data-theme="light"] {
   color-scheme: light;
-  --color-ui-ink: #172033;
-  --color-panel: #ffffff;
-  --color-zinc-50: #172033;
-  --color-zinc-100: #202a3d;
-  --color-zinc-200: #334155;
-  --color-zinc-300: #46546a;
-  --color-zinc-400: #55637a;
-  --color-zinc-500: #647086;
-  --color-zinc-600: #6d778a;
-  --color-zinc-700: #c9d1de;
-  --color-zinc-800: #e8edf5;
-  --color-zinc-900: #ffffff;
-  --color-zinc-950: #f3f5f9;
-  --shadow-card: 0 1px 3px rgb(23 32 51 / 0.07);
-  --shadow-lift: 0 8px 24px rgb(23 32 51 / 0.12);
-  --shadow-pop: 0 20px 60px rgb(23 32 51 / 0.18), 0 0 0 1px rgb(23 32 51 / 0.08);
+  --color-ui-ink: #242426;
+  --color-panel: #f2f3f4;
+  --color-zinc-50: #202022;
+  --color-zinc-100: #29292c;
+  --color-zinc-200: #37373b;
+  --color-zinc-300: #46464b;
+  --color-zinc-400: #56565c;
+  --color-zinc-500: #626268;
+  --color-zinc-600: #64646a;
+  --color-zinc-700: #d4d6da;
+  --color-zinc-800: #e1e2e4;
+  --color-zinc-900: #fafafa;
+  --color-zinc-950: #e9eaec;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.07);
+  --shadow-lift: 0 8px 24px -6px rgb(0 0 0 / 0.12);
+  --shadow-pop: 0 20px 60px -12px rgb(0 0 0 / 0.18), 0 0 0 1px rgb(0 0 0 / 0.08);
 }
+html[data-theme="light"] body {
+  background: radial-gradient(1200px 500px at 15% -10%, rgb(0 0 0 / 0.025), transparent 60%), var(--color-zinc-950);
+}
+html[data-theme="light"] .surface {
+  background: var(--color-panel);
+  border-color: var(--color-zinc-700);
+}
+html[data-theme="light"] .board-bg.has-image::after {
+  background: rgb(233 234 236 / 0.58);
+}
+html[data-theme="light"] .board-with-image section.surface {
+  background: rgb(242 243 244 / 0.9);
+}
+html[data-theme="light"] .md pre {
+  background: var(--color-zinc-800);
+  border-color: var(--color-zinc-700);
+}
+html[data-theme="light"] .work-panel {
+  box-shadow: -24px 0 48px -24px rgb(0 0 0 / 0.16), var(--shadow-lift);
+}
+html[data-theme="light"] [data-modal] { background-color: rgb(36 36 38 / 0.25); }
+/* Solid action buttons retain white labels with a darker accent in light mode. */
+html[data-theme="light"] button:is([class~="from-indigo-400"][class~="to-indigo-500"], [class~="bg-indigo-500"]) {
+  background: #4f46e5;
+}
+html[data-theme="light"] button:is([class~="from-indigo-400"][class~="to-indigo-500"], [class~="bg-indigo-500"]):hover {
+  background: #4338ca;
+}
+html[data-theme="light"] [class~="bg-black/70"] { background-color: rgb(242 243 244 / 0.95); }
 /* Text accents have darker equivalents; backgrounds keep their status hues. */
 html[data-theme="light"] :is([class*="text-indigo-"], [class*="text-violet-"]) { color: #6343bc; }
-html[data-theme="light"] :is([class*="text-emerald-"], [class*="text-teal-"]) { color: #087663; }
-html[data-theme="light"] :is([class*="text-amber-"], [class*="text-orange-"]) { color: #98600c; }
-html[data-theme="light"] [class*="text-red-"] { color: #bb3545; }
+html[data-theme="light"] :is([class*="text-emerald-"], [class*="text-teal-"]) { color: #086b59; }
+html[data-theme="light"] :is([class*="text-amber-"], [class*="text-orange-"]) { color: #895609; }
+html[data-theme="light"] [class*="text-red-"] { color: #af3040; }
 html[data-theme="light"] [class*="text-sky-"] { color: #036a99; }
-html[data-theme="light"] .glass { background: rgb(255 255 255 / 0.85); }
+html[data-theme="light"] .glass { background: rgb(242 243 244 / 0.92); }
 .app-header { background: var(--color-panel); flex-wrap: wrap; padding-block: 0.5rem; }
 .work-panel { width: var(--panel-width, 540px); max-width: 75vw; position: relative; }
 .work-panel.expanded { width: min(960px, 85vw); max-width: 85vw; }

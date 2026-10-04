@@ -404,8 +404,7 @@ export default function App() {
           </>
         )}
 
-        <div className="ml-auto flex items-center gap-1.5">
-          <Appearance />
+        <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
           <SyncIndicator />
           {inBoard && project?.preview_card_id && (
             <span className="mr-1 flex items-center gap-2 rounded-full bg-teal-400/10 py-1 pr-1 pl-2.5 text-[11.5px] text-teal-300 ring-1 ring-teal-300/20">
@@ -458,12 +457,21 @@ export default function App() {
                   setSelected(null);
                 }}
               />
-              <span className="mx-1 h-4 w-px bg-ui-ink/[0.08]" />
-              <IconButton title="Ajustes del proyecto: modelos y fondo del tablero" onClick={() => setShowSettings(true)}>
-                <SlidersHorizontal className="h-4 w-4" />
-              </IconButton>
             </>
           )}
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-haspopup="dialog"
+            title={project ? `Ajustes de ${projectName(project.name)}: modelos y fondo del tablero` : "Abre un proyecto para cambiar sus ajustes"}
+            disabled={!project}
+            onClick={() => setShowSettings(true)}
+            className="ring-1 ring-ui-ink/10"
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+            Ajustes de proyecto
+          </Button>
+          <Appearance />
           <IconButton title="Atajos de teclado (?)" onClick={() => setShowHelp(true)}>
             <Keyboard className="h-4 w-4" />
           </IconButton>
@@ -495,11 +503,11 @@ export default function App() {
             onRemoved={reload}
           />
         )}
-        <div className="min-w-0 flex-1 pt-3" onMouseDown={() => setZone("board")}>
+        <div className={`min-w-0 flex-1 ${view === "home" ? "pt-3" : ""}`} onMouseDown={() => setZone("board")}>
           {view === "home" && projects ? (
             <Home projects={projects} cursor={homeCursor} onOpen={openProject} onNew={() => setShowNew(true)} onRemoved={reload} />
           ) : projectId && project ? (
-            <div className={`relative isolate flex h-full flex-col ${boardBackground(project).image ? "board-with-image" : ""}`}>
+            <div className={`relative isolate flex h-full flex-col pt-3 ${boardBackground(project).image ? "board-with-image" : ""}`}>
             <BoardBackground project={project} />
             <div className="flex flex-wrap items-center gap-3 px-4 pb-3">
               <label className="flex min-w-48 max-w-sm flex-1 items-center gap-2 rounded-lg border border-ui-ink/10 bg-panel px-3 py-2"><Search className="h-4 w-4 text-zinc-500" /><input aria-label="Buscar tarjetas" placeholder="Buscar tarjetas…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); if (query) setQuery(""); else e.currentTarget.blur(); } }} className="min-w-0 flex-1 bg-transparent text-sm outline-none" />{query && <button aria-label="Limpiar búsqueda" className="text-zinc-500" onClick={() => setQuery("")}>×</button>}</label>
