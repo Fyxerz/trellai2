@@ -9,6 +9,7 @@ import { COLUMNS, COLUMN_LABELS, type Card, type Column, type Project, type Tag 
 import { api, type Board as BoardState } from "./api";
 import { ArrowRight, Eye, EyeOff, GitBranch, GitMerge, ListChecks, Play, Plus, Trash2 } from "lucide-react";
 import { cardTags, TagChip, useProjectTags } from "./tags";
+import { useTagDrag } from "./tagDrag";
 import { confirmDeleteCard, togglePreview } from "./Confirm";
 import { Button, COLUMN_HEX, COLUMN_ICON, StatusBadge } from "./ui";
 import { backgroundUrl, modelLabel, useEngines } from "./models";
@@ -218,7 +219,7 @@ export function Board({
                     {cards.map((card, i) => (
                       <Draggable key={card.id} draggableId={card.id} index={i}>
                         {(dp, ds) => inBody(ds.isDragging, (
-                          <div ref={dp.innerRef} {...dp.draggableProps} {...dp.dragHandleProps} data-card className="board-card cursor-pointer" onKeyDown={e => { if (e.target === e.currentTarget && e.key === "Enter") { e.preventDefault(); e.stopPropagation(); onCursor(col, card.id); onOpen(card.id); } }}>
+                          <div ref={dp.innerRef} {...dp.draggableProps} {...dp.dragHandleProps} data-card data-card-id={card.id} data-card-tags={card.tags.join(",")} className="board-card cursor-pointer" onKeyDown={e => { if (e.target === e.currentTarget && e.key === "Enter") { e.preventDefault(); e.stopPropagation(); onCursor(col, card.id); onOpen(card.id); } }}>
                             <CardItem
                               card={card}
                               dragging={ds.isDragging}
@@ -349,14 +350,26 @@ function CardItem({
   const done = card.checkpoints_total > 0 && card.checkpoints_done === card.checkpoints_total;
   const showBranch = card.branch && (card.column === "doing" || card.column === "review");
   const sync = useSync();
+  // a tag being dragged over this card (shown as if already on it) or just dropped on it
+  const tagDrag = useTagDrag();
+  const hoverTag = tagDrag.hover?.cardId === card.id ? tagDrag.hover.tag : null;
+  const landed = tagDrag.landed?.cardId === card.id ? tagDrag.landed : null;
+  const shownTags = [...tags, ...[hoverTag, landed?.tag].filter((t): t is Tag => !!t && !tags.some((x) => x.id === t.id))].filter(
+    (t, i, all) => all.findIndex((x) => x.id === t.id) === i,
+  );
   const elsewhere = !merged && !!card.machine && !!sync?.enabled && card.machine !== sync.machine && ["preparation", "doing", "review"].includes(card.column);
 
   return (
     <div
       ref={ref}
       onClick={onClick}
+      key={landed?.key}
       style={{
-        boxShadow: dragging ? "var(--shadow-pop)" : "var(--shadow-card)",
+        boxShadow: hoverTag
+          ? `var(--shadow-lift), 0 0 0 2px ${hoverTag.color}aa`
+          : dragging
+            ? "var(--shadow-pop)"
+            : "var(--shadow-card)",
         // Tinted wash over the card's own background so the previewed card stands out (tone set per theme in index.css).
         backgroundImage: previewing ? "linear-gradient(var(--preview-wash), var(--preview-wash))" : undefined,
       }}
@@ -371,6 +384,8 @@ function CardItem({
               ? "border-teal-400/50 hover:-translate-y-px hover:border-teal-400/70"
               : "border-ui-ink/[0.06] hover:-translate-y-px hover:border-ui-ink/[0.12] hover:bg-zinc-800",
         dragging ? "rotate-[1.5deg]" : "",
+        hoverTag ? "-translate-y-0.5" : "",
+        landed ? "card-land" : "",
         merged ? "opacity-55 hover:opacity-90" : "",
       ].join(" ")}
     >
@@ -416,10 +431,14 @@ function CardItem({
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
-      {(tags.length > 0 || previewing || (modelChip && !merged)) && (
+      {(shownTags.length > 0 || previewing || (modelChip && !merged)) && (
         <div className="mb-1.5 flex flex-wrap items-center gap-1">
-          {tags.map((t) => (
-            <TagChip key={t.id} tag={t} />
+          {shownTags.map((t) => (
+            <TagChip
+              key={t.id}
+              tag={t}
+              className={landed?.tag.id === t.id ? "tag-pop" : hoverTag?.id === t.id ? "opacity-80 outline-1 outline-dashed outline-current" : ""}
+            />
           ))}
           {previewing && (
             <span className="flex shrink-0 items-center gap-1 rounded-md bg-teal-400/12 px-1.5 text-[10px] leading-[16px] font-semibold text-success" title="Esta rama está puesta en tu repo">

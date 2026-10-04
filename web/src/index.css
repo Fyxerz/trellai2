@@ -271,3 +271,19 @@ html[data-theme="light"] .tag-chip { color: color-mix(in srgb, var(--tag-color) 
 .ui-dialog { background: var(--color-panel); max-height: calc(100dvh - 2rem); }
 .ui-backdrop { background: rgb(8 12 22 / 0.55); }
 .board-card:focus-within .card-actions { position: static; justify-content: flex-end; margin-bottom: 0.5rem; }
+
+/* A tag dropped on a card: the chip pops in and the card bumps. */
+@keyframes tag-pop {
+  0% { transform: scale(0.3); opacity: 0; }
+  55% { transform: scale(1.25); opacity: 1; }
+  80% { transform: scale(0.95); }
+  100% { transform: scale(1); }
+}
+@keyframes card-land {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.035); }
+  60% { transform: scale(0.99); }
+  100% { transform: scale(1); }
+}
+.tag-pop { animation: tag-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.card-land { animation: card-land 0.5s ease-out; }
