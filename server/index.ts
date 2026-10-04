@@ -4,9 +4,9 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, parse, resolve } from "node:path";
+import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { COLUMNS, isColumn, TAG_COLORS, type Project, type ServerEvent } from "../shared/types.js";
 import { sweepAll } from "./claims.js";
 import * as db from "./db.js";
@@ -203,6 +203,30 @@ app.post("/api/projects/:id/clone", async (c) => {
   const r = await remote.cloneRepo(project.remote_url, dest);
   if (!r.ok) return c.json({ error: r.message }, 400);
   return c.json(db.updateProject(project.id, { repo_path: dest }));
+});
+
+const PROJECT_DOCS = ["README.md", "AGENTS.md", "CLAUDE.md"];
+const DOC_MAX_BYTES = 200_000;
+
+/** The repo's README / AGENTS.md / CLAUDE.md (root only, any casing), for the read-only "Documentos del proyecto" modal. */
+app.get("/api/projects/:id/docs", (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project?.repo_path || !existsSync(project.repo_path)) return c.json({ error: "Este proyecto no está en este ordenador" }, 400);
+  const root = resolve(project.repo_path);
+  const entries = readdirSync(root);
+  const docs: { name: string; content: string; truncated: boolean }[] = [];
+  for (const wanted of PROJECT_DOCS) {
+    const name = entries.find((e) => e.toLowerCase() === wanted.toLowerCase());
+    if (!name) continue;
+    const path = join(root, name);
+    try {
+      const st = statSync(path); // follows symlinks: skip directories and anything that leaves the repo
+      if (!st.isFile() || !realpathSync(path).startsWith(realpathSync(root) + sep)) continue;
+      const buf = readFileSync(path);
+      docs.push({ name, content: buf.subarray(0, DOC_MAX_BYTES).toString("utf8"), truncated: buf.length > DOC_MAX_BYTES });
+    } catch {}
+  }
+  return c.json(docs);
 });
 
 /** Base branch vs the remote, for the header (fetches at most once a minute). */

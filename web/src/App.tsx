@@ -14,6 +14,7 @@ import { ConfirmHost, confirmDeleteCard, togglePreview } from "./Confirm";
 import { Home } from "./Home";
 import {
   Archive,
+  BookOpen,
   ChevronRight,
   Eye,
   Keyboard,
@@ -28,6 +29,7 @@ import {
 } from "lucide-react";
 import { ProjectSettings } from "./models";
 import { TagManager } from "./TagManager";
+import { ProjectDocs } from "./ProjectDocs";
 import { Sidebar } from "./Sidebar";
 import { BranchStatus, SyncIndicator, UnlinkedBanner } from "./SyncUI";
 import { Button, ChatHint, chatKeyDown, Kbd, ProjectAvatar, timeAgo } from "./ui";
@@ -69,6 +71,7 @@ export default function App() {
   const [showAssistant, setShowAssistant] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showTags, setShowTags] = useState(false);
+  const [showDocs, setShowDocs] = useState(false);
   const [assistantMode, setAssistantMode] = useState<AssistantMode>("plan");
   const [selected, setSelected] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => store.get(SIDEBAR_OPEN) !== "0");
@@ -463,6 +466,18 @@ export default function App() {
             variant="ghost"
             size="sm"
             aria-haspopup="dialog"
+            title={project ? "Documentos del proyecto: README, AGENTS.md y CLAUDE.md" : "Abre un proyecto para ver sus documentos"}
+            disabled={!project}
+            onClick={() => setShowDocs(true)}
+            className="ring-1 ring-ui-ink/10"
+          >
+            <BookOpen className="h-4 w-4" />
+            Documentos del proyecto
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-haspopup="dialog"
             title={project ? `Ajustes de ${projectName(project.name)}: modelos y fondo del tablero` : "Abre un proyecto para cambiar sus ajustes"}
             disabled={!project}
             onClick={() => setShowSettings(true)}
@@ -556,6 +571,7 @@ export default function App() {
       <ConfirmHost />
       {showHelp && <Help onClose={() => setShowHelp(false)} />}
       {showTags && project && <TagManager projectId={project.id} onClose={() => setShowTags(false)} onChanged={reload} />}
+      {showDocs && project && <ProjectDocs projectId={project.id} onClose={() => setShowDocs(false)} />}
       {showSettings && project && <ProjectSettings project={project} onClose={() => setShowSettings(false)} onSaved={reload} />}
       {showNew && (
         <NewProject
