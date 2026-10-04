@@ -607,7 +607,7 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
     finally { busy.current = false; setSending(false); }
   };
   return (
-    <aside className="work-panel flex h-full w-[360px] shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel shadow-[-24px_0_48px_-24px_rgb(0_0_0/0.6)]">
+    <aside aria-label="Canal de agentes" style={{ "--panel-width": "360px" } as React.CSSProperties} className="work-panel overlay flex h-full shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel">
       <div className="border-b border-zinc-800 px-4 py-3">
         <div className="flex items-center justify-between"><h2 className="text-sm font-semibold text-zinc-100">Canal de agentes</h2><button aria-label="Cerrar canal" onClick={onClose} className="rounded-lg p-2 text-zinc-400 hover:bg-ui-ink/5"><X className="h-4 w-4" /></button></div>
         <p className="text-xs text-zinc-500">Qué toca cada agente ahora y lo que se cuentan. Cada uno solo recibe lo que afecta a sus ficheros; al salir de Doing se borra lo suyo.</p>
