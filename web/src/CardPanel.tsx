@@ -20,7 +20,6 @@ import {
   FileText,
   GitMerge,
   Hammer,
-  ImagePlus,
   MessagesSquare,
   RotateCcw,
   Sparkles,
@@ -456,20 +455,6 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
   const scroll = useChatScroll(messages.length);
   const busy = useRef(false);
   const [sending, setSending] = useState(false);
-  const [images, setImages] = useState<string[]>([]);
-  const [dragging, setDragging] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
-  const addImages = async (files: Iterable<File>) => {
-    const imgs = [...files].filter((f) => f.type.startsWith("image/"));
-    if (!imgs.length) return false;
-    try {
-      const urls = await Promise.all(imgs.map(imageDataUrl));
-      setImages((prev) => [...prev, ...urls].slice(0, 10));
-    } catch (e) {
-      reportError((e as Error).message);
-    }
-    return true;
-  };
 
   const placeholder: Record<Column, string> = {
     backlog: "Comentario…",
@@ -482,14 +467,10 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
 
   const send = async () => {
     const t = current.current.trim();
-    if ((!t && !images.length) || busy.current) return;
+    if (!t || busy.current) return;
     busy.current = true; setSending(true);
     const submitted = current.current;
-    try {
-      await api(`/api/cards/${card.id}/message`, { text: t, images });
-      if (current.current === submitted) setText("");
-      setImages([]);
-    }
+    try { await api(`/api/cards/${card.id}/message`, { text: t }); if (current.current === submitted) setText(""); }
     catch (e) { reportError((e as Error).message); }
     finally { busy.current = false; setSending(false); }
   };
@@ -515,38 +496,7 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
         <div ref={scroll.end} />
       </div>
       {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300">Nuevos mensajes ↓</button>}
-      <div
-        className={`border-t border-zinc-800 p-3 ${dragging ? "bg-indigo-500/5" : ""}`}
-        onDragOver={(e) => {
-          if (!e.dataTransfer.types.includes("Files")) return;
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => {
-          setDragging(false);
-          if (!e.dataTransfer.files.length) return;
-          e.preventDefault();
-          void addImages(e.dataTransfer.files);
-        }}
-      >
-        {images.length > 0 && (
-          <div className="mb-2 flex flex-wrap gap-2">
-            {images.map((src, i) => (
-              <div key={i} className="group/img relative">
-                <img src={src} alt={`Imagen ${i + 1}`} className="h-16 w-16 rounded-lg object-cover ring-1 ring-zinc-700" />
-                <button
-                  onClick={() => setImages(images.filter((_, k) => k !== i))}
-                  className="absolute -top-1.5 -right-1.5 rounded-full bg-zinc-800 p-0.5 text-zinc-300 ring-1 ring-zinc-600 hover:text-red-300"
-                  aria-label={`Quitar imagen ${i + 1}`}
-                  title="Quitar"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+      <div className="border-t border-zinc-800 p-3">
         <div className="flex items-end gap-2">
           <textarea
             aria-label="Mensaje al agente"
@@ -554,37 +504,11 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => chatKeyDown(e, send, setText)}
-            onPaste={(e) => {
-              const files = [...e.clipboardData.files];
-              if (files.some((f) => f.type.startsWith("image/"))) {
-                e.preventDefault();
-                void addImages(files);
-              }
-            }}
             rows={2}
             placeholder={placeholder[card.column]}
             className="flex-1 resize-none rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
           />
-          <input
-            ref={fileInput}
-            type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp"
-            multiple
-            hidden
-            onChange={(e) => {
-              if (e.target.files) void addImages(e.target.files);
-              e.target.value = "";
-            }}
-          />
-          <button
-            onClick={() => fileInput.current?.click()}
-            className="rounded-lg p-2 text-zinc-500 ring-1 ring-zinc-800 transition hover:bg-ui-ink/[0.05] hover:text-zinc-200"
-            title="Adjuntar imágenes (también puedes pegarlas o arrastrarlas)"
-            aria-label="Adjuntar imágenes"
-          >
-            <ImagePlus className="h-4 w-4" />
-          </button>
-          <Button variant={card.column === "review" ? "primary" : "default"} onClick={send} disabled={(!text.trim() && !images.length) || sending}>
+          <Button variant={card.column === "review" ? "primary" : "default"} onClick={send} disabled={!text.trim() || sending}>
             {card.column === "review" ? "Pedir cambios" : "Enviar"}
           </Button>
         </div>
@@ -844,29 +768,4 @@ function ColumnChip({ column }: { column: Column }) {
 function inheritedModelLabel(card: Card, tags: Tag[], project: Project | null | undefined) {
   const tag = cardTags(card, tags).find((t) => t.model);
   return tag ? `Modelo de la etiqueta «${tag.name}» (${modelLabel(tag.model)})` : `Modelo del proyecto (${modelLabel(project?.model_dev)})`;
-}
-
-/** An image file as a data URL, scaled down so its longest side is at most 2000px. */
-function imageDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error(`No se pudo leer ${file.name}`));
-    reader.onload = () => {
-      const src = reader.result as string;
-      if (file.type === "image/gif") return resolve(src);
-      const img = new Image();
-      img.onerror = () => reject(new Error(`No se pudo abrir ${file.name}`));
-      img.onload = () => {
-        const scale = Math.min(1, 2000 / Math.max(img.width, img.height));
-        if (scale === 1 && file.size < 4 * 1024 * 1024) return resolve(src);
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.round(img.width * scale);
-        canvas.height = Math.round(img.height * scale);
-        canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(file.type === "image/png" ? canvas.toDataURL("image/png") : canvas.toDataURL("image/jpeg", 0.9));
-      };
-      img.src = src;
-    };
-    reader.readAsDataURL(file);
-  });
 }
