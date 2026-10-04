@@ -9,6 +9,7 @@ import { Board, BoardBackground, boardBackground, CAN_ADD, columnCards, moveCard
 import { CardPanel } from "./CardPanel";
 import { FolderPicker } from "./FolderPicker";
 import { CloneRepo } from "./CloneRepo";
+import { CloneToasts } from "./CloneToasts";
 import { Help } from "./Help";
 import { ConfirmHost, confirmDeleteCard, togglePreview } from "./Confirm";
 import { Home } from "./Home";
@@ -568,6 +569,7 @@ export default function App() {
       </main>
 
       <Notifications />
+      <CloneToasts onOpen={(p) => openProject(p.id)} onFinished={reload} />
       <ConfirmHost />
       {showHelp && <Help onClose={() => setShowHelp(false)} />}
       {showTags && project && <TagManager projectId={project.id} onClose={() => setShowTags(false)} onChanged={reload} />}
@@ -577,6 +579,7 @@ export default function App() {
         <NewProject
           canClose={!!projects?.length}
           onClose={() => setShowNew(false)}
+          onCloneStarted={() => setShowNew(false)}
           onCreated={(p) => {
             setShowNew(false);
             reload();
@@ -681,7 +684,7 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
   );
 }
 
-function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onCreated: (p: Project) => void; canClose: boolean }) {
+function NewProject({ onClose, onCreated, onCloneStarted, canClose }: { onClose: () => void; onCreated: (p: Project) => void; onCloneStarted: () => void; canClose: boolean }) {
   const dialogRef = useDialogFocus<HTMLDivElement>();
   const [tab, setTab] = useState<"local" | "clone">("local");
   const [repo, setRepo] = useState<{ path: string; isRepo: boolean } | null>(null);
@@ -727,7 +730,7 @@ function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onC
           <div className="min-w-0 flex-1">
             <h2 className="text-base font-semibold text-zinc-100">Nuevo proyecto</h2>
             <p className="text-xs text-zinc-500">
-              {tab === "local" ? "Elige la carpeta del repo. Las carpetas con git salen en verde." : "Elige uno de tus repos o pega su URL; se clona y se abre su tablero."}
+              {tab === "local" ? "Elige la carpeta del repo. Las carpetas con git salen en verde." : "Elige uno de tus repos o pega su URL; se clona en segundo plano y te avisa al terminar."}
             </p>
           </div>
           <div role="tablist" aria-label="Origen del proyecto" className="flex shrink-0 gap-0.5 rounded-lg bg-zinc-950 p-0.5 ring-1 ring-zinc-800">
@@ -747,7 +750,7 @@ function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onC
         </div>
 
         {tab === "clone" ? (
-          <CloneRepo onCreated={onCreated} footer={footer} />
+          <CloneRepo onCreated={onCreated} onStarted={onCloneStarted} footer={footer} />
         ) : (
           <form
             onSubmit={async (e) => {

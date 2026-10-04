@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Lock, RefreshCw } from "lucide-react";
 import type { GitHubRepos, Project } from "../../shared/types";
 import { api } from "./api";
+import { trackClone } from "./CloneToasts";
 import { FolderPicker } from "./FolderPicker";
 import { Button, Spinner, timeAgo } from "./ui";
 
@@ -23,7 +24,7 @@ const input = "ui-field ui-control mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 
  * or any URL pasted by hand. Clones into <folder>/<name>: by default the folder most of your
  * projects live in (or the last one you chose here), shown in full so you know where it goes.
  */
-export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => void; footer: (submit: React.ReactNode) => React.ReactNode }) {
+export function CloneRepo({ onCreated, onStarted, footer }: { onCreated: (p: Project) => void; onStarted: () => void; footer: (submit: React.ReactNode) => React.ReactNode }) {
   const [gh, setGh] = useState<GitHubRepos | null>(null);
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [query, setQuery] = useState("");
@@ -83,7 +84,13 @@ export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => vo
     setError("");
     setCloning(true);
     try {
-      onCreated(await api<Project>("/api/projects/clone", { url: target.trim(), dest: (base && `${base}${sep}${dirName(target)}`) || undefined, name: name.trim() || undefined }));
+      // Quick checks (bad URL, folder taken) answer at once and stay here; an existing clone comes back
+      // as its project; a real clone runs in the background, followed by a toast so you can keep working.
+      const r = await api<Project | { jobId: string }>("/api/projects/clone", { url: target.trim(), dest: (base && `${base}${sep}${dirName(target)}`) || undefined, name: name.trim() || undefined });
+      if ("jobId" in r) {
+        trackClone(r.jobId, name.trim() || dirName(target));
+        onStarted();
+      } else onCreated(r);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -202,18 +209,13 @@ export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => vo
           Se clonará en{" "}
           <span className="break-all font-mono text-zinc-200">{dest || `${base || "…"}${sep}<nombre del repo>`}</span>
         </p>
-        {cloning && (
-          <p className="flex items-center gap-2 text-xs text-zinc-400">
-            <Spinner /> Clonando… puede tardar un poco si el repo es grande.
-          </p>
-        )}
       </div>
 
       {error && <p className="ui-alert">{error}</p>}
       {footer(
         <Button variant="primary" type="submit" disabled={!url.trim() || cloning}>
           {cloning ? <Spinner /> : null}
-          {cloning ? "Clonando…" : "Clonar y crear proyecto"}
+          {cloning ? "Comprobando…" : "Clonar y crear proyecto"}
         </Button>,
       )}
     </form>

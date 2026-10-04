@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
-import { COLUMNS, isColumn, TAG_COLORS, type Project, type ServerEvent } from "../shared/types.js";
+import { COLUMNS, isColumn, TAG_COLORS, type CloneJob, type Project, type ServerEvent } from "../shared/types.js";
 import { sweepAll } from "./claims.js";
 import * as db from "./db.js";
 import { cleanAnnotations, parseImage } from "./attachments.js";
@@ -161,10 +161,36 @@ app.post("/api/projects/clone", async (c) => {
       return c.json({ error: `Ya existe ${dest} y ${other ? `es otro repo (${other})` : "no es una copia de este repo"}. Elige otra carpeta de destino.` }, 400);
     }
   }
-  const cloned = await remote.cloneRepo(url, dest);
-  if (!cloned.ok) return c.json({ error: cloned.message }, 400);
-  const r = addProject(dest, opts);
-  return "error" in r ? c.json(r, 400) : c.json(r.project);
+  if (cloningInto.has(resolve(dest))) return c.json({ error: `Ya se está clonando algo en ${dest}.` }, 400);
+  // The clone itself runs in the background: the client follows it with GET /api/clone-jobs/:id.
+  const jobId = `clone-${Date.now().toString(36)}-${++cloneSeq}`;
+  const job: CloneJob = { stage: "cloning", percent: 0, message: "Conectando…" };
+  cloneJobs.set(jobId, job);
+  cloningInto.add(resolve(dest));
+  (async () => {
+    const cloned = await remote.cloneRepo(url, dest, (p) => Object.assign(job, { percent: p.percent, message: p.phase }));
+    if (!cloned.ok) return Object.assign(job, { stage: "error", message: cloned.message });
+    Object.assign(job, { stage: "creating", percent: 100, message: undefined });
+    const r = addProject(dest, opts);
+    if ("error" in r) Object.assign(job, { stage: "error", message: r.error });
+    else Object.assign(job, { stage: "done", project: r.project });
+  })()
+    .catch((e) => Object.assign(job, { stage: "error", message: String(e?.message ?? e) }))
+    .finally(() => {
+      cloningInto.delete(resolve(dest));
+      setTimeout(() => cloneJobs.delete(jobId), 60 * 60_000);
+    });
+  return c.json({ jobId });
+});
+
+/** Background clones (in memory: they're gone if the server restarts). */
+const cloneJobs = new Map<string, CloneJob>();
+const cloningInto = new Set<string>();
+let cloneSeq = 0;
+
+app.get("/api/clone-jobs/:id", (c) => {
+  const job = cloneJobs.get(c.req.param("id"));
+  return job ? c.json(job) : c.json({ error: "Ese clonado ya no existe (¿se reinició Trellai?)." }, 404);
 });
 
 // ---------- other computers / GitHub ----------
