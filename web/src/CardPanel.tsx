@@ -44,7 +44,6 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
   const defaultTab: Tab = card.column === "plan" ? "spec" : "activity";
   const [tab, setTab] = useState<Tab>(defaultTab);
   useEffect(() => setTab(defaultTab), [card.id]);
-  const [editSignal, setEditSignal] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [width, setWidth] = useState(() => Math.max(400, Math.min(900, Number(readPreference("panel-width", "540")) || 540)));
   const resize = useRef<{ x: number; width: number } | null>(null);
@@ -63,7 +62,6 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
       else if (k === "e") {
         e.preventDefault();
         setTab("spec");
-        setEditSignal((n) => n + 1);
         focus('[data-kb="spec"]');
       } else if (k === "c") {
         e.preventDefault();
@@ -196,7 +194,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
       </nav>
 
       <div className="min-h-0 flex-1">
-        {tab === "spec" && <SpecTab card={card} board={board} questions={questions} editSignal={editSignal} />}
+        {tab === "spec" && <SpecTab card={card} board={board} questions={questions} />}
         {tab === "activity" && <Activity card={card} messages={messages} />}
         {tab === "diff" && <DiffTab card={card} />}
       </div>
@@ -226,12 +224,10 @@ function TitleInput({ card }: { card: Card }) {
   </>;
 }
 
-function SpecTab({ card, board, questions, editSignal }: { card: Card; board: Board; questions: Question[]; editSignal: number }) {
+function SpecTab({ card, board, questions }: { card: Card; board: Board; questions: Question[] }) {
   const key = `spec-draft:${card.id}`;
   const initialDraft = readPreference(key, card.spec);
   const [spec, setSpec] = useState(initialDraft);
-  const [editing, setEditing] = useState(!card.spec || initialDraft !== card.spec);
-  useEffect(() => { if (editSignal) setEditing(true); }, [editSignal]);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">(initialDraft === card.spec ? "saved" : "saving");
   const [error, setError] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -278,30 +274,21 @@ function SpecTab({ card, board, questions, editSignal }: { card: Card; board: Bo
       <div className="mb-2 flex items-center gap-2">
         <h3 className="ui-section-title">Especificación</h3>
         <span className="text-[11px] text-zinc-600">{{ saved: "Guardado", saving: "Guardando…", error: "Error al guardar" }[saveState]}</span>
-        <button onClick={() => setEditing(!editing)} className="ml-auto text-xs text-accent hover:underline">
-          {editing ? "Vista previa" : "Editar"}
-        </button>
       </div>
       {error && <div role="alert" className="ui-alert mb-3">{error} <button className="ml-2 underline" onClick={() => void flush().catch(() => {})}>Reintentar</button></div>}
-      {editing ? (
-        <textarea
-          aria-label="Especificación"
-          onBlur={() => void flush().catch(() => {})}
-          onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) { e.preventDefault(); void flush().catch(() => {}); } }}
-          data-kb="spec"
-          value={spec}
-          onChange={(e) => {
-            setSpec(e.target.value);
-            save(e.target.value);
-          }}
-          placeholder={"Describe la feature como quieras: qué quieres, por qué, cómo debería comportarse, casos raros…\n\nMarkdown soportado."}
-          className="ui-field ui-control min-h-[50vh] w-full resize-y rounded-lg bg-zinc-900 p-3 font-mono text-sm leading-relaxed text-zinc-200 ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
-        />
-      ) : (
-        <div className="surface rounded-xl p-4">
-          {spec ? <Markdown>{spec}</Markdown> : <p className="ui-empty">Sin spec.</p>}
-        </div>
-      )}
+      <textarea
+        aria-label="Especificación"
+        onBlur={() => void flush().catch(() => {})}
+        onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) { e.preventDefault(); void flush().catch(() => {}); } }}
+        data-kb="spec"
+        value={spec}
+        onChange={(e) => {
+          setSpec(e.target.value);
+          save(e.target.value);
+        }}
+        placeholder={"Describe la feature como quieras: qué quieres, por qué, cómo debería comportarse, casos raros…\n\nMarkdown soportado."}
+        className="ui-field ui-control min-h-[50vh] w-full resize-y rounded-lg bg-zinc-900 p-3 font-mono text-sm leading-relaxed text-zinc-200 ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
+      />
       {card.column !== "backlog" && card.column !== "plan" && (
         <p className="mt-2 text-[11px] text-zinc-500">Si cambias la spec con un agente trabajando, díselo también en Actividad.</p>
       )}
