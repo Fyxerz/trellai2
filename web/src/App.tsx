@@ -23,8 +23,10 @@ import {
   Sparkles,
   Search,
   X,
+  Tags,
 } from "lucide-react";
 import { ProjectSettings } from "./models";
+import { TagManager } from "./TagManager";
 import { Sidebar } from "./Sidebar";
 import { BranchStatus, SyncIndicator, UnlinkedBanner } from "./SyncUI";
 import { Button, ChatHint, chatKeyDown, Kbd, ProjectAvatar, timeAgo } from "./ui";
@@ -65,6 +67,7 @@ export default function App() {
   const [showHelp, setShowHelp] = useState(false);
   const [showAssistant, setShowAssistant] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showTags, setShowTags] = useState(false);
   const [assistantMode, setAssistantMode] = useState<AssistantMode>("plan");
   const [selected, setSelected] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => store.get(SIDEBAR_OPEN) !== "0");
@@ -500,6 +503,7 @@ export default function App() {
               <label className="flex min-w-48 max-w-sm flex-1 items-center gap-2 rounded-lg border border-ui-ink/10 bg-panel px-3 py-2"><Search className="h-4 w-4 text-zinc-500" /><input aria-label="Buscar tarjetas" placeholder="Buscar tarjetas…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); if (query) setQuery(""); else e.currentTarget.blur(); } }} className="min-w-0 flex-1 bg-transparent text-sm outline-none" />{query && <button aria-label="Limpiar búsqueda" className="text-zinc-500" onClick={() => setQuery("")}>×</button>}</label>
               <div role="group" aria-label="Filtrar tarjetas" className="flex flex-wrap gap-1">{[["all", "Todas"], ["waiting", "Te necesitan"], ["review", "Por revisar"], ["error", "Errores"]].map(([value, label]) => <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)} className={`rounded-lg px-3 py-2 text-sm transition ${filter === value ? "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}>{label}</button>)}</div>
               {(query || filter !== "all") && <span role="status" className="text-xs text-zinc-500">{Object.keys(visibleBoard.cards).length} resultados</span>}
+              <button onClick={() => setShowTags(true)} title="Gestionar etiquetas: colores y modelo de cada una" className="ml-auto flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm text-zinc-400 ring-1 ring-ui-ink/10 transition hover:bg-ui-ink/5 hover:text-zinc-200"><Tags className="h-4 w-4" />Etiquetas</button>
             </div>
             {!project.repo_path && <UnlinkedBanner project={project} onLinked={reload} />}
             <div className="min-h-0 flex-1">
@@ -541,6 +545,7 @@ export default function App() {
       <Notifications />
       <ConfirmHost />
       {showHelp && <Help onClose={() => setShowHelp(false)} />}
+      {showTags && project && <TagManager projectId={project.id} onClose={() => setShowTags(false)} onChanged={reload} />}
       {showSettings && project && <ProjectSettings project={project} onClose={() => setShowSettings(false)} onSaved={reload} />}
       {showNew && (
         <NewProject
