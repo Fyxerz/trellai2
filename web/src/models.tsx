@@ -291,7 +291,7 @@ export function ProjectSettings({
             {tab === "models" ? (
               <ModelSettings project={project} onSaved={onSaved} />
             ) : (
-              <BackgroundSettings project={project} codexInstalled={codex?.installed ?? null} onSaved={onSaved} />
+              <BackgroundSettings project={project} codexReady={codex ? codex.installed && codex.loggedIn !== false : null} onSaved={onSaved} />
             )}
           </div>
         </div>
@@ -437,7 +437,7 @@ const BG_MODES: { value: BgMode; label: string }[] = [
 ];
 
 /** "Fondo del tablero": none, a color, or an image Codex draws from what the repo is about. */
-function BackgroundSettings({ project, codexInstalled, onSaved }: { project: Project; codexInstalled: boolean | null; onSaved: () => void }) {
+function BackgroundSettings({ project, codexReady, onSaved }: { project: Project; codexReady: boolean | null; onSaved: () => void }) {
   const [status, setStatus] = useState<BgStatus>({ running: false, error: null, activity: null });
   // Shown at once; the server's answer (and the projects reload) confirms it.
   const [local, setLocal] = useState<{ bg_mode: BgMode; bg_color: string | null }>({ bg_mode: project.bg_mode ?? "none", bg_color: project.bg_color ?? null });
@@ -565,16 +565,16 @@ function BackgroundSettings({ project, codexInstalled, onSaved }: { project: Pro
                   </button>
                 </div>
               ) : (
-                <button onClick={generate} disabled={codexInstalled === false} className={btn} title={codexInstalled === false ? "Hace falta Codex" : undefined}>
+                <button onClick={generate} disabled={codexReady === false} className={btn} title={codexReady === false ? "Hace falta Codex conectado" : undefined}>
                   {project.bg_image ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}
                   {project.bg_image ? "Regenerar" : "Generar imagen"}
                 </button>
               )}
             </div>
           </div>
-          {codexInstalled === false && (
+          {codexReady === false && (
             <p className="text-xs text-amber-300">
-              Hace falta Codex: <code>npm i -g @openai/codex</code> y <code>codex login</code> con tu cuenta de ChatGPT.
+              Hace falta Codex conectado a tu cuenta de ChatGPT: instálalo y conéctalo en la pestaña «Modelos».
             </p>
           )}
           {status.error && !status.running && (

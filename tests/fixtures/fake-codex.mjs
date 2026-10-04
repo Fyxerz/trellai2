@@ -8,6 +8,10 @@ if (args.includes("--version")) {
   console.log("codex-cli 0.0.0-fake");
   process.exit(0);
 }
+if (args[0] === "login" && args[1] === "status") {
+  console.log("Logged in using ChatGPT");
+  process.exit(0);
+}
 const cwd = args[args.indexOf("-C") + 1];
 const prompt = args[args.length - 1];
 const target = prompt.match(/exactly this path[^\n]*\n\s*(.+)/)?.[1].trim();

@@ -98,7 +98,8 @@ export async function generateBackground(projectId: string): Promise<BgStatus> {
   if (jobs.get(projectId)?.running) return backgroundStatus(projectId);
   const codex = await codexStatus();
   if (!codex.installed)
-    throw new Error("Para generar la imagen hace falta Codex: instálalo con `npm i -g @openai/codex` y haz `codex login`.");
+    throw new Error("Para generar la imagen hace falta Codex: instala la app de Codex de OpenAI (o `npm i -g @openai/codex`).");
+  if (!codex.loggedIn) throw new Error("Codex no está conectado: conéctalo con tu cuenta de ChatGPT en Ajustes → Modelos.");
 
   const repo = project.repo_path;
   const abort = new AbortController();
