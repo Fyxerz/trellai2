@@ -38,7 +38,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
   const { messages, questions, checkpoints, setCheckpoints } = useCardDetail(board, card.id);
   const tags = useProjectTags(card.project_id, board);
   const open = questions.filter((q) => q.answer === null);
-  const defaultTab: Tab = card.column === "review" ? "diff" : card.column === "backlog" || card.column === "plan" ? "spec" : "activity";
+  const defaultTab: Tab = "activity";
   const [tab, setTab] = useState<Tab>(defaultTab);
   useEffect(() => setTab(defaultTab), [card.id]);
   const [editSignal, setEditSignal] = useState(0);
