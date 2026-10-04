@@ -567,7 +567,7 @@ function DiffTab({ card }: { card: Card }) {
       </div>
       {files.length === 0 && <p className="text-sm text-zinc-500">Sin cambios todavía.</p>}
       {files.map((f) => (
-        <details key={f.name} open={files.length <= 8} className="mb-3 overflow-hidden rounded-lg ring-1 ring-zinc-800">
+        <details key={f.name} className="mb-3 overflow-hidden rounded-lg ring-1 ring-zinc-800">
           <summary className="cursor-pointer bg-zinc-900 px-3 py-1.5 font-mono text-xs text-zinc-300">
             {f.name}
             <span className="ml-2 text-emerald-400">+{f.add}</span> <span className="text-red-400">−{f.del}</span>
