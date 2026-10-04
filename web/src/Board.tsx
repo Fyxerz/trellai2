@@ -315,8 +315,8 @@ function CardItem({
       onClick={onClick}
       style={{
         boxShadow: dragging ? "var(--shadow-pop)" : "var(--shadow-card)",
-        // Teal wash over the card's own background (both themes) so the previewed card stands out.
-        backgroundImage: previewing ? "linear-gradient(rgb(45 212 191 / 0.16), rgb(45 212 191 / 0.16))" : undefined,
+        // Tinted wash over the card's own background so the previewed card stands out (tone set per theme in index.css).
+        backgroundImage: previewing ? "linear-gradient(var(--preview-wash), var(--preview-wash))" : undefined,
       }}
       className={[
         "board-card group/card relative overflow-hidden rounded-[var(--radius-card)] border bg-zinc-900 px-3 py-2.5 transition-all duration-150",
