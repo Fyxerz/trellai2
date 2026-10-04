@@ -9,7 +9,7 @@ import { COLUMN_LABELS, type Card, type Checkpoint, type Column, type Message, t
 import { ModelPicker, modelLabel } from "./models";
 import { AddImageButton, SpecImages, useChatImages } from "./ImageEditor";
 import { prettyModel } from "../../shared/models";
-import { confirmDeleteCard, togglePreview } from "./Confirm";
+import { confirmDeleteCard, confirmDialog, togglePreview } from "./Confirm";
 import {
   ArrowRight,
   Bot,
@@ -27,6 +27,7 @@ import {
   Square,
   Terminal,
   Trash2,
+  Undo2,
   X,
 } from "lucide-react";
 import { api, useCardDetail, type Board } from "./api";
@@ -489,7 +490,9 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
           </p>
         )}
         {messages.map((m) => (
-          <MessageRow key={m.id} m={m} />
+          <div key={m.id} className={m.undone && m.role !== "user" ? "opacity-40" : undefined} title={m.undone && m.role !== "user" ? "Deshecho al retroceder" : undefined}>
+            <MessageRow m={m} card={card} />
+          </div>
         ))}
         {card.status === "running" && (
           <div className="flex items-center gap-2 pt-1 text-xs text-amber-300/80">
@@ -524,7 +527,25 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
   );
 }
 
-function MessageRow({ m }: { m: Message }) {
+/** ↶ on one of your requests: says what gets thrown away, then rewinds the card's branch. */
+async function rewind(card: Card, m: Message) {
+  try {
+    const { commits, dirty } = await api<{ commits: string[]; dirty: boolean }>(`/api/cards/${card.id}/messages/${m.id}/rewind`);
+    const list = commits.slice(0, 8).map((s) => `• ${s}`).join("\n");
+    const body = [
+      commits.length ? `Se borran ${commits.length} commit(s) de la rama:\n${list}${commits.length > 8 ? "\n…" : ""}` : "No hay commits después de este mensaje.",
+      dirty ? "También se descartan los cambios sin commitear del worktree." : "",
+      card.status === "running" ? "El agente se detiene." : "",
+      m.column_before && m.column_before !== card.column ? `La tarjeta vuelve a ${COLUMN_LABELS[m.column_before]}.` : "",
+    ].filter(Boolean).join("\n\n");
+    if (!(await confirmDialog({ title: "¿Retroceder a antes de este mensaje?", body, confirmLabel: "Retroceder", danger: commits.length > 0 || dirty }))) return;
+    await api(`/api/cards/${card.id}/messages/${m.id}/rewind`, {});
+  } catch (e) {
+    reportError((e as Error).message);
+  }
+}
+
+function MessageRow({ m, card }: { m: Message; card: Card }) {
   if (m.role === "tool")
     return (
       <div className="flex min-w-0 items-center gap-1.5 pl-1 font-mono text-[11px] text-zinc-500" title={m.content}>
@@ -540,9 +561,20 @@ function MessageRow({ m }: { m: Message }) {
     );
   if (m.role === "user")
     return (
-      <div className="flex justify-end">
+      <div className={`group flex items-start justify-end gap-1.5 ${m.undone ? "opacity-50" : ""}`}>
+        {m.head_sha && !m.undone && card.column !== "merged" && (
+          <button
+            onClick={() => rewind(card, m)}
+            title="Retroceder: volver la rama a como estaba antes de este mensaje"
+            aria-label="Retroceder a antes de este mensaje"
+            className="mt-1.5 rounded p-1 text-zinc-500 opacity-0 transition group-hover:opacity-100 hover:bg-zinc-800 hover:text-zinc-200 focus:opacity-100"
+          >
+            <Undo2 className="h-3.5 w-3.5" />
+          </button>
+        )}
         <div className="max-w-[85%] rounded-2xl rounded-br-md bg-indigo-500/15 px-3.5 py-2 text-sm text-zinc-100 ring-1 ring-indigo-400/20">
           <Markdown>{m.content}</Markdown>
+          {m.undone && <div className="mt-1 text-[11px] text-zinc-400">↶ deshecho</div>}
         </div>
       </div>
     );
