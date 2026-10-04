@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Plus, Tag as TagIcon, Trash2 } from "lucide-react";
-import { TAG_COLORS, type Card, type Tag } from "../../shared/types";
+import { Check, Cpu, Plus, Settings2, Tag as TagIcon, Trash2 } from "lucide-react";
+import { type Card, type Tag } from "../../shared/types";
 import { api, type Board } from "./api";
 import { confirmDialog } from "./Confirm";
 import { reportError } from "./notifications";
+import { modelLabel } from "./models";
+import { TagManager } from "./TagManager";
 
 /** The project's tags, live (local changes, other tabs and other computers). */
 export function useProjectTags(projectId: string | null | undefined, board: Board) {
@@ -30,9 +32,11 @@ export function TagChip({ tag, className = "" }: { tag: Tag; className?: string 
     <span
       className={`inline-flex max-w-full items-center gap-1 rounded-md px-1.5 text-[10.5px] leading-[18px] font-medium ${className}`}
       style={{ background: `${tag.color}22`, color: tag.color }}
+      title={tag.model ? `Modelo: ${modelLabel(tag.model)}` : undefined}
     >
       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: tag.color }} />
       <span className="truncate">{tag.name}</span>
+      {tag.model && <Cpu className="h-2.5 w-2.5 shrink-0 opacity-80" aria-label={`Modelo: ${modelLabel(tag.model)}`} />}
     </span>
   );
 }
@@ -46,6 +50,7 @@ export function cardTags(card: Card, tags: Tag[]) {
 export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [managing, setManaging] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const on = cardTags(card, tags);
 
@@ -69,10 +74,10 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
       reportError((e as Error).message);
     }
   };
-  const recolor = (t: Tag) =>
-    api(`/api/projects/${card.project_id}/tags/${t.id}`, { color: TAG_COLORS[(TAG_COLORS.indexOf(t.color) + 1) % TAG_COLORS.length] }, "PATCH").catch((e) =>
-      reportError(e.message),
-    );
+  const manage = () => {
+    setOpen(false);
+    setManaging(true);
+  };
   const remove = async (t: Tag) => {
     const ok = await confirmDialog({ title: `¿Borrar la etiqueta "${t.name}"?`, body: "Se quitará de todas las tarjetas del proyecto.", confirmLabel: "Borrar", danger: true });
     if (!ok) return;
@@ -126,14 +131,20 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
             {shown.map((t) => (
               <li key={t.id} className="group/tag flex items-center gap-1 rounded-lg hover:bg-ui-ink/[0.05]">
                 <button
-                  onClick={() => recolor(t)}
+                  onClick={manage}
                   className="ml-1.5 h-3.5 w-3.5 shrink-0 rounded-full ring-1 ring-black/20"
                   style={{ background: t.color }}
-                  title="Cambiar color"
+                  title="Cambiar color y modelo"
                   aria-label={`Cambiar color de ${t.name}`}
                 />
                 <button onClick={() => toggle(t)} className="flex min-w-0 flex-1 items-center gap-2 px-1.5 py-1.5 text-left text-sm text-zinc-200">
                   <span className="truncate">{t.name}</span>
+                  {t.model && (
+                    <span className="flex shrink-0 items-center gap-0.5 text-[10.5px] text-zinc-500" title="Modelo de la etiqueta (se cambia en Ajustes del proyecto)">
+                      <Cpu className="h-2.5 w-2.5" />
+                      {modelLabel(t.model, true)}
+                    </span>
+                  )}
                   {card.tags.includes(t.id) && <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-indigo-300" />}
                 </button>
                 <button
@@ -153,8 +164,15 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
               <Plus className="h-3.5 w-3.5" /> Crear «{query.trim()}»
             </button>
           )}
+          <button
+            onClick={manage}
+            className="mt-1 flex w-full items-center gap-2 border-t border-ui-ink/[0.06] px-2.5 pt-2 pb-1 text-left text-xs text-zinc-400 hover:text-zinc-100"
+          >
+            <Settings2 className="h-3.5 w-3.5" /> Gestionar etiquetas (colores y modelos)…
+          </button>
         </div>
       )}
+      {managing && <TagManager projectId={card.project_id} onClose={() => setManaging(false)} />}
     </div>
   );
 }

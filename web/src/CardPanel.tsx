@@ -1,11 +1,11 @@
 import { useMessageDraft, useChatScroll } from "./chat";
 import { readPreference, writePreference } from "./preferences";
 import { registerDraft } from "./drafts";
-import { TagPicker, useProjectTags } from "./tags";
+import { cardTags, TagPicker, useProjectTags } from "./tags";
 import { reportError } from "./notifications";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MachineChip } from "./SyncUI";
-import { COLUMN_LABELS, type Card, type Checkpoint, type Column, type Message, type Project, type Question } from "../../shared/types";
+import { COLUMN_LABELS, type Card, type Checkpoint, type Column, type Message, type Project, type Question, type Tag } from "../../shared/types";
 import { ModelPicker, modelLabel } from "./models";
 import { AddImageButton, SpecImages, useChatImages } from "./ImageEditor";
 import { prettyModel } from "../../shared/models";
@@ -100,7 +100,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
           <ModelPicker
             className="ml-auto"
             value={card.model}
-            inheritLabel={`Modelo del proyecto (${modelLabel(project?.model_dev)})`}
+            inheritLabel={inheritedModelLabel(card, tags, project)}
             title="Modelo que usa el agente de esta tarjeta (preparación y desarrollo). Se aplica en el siguiente paso del agente."
             onChange={(model) => api(`/api/cards/${card.id}`, { model }, "PATCH")}
           />
@@ -768,4 +768,10 @@ function ColumnChip({ column }: { column: Column }) {
       {COLUMN_LABELS[column]}
     </span>
   );
+}
+
+/** What the card's dev agent uses when the card has no model of its own: its first tag with a model, else the project's. */
+function inheritedModelLabel(card: Card, tags: Tag[], project: Project | null | undefined) {
+  const tag = cardTags(card, tags).find((t) => t.model);
+  return tag ? `Modelo de la etiqueta «${tag.name}» (${modelLabel(tag.model)})` : `Modelo del proyecto (${modelLabel(project?.model_dev)})`;
 }

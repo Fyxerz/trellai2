@@ -289,10 +289,15 @@ export function cardTools(kind: AgentKind, kit: ReturnType<typeof makeToolkit>):
   ];
 }
 
-/** The model a card's agent uses: the card's own choice, else the project's default for that phase. */
+/** The model a card's agent uses: the card's own choice, else (dev only) its first tagged model, else the project's default for that phase. */
 export function cardModel(card: Card, kind: AgentKind): string {
   const p = db.getProject(card.project_id);
-  return card.model || (kind === "prep" ? p?.model_prep : p?.model_dev) || "claude";
+  return card.model || (kind === "dev" ? tagModel(card) : null) || (kind === "prep" ? p?.model_prep : p?.model_dev) || "claude";
+}
+
+/** Model of the card's first tag (in the project's tag order) that has one. */
+export function tagModel(card: Card): string | null {
+  return db.getProject(card.project_id)?.tags.find((t) => t.model && card.tags.includes(t.id))?.model ?? null;
 }
 
 /** Everything an agent needs when it can't resume the previous session (e.g. the model changed). */

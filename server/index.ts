@@ -342,9 +342,11 @@ app.get("/api/projects/:id/events", (c) => {
 
 // ---------- tags ----------
 
-const tagBody = (b: { name?: string; color?: string }) => ({
+const tagBody = (b: { name?: string; color?: string; model?: unknown }) => ({
   name: b.name?.trim().slice(0, 40) || undefined,
   color: b.color && /^#[0-9a-f]{6}$/i.test(b.color) ? b.color : undefined,
+  // undefined = leave as is; "" / null = no model
+  model: b.model === undefined ? undefined : typeof b.model === "string" ? b.model.trim() || null : null,
 });
 
 app.get("/api/projects/:id/tags", (c) => c.json(db.getProject(c.req.param("id"))?.tags ?? []));
@@ -352,10 +354,10 @@ app.get("/api/projects/:id/tags", (c) => c.json(db.getProject(c.req.param("id"))
 app.post("/api/projects/:id/tags", async (c) => {
   const project = db.getProject(c.req.param("id"));
   if (!project) return c.json({ error: "Proyecto no encontrado" }, 404);
-  const { name, color } = tagBody(await c.req.json());
+  const { name, color, model } = tagBody(await c.req.json());
   if (!name) return c.json({ error: "Falta el nombre de la etiqueta" }, 400);
   if (project.tags.some((t) => t.name.toLowerCase() === name.toLowerCase())) return c.json({ error: `Ya existe la etiqueta "${name}"` }, 400);
-  const tag = db.ensureTag(project.id, name, color ?? TAG_COLORS[project.tags.length % TAG_COLORS.length]);
+  const tag = db.ensureTag(project.id, name, color ?? TAG_COLORS[project.tags.length % TAG_COLORS.length], model ?? null);
   emitTags(project.id, db.getProject(project.id)!.tags);
   return c.json(tag);
 });
@@ -368,7 +370,7 @@ app.patch("/api/projects/:id/tags/:tagId", async (c) => {
   if (patch.name && project.tags.some((t) => t.id !== id && t.name.toLowerCase() === patch.name!.toLowerCase())) {
     return c.json({ error: `Ya existe la etiqueta "${patch.name}"` }, 400);
   }
-  const tags = db.setProjectTags(project.id, project.tags.map((t) => (t.id === id ? { ...t, name: patch.name ?? t.name, color: patch.color ?? t.color } : t)));
+  const tags = db.setProjectTags(project.id, project.tags.map((t) => (t.id === id ? { ...t, name: patch.name ?? t.name, color: patch.color ?? t.color, model: patch.model === undefined ? (t.model ?? null) : patch.model } : t)));
   emitTags(project.id, tags);
   return c.json(tags.find((t) => t.id === id) ?? null);
 });
@@ -410,7 +412,7 @@ app.post("/api/cards/:id/copy", async (c) => {
   const sourceTags = db.getProject(source.project_id)?.tags ?? [];
   const tags = source.tags.map((id) => sourceTags.find((t) => t.id === id)).filter((t) => !!t);
   if (tags.length) {
-    card = db.updateCard(card.id, { tags: tags.map((t) => db.ensureTag(project_id, t.name, t.color).id) });
+    card = db.updateCard(card.id, { tags: tags.map((t) => db.ensureTag(project_id, t.name, t.color, t.model ?? null).id) });
     emitTags(project_id, db.getProject(project_id)!.tags);
   }
   const from = db.getProject(source.project_id)!;
