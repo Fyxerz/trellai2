@@ -50,6 +50,8 @@ export interface Project {
   bg_color: string | null;
   /** when this computer last generated `.trellai/background.*` (ms, as text; cache-buster) — null = no image */
   bg_image: string | null;
+  /** When preparation finishes, move the card to Doing by itself (otherwise it waits in Preparation) */
+  auto_doing: boolean;
   created_at: string;
 }
 

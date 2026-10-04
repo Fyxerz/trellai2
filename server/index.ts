@@ -296,6 +296,7 @@ app.post("/api/projects/:id/pull", async (c) => {
 app.patch("/api/projects/:id", async (c) => {
   const body = await c.req.json<Record<string, string | null>>();
   if (!db.getProject(c.req.param("id"))) return c.json({ error: "Proyecto no encontrado" }, 404);
+  if (body.auto_doing !== undefined && typeof body.auto_doing !== "boolean") return c.json({ error: "auto_doing debe ser true o false" }, 400);
   if (body.bg_mode !== undefined && !["none", "color", "image"].includes(body.bg_mode as string))
     return c.json({ error: "Fondo no válido (none, color o image)" }, 400);
   if (body.bg_color != null && !/^#[0-9a-f]{6}$/i.test(body.bg_color)) return c.json({ error: "Color no válido (#rrggbb)" }, 400);

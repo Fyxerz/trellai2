@@ -75,7 +75,7 @@ can be implemented without important ambiguity.
     kept — send only the ones you want to ADD.
   - \`plan\`: optional short notes for the developer agent (decisions, gotchas) — don't repeat the checkpoints.
   - \`files\`: the files you expect to touch.
-  The card will then move to DOING automatically.
+  The card is then ready for DOING (Trellai or Pedro moves it there).
 
 Always write to Pedro in Spanish. Be brief.`;
 
@@ -137,7 +137,7 @@ export function makeToolkit(card: Card, signals: Signals) {
       }
       if (checkpoints.length) emitCheckpoints(card.project_id, card.id);
       signals.ready = { plan, files };
-      return "Card marked as ready. It will move to DOING. End your turn now.";
+      return "Card marked as ready for DOING. End your turn now.";
     },
     postNote(message: string, files: string[] = []) {
       const note = db.addNote(card.project_id, card.id, message, { files: files.map((f) => f.trim()).filter(Boolean) });
