@@ -2,7 +2,7 @@ import { projectName, useDialogFocus } from "./preferences";
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api";
-import { Check, ChevronDown, Cpu, Image as ImageIcon, Loader2, RefreshCw, Sparkles, X } from "lucide-react";
+import { Check, ChevronDown, Cpu, Image as ImageIcon, Loader2, RefreshCw, Sparkles, Workflow, X } from "lucide-react";
 import { TAG_PALETTE, type BgMode, type BgStatus, type Project } from "../../shared/types";
 import { reportError } from "./notifications";
 import { CODEX_EFFORTS, EFFORT_LABELS, EFFORTS, prettyModel, splitEffort, withEffort, type Effort } from "../../shared/models";
@@ -440,6 +440,8 @@ export function ProjectSettings({
           <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`} className="min-w-0 flex-1 overflow-y-auto p-5">
             {tab === "models" ? (
               <ModelSettings project={project} onSaved={onSaved} />
+            ) : tab === "flow" ? (
+              <FlowSettings project={project} onSaved={onSaved} />
             ) : (
               <BackgroundSettings project={project} codexReady={codex ? codex.installed && codex.loggedIn !== false : null} onSaved={onSaved} />
             )}
@@ -450,10 +452,11 @@ export function ProjectSettings({
   );
 }
 
-type SettingsTab = "models" | "background";
+type SettingsTab = "models" | "flow" | "background";
 const SETTINGS_TAB = "trellai:settings-tab";
 const SETTINGS_TABS: { id: SettingsTab; label: string; icon: typeof Cpu }[] = [
   { id: "models", label: "Modelos", icon: Cpu },
+  { id: "flow", label: "Flujo", icon: Workflow },
   { id: "background", label: "Fondo del tablero", icon: ImageIcon },
 ];
 
@@ -486,6 +489,52 @@ function ModelSettings({ project, onSaved }: { project: Project; onSaved: () => 
         </div>
         <EngineStatus />
     </div>
+  );
+}
+
+/** How cards move between columns on their own. */
+function FlowSettings({ project, onSaved }: { project: Project; onSaved: () => void }) {
+  // Shown at once; the server's answer (and the projects reload) confirms it.
+  const [on, setOn] = useState(!!project.auto_doing);
+  useEffect(() => setOn(!!project.auto_doing), [project.auto_doing]);
+  const toggle = () => {
+    const next = !on;
+    setOn(next);
+    api<Project>(`/api/projects/${project.id}`, { auto_doing: next }, "PATCH")
+      .then(onSaved)
+      .catch((e) => {
+        setOn(!next);
+        reportError((e as Error).message);
+      });
+  };
+  return (
+    <section className="space-y-4" aria-label="Flujo">
+      <div>
+        <h3 className="text-sm font-semibold text-zinc-100">Flujo</h3>
+        <p className="text-[11px] text-zinc-500">Cómo avanzan las tarjetas por sí solas.</p>
+      </div>
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div id="auto-doing-label" className="text-sm text-zinc-200">
+            Pasar a Doing automáticamente al terminar la preparación
+          </div>
+          <div className="text-[11px] text-zinc-500">
+            {on
+              ? "Cuando la preparación termina, la tarjeta pasa sola a Doing y empieza el desarrollo."
+              : "Cuando la preparación termina, la tarjeta se queda en Preparation con los checkpoints escritos. Muévela a Doing cuando quieras."}
+          </div>
+        </div>
+        <button
+          role="switch"
+          aria-checked={on}
+          aria-labelledby="auto-doing-label"
+          onClick={toggle}
+          className={`relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition ${on ? "bg-indigo-600" : "bg-zinc-700"}`}
+        >
+          <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${on ? "translate-x-4" : ""}`} />
+        </button>
+      </div>
+    </section>
   );
 }
 

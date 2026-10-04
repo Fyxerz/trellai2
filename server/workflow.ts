@@ -237,7 +237,14 @@ function startPrep(card: Card, message?: string) {
 
 async function afterPrep(card: Card, res: RunResult): Promise<void> {
   if (res.signals.ready) {
-    set(card.id, { plan: res.signals.ready.plan, files: res.signals.ready.files, status: "idle", status_text: "" });
+    const { plan, files } = res.signals.ready;
+    if (!projectOf(card).auto_doing) {
+      // Pedro moves it when he wants; onEnter("doing") starts the dev with this plan.
+      set(card.id, { plan, files, status: "waiting", status_text: "Lista — muévela a Doing cuando quieras" });
+      log(card, "system", "✅ Spec clara — lista para Doing: muévela cuando quieras.");
+      return;
+    }
+    set(card.id, { plan, files, status: "idle", status_text: "" });
     log(card, "system", "✅ Spec clara — pasa a Doing automáticamente.");
     moveCard(card.id, "doing", Number.MAX_SAFE_INTEGER, "automático: la preparación ha terminado");
     return;

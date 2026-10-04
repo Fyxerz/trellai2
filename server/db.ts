@@ -156,6 +156,8 @@ addColumn("messages", "undone", "undone INTEGER NOT NULL DEFAULT 0");
 addColumn("projects", "bg_mode", "bg_mode TEXT NOT NULL DEFAULT 'none'");
 addColumn("projects", "bg_color", "bg_color TEXT");
 addColumn("projects", "bg_image", "bg_image TEXT");
+/** 1 = a card that finishes preparation moves to Doing by itself (off by default). */
+addColumn("projects", "auto_doing", "auto_doing INTEGER NOT NULL DEFAULT 0");
 
 /** Tables whose rows use a local INTEGER id; `uid` identifies them across computers. */
 export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages", "attachments"] as const;
@@ -170,10 +172,10 @@ const now = () => new Date().toISOString();
 
 // ---------- projects ----------
 
-type ProjectRow = Omit<Project, "tags"> & { tags: string };
+type ProjectRow = Omit<Project, "tags" | "auto_doing"> & { tags: string; auto_doing: number };
 
 function toProject(row: ProjectRow | undefined): Project | undefined {
-  return row && { ...row, tags: safeJson<Tag[]>(row.tags, []) };
+  return row && { ...row, tags: safeJson<Tag[]>(row.tags, []), auto_doing: !!row.auto_doing };
 }
 
 export function listProjects(): Project[] {
@@ -209,10 +211,12 @@ export function createProject(p: { name: string; repo_path: string; base_branch:
 
 export function updateProject(
   id: string,
-  patch: Partial<Pick<Project, "name" | "base_branch" | "repo_path" | "remote_url" | ModelRole | "bg_mode" | "bg_color" | "bg_image">>,
+  patch: Partial<Pick<Project, "name" | "base_branch" | "repo_path" | "remote_url" | ModelRole | "bg_mode" | "bg_color" | "bg_image" | "auto_doing">>,
 ): Project {
-  const allowed = ["name", "base_branch", "repo_path", "remote_url", "model_prep", "model_dev", "model_plan", "model_do", "model_ui", "bg_mode", "bg_color", "bg_image"];
-  const entries = Object.entries(patch).filter(([k, v]) => allowed.includes(k) && v !== undefined);
+  const allowed = ["name", "base_branch", "repo_path", "remote_url", "model_prep", "model_dev", "model_plan", "model_do", "model_ui", "bg_mode", "bg_color", "bg_image", "auto_doing"];
+  const entries = Object.entries(patch)
+    .filter(([k, v]) => allowed.includes(k) && v !== undefined)
+    .map(([k, v]) => [k, k === "auto_doing" ? (v ? 1 : 0) : v] as const);
   if (entries.length) {
     const sets = entries.map(([k]) => `${k} = @${k}`).join(", ");
     db.prepare(`UPDATE projects SET ${sets} WHERE id = @id`).run({ id, ...Object.fromEntries(entries) });

@@ -71,6 +71,19 @@ afterAll(() => {
 });
 
 describe("board flow", () => {
+  it("by default a prepared card waits in preparation until moved to doing", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Perfil", spec: "Página de perfil", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "preparation" });
+    const ready = await waitFor(c.id, (x) => x.status === "waiting");
+    expect(ready.column).toBe("preparation");
+    expect((await api<any[]>(`/api/cards/${c.id}/checkpoints`)).length).toBeGreaterThan(0);
+    await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    // the rest of the flow tests run with the automatic move on
+    const p = await api<any>(`/api/projects/${projectId}`, { auto_doing: true }, "PATCH");
+    expect(p.auto_doing).toBe(true);
+  });
+
   it("clear spec: preparation → doing → review automatically", async () => {
     const c = await api<Card>("/api/cards", { project_id: projectId, title: "Login con email", spec: "Añadir login", column: "plan" });
     await api(`/api/cards/${c.id}/checkpoints`, { text: "Pantalla de login" });
