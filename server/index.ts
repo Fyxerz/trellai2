@@ -14,7 +14,7 @@ import { cleanAnnotations, parseImage } from "./attachments.js";
 import { emitAttachments, emitCard, emitCardDeleted, emitCheckpoints, emitMessage, emitNote, emitTags, subscribe } from "./events.js";
 import * as git from "./git.js";
 import * as wf from "./workflow.js";
-import { claudeModels, codexDefaultModel, codexStatus, mcpCallTool, mcpListTools } from "./engine.js";
+import { claudeLoggedIn, claudeModels, codexDefaultModel, codexStatus, loginState, mcpCallTool, mcpListTools, startLogin } from "./engine.js";
 import { startPreview, stopPreview } from "./preview.js";
 import { MACHINE } from "./machine.js";
 import * as remote from "./remote.js";
@@ -196,8 +196,18 @@ app.patch("/api/projects/:id", async (c) => {
 // ---------- engines / models ----------
 
 app.get("/api/engines", async (c) => {
-  const [models, codex] = await Promise.all([claudeModels().catch(() => []), codexStatus()]);
-  return c.json({ claude: { installed: true, models }, codex: { ...codex, defaultModel: codexDefaultModel() } });
+  const [models, codex, claudeIn] = await Promise.all([claudeModels().catch(() => []), codexStatus(), claudeLoggedIn()]);
+  return c.json({
+    claude: { installed: true, loggedIn: claudeIn, models, login: loginState("claude") },
+    codex: { ...codex, defaultModel: codexDefaultModel(), login: loginState("codex") },
+  });
+});
+
+// Opens the engine's login page in the browser (the CLI waits for the callback); the UI polls /api/engines.
+app.post("/api/engines/:engine/login", (c) => {
+  const engine = c.req.param("engine");
+  if (engine !== "claude" && engine !== "codex") return c.json({ error: "Motor desconocido" }, 400);
+  return c.json(startLogin(engine));
 });
 
 // Codex reaches Trellai's tools through server/mcp-bridge.mjs, which calls these.
