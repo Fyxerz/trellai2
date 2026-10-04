@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve } from "node:path";
-import { COLUMNS, isColumn, TAG_COLORS, type ServerEvent } from "../shared/types.js";
+import { COLUMNS, isColumn, TAG_COLORS, type Project, type ServerEvent } from "../shared/types.js";
 import { sweepAll } from "./claims.js";
 import * as db from "./db.js";
 import { cleanAnnotations, parseImage } from "./attachments.js";
@@ -18,6 +18,7 @@ import { claudeLoggedIn, claudeModels, codexDefaultModel, codexStatus, loginStat
 import { startPreview, stopPreview } from "./preview.js";
 import { MACHINE } from "./machine.js";
 import * as remote from "./remote.js";
+import * as github from "./github.js";
 import { startSync, syncStatus } from "./sync.js";
 import { assistantRunning, sendToAssistant, stopAssistant } from "./assistant.js";
 import { buildInfo, distDir, startSelfUpdate } from "./selfupdate.js";
@@ -93,23 +94,63 @@ app.post("/api/fs/pick", async (c) => {
 
 app.get("/api/projects", (c) => c.json(db.listProjects()));
 
-app.post("/api/projects", async (c) => {
-  const body = await c.req.json<{ name?: string; repo_path?: string; base_branch?: string; init?: boolean }>();
-  const path = expandHome(String(body.repo_path ?? "").trim());
-  if (!existsSync(path) || !statSync(path).isDirectory()) return c.json({ error: `No existe la carpeta: ${path}` }, 400);
+/** Add the repo at `path` to the board (shared by "Carpeta local" and "Clonar de GitHub"). */
+function addProject(path: string, opts: { name?: string; base_branch?: string; init?: boolean } = {}): { project: Project } | { error: string; notRepo?: boolean } {
+  if (!existsSync(path) || !statSync(path).isDirectory()) return { error: `No existe la carpeta: ${path}` };
   if (!git.isRepo(path)) {
-    if (!body.init) return c.json({ error: `No es un repositorio git: ${path}`, notRepo: true }, 400);
+    if (!opts.init) return { error: `No es un repositorio git: ${path}`, notRepo: true };
     git.initRepo(path);
   }
   const repo = git.topLevel(path);
-  if (!git.hasCommits(repo)) return c.json({ error: "El repo no tiene ningún commit todavía. Haz un primer commit." }, 400);
+  if (!git.hasCommits(repo)) return { error: "El repo no tiene ningún commit todavía. Haz un primer commit." };
   const remoteUrl = git.remoteUrlSync(repo);
   // Already on the board from another computer? Then this is just where it lives here.
   const twin = db.listProjects().find((p) => !p.repo_path && git.sameRemoteSync(p.remote_url, remoteUrl));
-  if (twin) return c.json(db.updateProject(twin.id, { repo_path: repo }));
-  const base = body.base_branch?.trim() || git.currentBranch(repo);
-  const name = basename(body.name?.trim() || repo);
-  return c.json(db.createProject({ name, repo_path: repo, base_branch: base, remote_url: remoteUrl }));
+  if (twin) return { project: db.updateProject(twin.id, { repo_path: repo })! };
+  const base = opts.base_branch?.trim() || git.currentBranch(repo);
+  const name = basename(opts.name?.trim() || repo);
+  return { project: db.createProject({ name, repo_path: repo, base_branch: base, remote_url: remoteUrl }) };
+}
+
+app.post("/api/projects", async (c) => {
+  const body = await c.req.json<{ name?: string; repo_path?: string; base_branch?: string; init?: boolean }>();
+  const r = addProject(expandHome(String(body.repo_path ?? "").trim()), body);
+  return "error" in r ? c.json(r, 400) : c.json(r.project);
+});
+
+/** Your GitHub repos through the `gh` CLI (+ whether it's installed / logged in). */
+app.get("/api/github/repos", async (c) => c.json(await github.listRepos()));
+
+/** Clone a repo (default: ~/code/<name>) and add it to the board. A folder already holding that repo is reused. */
+app.post("/api/projects/clone", async (c) => {
+  const body = await c.req.json<{ url?: string; dest?: string; name?: string; base_branch?: string }>();
+  let url = String(body.url ?? "").trim();
+  if (!url) return c.json({ error: "Pega la URL del repo." }, 400);
+  // "owner/name" → GitHub
+  if (/^[\w.-]+\/[\w.-]+$/.test(url) && !existsSync(expandHome(url))) url = `https://github.com/${url}.git`;
+  const dirName = github.repoDirName(url);
+  if (!dirName) return c.json({ error: `No entiendo esa URL: ${url}` }, 400);
+  const dest = expandHome(body.dest?.trim() || join("~/code", dirName));
+  const opts = { name: body.name?.trim() || dirName, base_branch: body.base_branch };
+  if (existsSync(dest)) {
+    if (git.isRepo(dest) && git.sameRemoteSync(git.remoteUrlSync(dest), url)) {
+      // Already cloned there: reuse it (and its project, if it's on the board already).
+      const repo = git.topLevel(dest);
+      const existing = db.listProjects().find((p) => p.repo_path && resolve(p.repo_path) === resolve(repo));
+      if (existing) return c.json(existing);
+      const r = addProject(repo, opts);
+      return "error" in r ? c.json(r, 400) : c.json(r.project);
+    }
+    const empty = statSync(dest).isDirectory() && readdirSync(dest).length === 0;
+    if (!empty) {
+      const other = git.isRepo(dest) ? git.remoteUrlSync(dest) : null;
+      return c.json({ error: `Ya existe ${dest} y ${other ? `es otro repo (${other})` : "no es una copia de este repo"}. Elige otra carpeta de destino.` }, 400);
+    }
+  }
+  const cloned = await remote.cloneRepo(url, dest);
+  if (!cloned.ok) return c.json({ error: cloned.message }, 400);
+  const r = addProject(dest, opts);
+  return "error" in r ? c.json(r, 400) : c.json(r.project);
 });
 
 // ---------- other computers / GitHub ----------
