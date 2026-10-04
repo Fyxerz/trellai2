@@ -14,7 +14,7 @@ import { cleanAnnotations, parseImage } from "./attachments.js";
 import { emitAttachments, emitCard, emitCardDeleted, emitCheckpoints, emitMessage, emitNote, emitTags, subscribe } from "./events.js";
 import * as git from "./git.js";
 import * as wf from "./workflow.js";
-import { claudeLoggedIn, claudeModels, codexDefaultModel, codexStatus, loginState, mcpCallTool, mcpListTools, startLogin } from "./engine.js";
+import { claudeLoggedIn, claudeModels, codexDefaultModel, codexModels, codexStatus, loginState, mcpCallTool, mcpListTools, startLogin } from "./engine.js";
 import { startPreview, stopPreview } from "./preview.js";
 import { MACHINE } from "./machine.js";
 import * as remote from "./remote.js";
@@ -277,7 +277,7 @@ app.get("/api/engines", async (c) => {
   const [models, codex, claudeIn] = await Promise.all([claudeModels().catch(() => []), codexStatus(), claudeLoggedIn()]);
   return c.json({
     claude: { installed: true, loggedIn: claudeIn, models, login: loginState("claude") },
-    codex: { ...codex, defaultModel: codexDefaultModel(), login: loginState("codex") },
+    codex: { ...codex, defaultModel: codexDefaultModel(), models: codexModels(), login: loginState("codex") },
   });
 });
 

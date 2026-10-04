@@ -1,7 +1,8 @@
 import { projectName, useDialogFocus } from "./preferences";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "./api";
-import { Cpu, Image as ImageIcon, Loader2, RefreshCw, Sparkles, X } from "lucide-react";
+import { Check, ChevronDown, Cpu, Image as ImageIcon, Loader2, RefreshCw, Sparkles, X } from "lucide-react";
 import { TAG_PALETTE, type BgMode, type BgStatus, type Project } from "../../shared/types";
 import { reportError } from "./notifications";
 import { CODEX_EFFORTS, EFFORT_LABELS, EFFORTS, prettyModel, splitEffort, withEffort, type Effort } from "../../shared/models";
@@ -28,16 +29,23 @@ interface ClaudeModel {
   description: string;
   efforts?: Effort[];
 }
+/** A GPT model of your ChatGPT account (from Codex's model list). */
+interface CodexModel {
+  slug: string;
+  label: string;
+  efforts: Effort[];
+  defaultEffort: Effort | null;
+}
 interface LoginState {
   running: boolean;
   error?: string;
 }
 interface Engines {
   claude: { models: ClaudeModel[]; loggedIn?: boolean; login?: LoginState };
-  codex: { installed: boolean; loggedIn?: boolean; version?: string; defaultModel?: string | null; login?: LoginState };
+  codex: { installed: boolean; loggedIn?: boolean; version?: string; defaultModel?: string | null; models?: CodexModel[]; login?: LoginState };
 }
 
-/** spec ("claude", "claude:opus", "codex") → exact version name ("Opus 5.5"), once /api/engines answers. */
+/** spec ("claude", "claude:opus", "codex", "codex:gpt-6-luna") → exact version name ("Opus 5.5", "GPT-6-Luna"), once /api/engines answers. */
 const versions = new Map<string, string>();
 let enginesCache: Promise<Engines> | null = null;
 /** Every mounted useEngines(), so a fresh /api/engines (after a login) reaches all pickers. */
@@ -49,7 +57,9 @@ const loadEngines = () =>
       const name = m.resolved ? prettyModel(m.resolved) : m.label;
       versions.set(m.value === "default" ? "claude" : `claude:${m.value}`, name);
     }
-    if (e.codex?.defaultModel) versions.set("codex", prettyModel(`codex:${e.codex.defaultModel}`));
+    for (const m of e.codex?.models ?? []) versions.set(`codex:${m.slug}`, m.label);
+    const def = e.codex?.defaultModel;
+    if (def) versions.set("codex", versions.get(`codex:${def}`) ?? prettyModel(`codex:${def}`));
     return e;
   }));
 
@@ -73,8 +83,8 @@ function baseLabel(spec: string, short: boolean): string {
   const model = rest.join(":");
   const exact = versions.get(s);
   if (engine === "codex") {
-    if (model) return short ? "GPT" : `GPT · ${model}`;
-    return short ? "GPT" : exact ? `${exact} (por defecto de Codex)` : "GPT (Codex)";
+    if (model) return exact ?? prettyModel(`codex:${model}`);
+    return short ? (exact ?? "GPT") : exact ? `${exact} (por defecto de Codex)` : "GPT (Codex)";
   }
   if (exact) return short || model ? exact : `Claude por defecto · ${exact}`;
   if (!model) return "Claude";
@@ -102,6 +112,15 @@ export function useEngines() {
   };
 }
 
+interface PickerOption {
+  /** null = inherit; "__other" = type a GPT model by hand */
+  value: string | null;
+  label: string;
+  title?: string;
+  disabled?: boolean;
+}
+
+/** Compact model button; opens a dropdown with the models (Claude / GPT) and the effort. */
 export function ModelPicker({
   value,
   onChange,
@@ -117,8 +136,15 @@ export function ModelPicker({
   title?: string;
 }) {
   const { codex, claude, claudeLoggedIn } = useEngines();
+  const [pos, setPos] = useState<React.CSSProperties | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const listId = useId();
+  const open = !!pos;
+
   const noCodex = codex && !codex.installed;
   const codexOff = codex?.installed && codex.loggedIn === false;
+  const gptModels = codex?.models ?? [];
   // Aliases first (they follow the latest version), then pinned versions.
   const claudeOptions = claude?.length
     ? claude.map((m) => ({
@@ -129,91 +155,215 @@ export function ModelPicker({
       }))
     : PRESETS.filter((p) => p.group === "Claude").map((p) => ({ ...p, title: "", pinned: false }));
   const { spec, effort } = splitEffort(value);
-  const known = [...claudeOptions.map((o) => o.value), "codex"];
+  const known = [...claudeOptions.map((o) => o.value), "codex", ...gptModels.map((m) => `codex:${m.slug}`)];
   const custom = spec && !known.includes(spec) ? spec : null;
   const efforts = (s: string): Effort[] => {
-    if (s.startsWith("codex")) return CODEX_EFFORTS;
+    if (s.startsWith("codex")) {
+      const slug = s.slice(6) || codex?.defaultModel;
+      const m = gptModels.find((x) => x.slug === slug);
+      return m?.efforts.length ? m.efforts : CODEX_EFFORTS;
+    }
     const m = claude?.find((x) => (x.value === "default" ? "claude" : `claude:${x.value}`) === s);
     // not listed (yet): offer them all, the SDK lowers what the model can't do
     return m?.efforts ?? [...EFFORTS];
   };
-  const choose = (s: string | null, e: Effort | null) => {
-    if (!s) return onChange(null);
-    onChange(withEffort(s, e && efforts(s).includes(e) ? e : null));
-  };
-  const select = "rounded-md bg-zinc-900 px-2 py-1 text-xs text-zinc-200 ring-1 ring-zinc-700 outline-none focus:ring-indigo-600";
   const levels = value ? efforts(spec) : [];
 
+  const groups: { label?: string; options: PickerOption[] }[] = [];
+  if (inheritLabel) groups.push({ options: [{ value: null, label: inheritLabel }] });
+  groups.push({ label: claudeLoggedIn === false ? "Claude (no conectado)" : "Claude", options: claudeOptions.filter((o) => !o.pinned) });
+  if (claudeOptions.some((o) => o.pinned)) groups.push({ label: "Claude · versiones fijas", options: claudeOptions.filter((o) => o.pinned) });
+  const gptDefault = versions.get("codex");
+  groups.push({
+    label: noCodex ? "GPT (Codex no instalado)" : codexOff ? "GPT (Codex no conectado)" : "GPT",
+    options: [
+      { value: "codex", label: gptDefault ? `Por defecto · ${gptDefault}` : "Por defecto de Codex", disabled: !!noCodex },
+      ...gptModels.map((m) => ({ value: `codex:${m.slug}`, label: m.label, title: m.slug, disabled: !!noCodex })),
+      ...(custom ? [{ value: custom, label: modelLabel(custom, true), title: custom }] : []),
+      { value: "__other", label: "Otro modelo GPT…", disabled: !!noCodex },
+    ],
+  });
+
+  const place = () => {
+    const r = buttonRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const width = 256;
+    const left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8));
+    const below = window.innerHeight - r.bottom - 12;
+    const above = r.top - 12;
+    setPos(
+      below >= 280 || below >= above
+        ? { left, width, top: r.bottom + 4, maxHeight: below }
+        : { left, width, bottom: window.innerHeight - r.top + 4, maxHeight: above },
+    );
+  };
+  const close = (focusButton = true) => {
+    setPos(null);
+    if (focusButton) buttonRef.current?.focus();
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const pop = popRef.current;
+    (pop?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]') ?? pop?.querySelector<HTMLElement>('[role="option"]'))?.focus();
+    // Esc closes only the dropdown, not the card / dialog it lives in.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      close();
+    };
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (!popRef.current?.contains(t) && !buttonRef.current?.contains(t)) close(false);
+    };
+    const onScroll = (e: Event) => {
+      if (!popRef.current?.contains(e.target as Node)) place();
+    };
+    window.addEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open]);
+
+  /** Keeps the effort if the new model has it. */
+  const keepEffort = (s: string) => withEffort(s, effort && efforts(s).includes(effort) ? effort : null);
+  const pick = (o: PickerOption) => {
+    if (o.disabled) return;
+    close();
+    if (o.value === "__other") {
+      const name = prompt("Nombre del modelo de OpenAI (tal cual lo acepta `codex -m`):", "")?.trim();
+      if (name) onChange(keepEffort(`codex:${name}`));
+      return;
+    }
+    onChange(o.value ? keepEffort(o.value) : null);
+  };
+  const pickEffort = (e: Effort | null) => {
+    close();
+    onChange(withEffort(spec, e));
+  };
+  const onListKey = (e: React.KeyboardEvent) => {
+    const items = Array.from(popRef.current?.querySelectorAll<HTMLElement>('[role="option"]:not([aria-disabled="true"])') ?? []);
+    const i = items.indexOf(document.activeElement as HTMLElement);
+    const go = (n: number) => {
+      e.preventDefault();
+      items[(n + items.length) % items.length]?.focus();
+    };
+    if (e.key === "ArrowDown") go(i + 1);
+    else if (e.key === "ArrowUp") go(i < 0 ? items.length - 1 : i - 1);
+    else if (e.key === "Home") go(0);
+    else if (e.key === "End") go(items.length - 1);
+  };
+
+  const hint =
+    title ??
+    (noCodex
+      ? "Para usar GPT instala la app de Codex de OpenAI y conéctala con tu cuenta de ChatGPT en Modelos del proyecto"
+      : claudeLoggedIn === false || codexOff
+        ? "Hay motores sin conectar: conéctalos en Modelos del proyecto"
+        : undefined);
+  const current = value ? modelLabel(value, true) : (inheritLabel ?? "Modelo");
+  const full = value ? modelLabel(value) : current;
+  // Inside the card panel / dialog, so clicks in the dropdown count as clicks inside it.
+  const host = open ? (buttonRef.current?.closest<HTMLElement>('[aria-label="Detalle de tarjeta"], [role="dialog"]') ?? document.body) : null;
+
   return (
-    <span className={`flex items-center gap-1 ${className}`}>
-      <select
-        value={value ? spec : ""}
-        title={
-          title ??
-          (noCodex
-            ? "Para usar GPT instala la app de Codex de OpenAI y conéctala con tu cuenta de ChatGPT en Modelos del proyecto"
-            : claudeLoggedIn === false || codexOff
-              ? "Hay motores sin conectar: conéctalos en Modelos del proyecto"
-              : undefined)
-        }
-        onChange={(e) => {
-          const v = e.target.value;
-          if (v === "__other") {
-            const name = prompt("Nombre del modelo de OpenAI (tal cual lo acepta `codex -m`):", "")?.trim();
-            if (name) choose(`codex:${name}`, effort);
-            return;
+    <span className={`flex min-w-0 items-center ${className}`}>
+      <button
+        ref={buttonRef}
+        type="button"
+        title={hint ? `${hint}\n${full}` : full}
+        aria-label={`Modelo: ${full}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        onClick={() => (open ? close(false) : place())}
+        onKeyDown={(e) => {
+          if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+            e.preventDefault();
+            place();
           }
-          choose(v === "" ? null : v, effort);
         }}
-        className={`${select} min-w-0 flex-1`}
+        className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-md bg-zinc-900 py-0.5 pl-2 pr-1 text-xs ring-1 outline-none transition hover:bg-ui-ink/5 focus-visible:ring-indigo-500 ${open ? "ring-indigo-500/70" : "ring-zinc-700"} ${value ? "text-zinc-200" : "text-zinc-400"}`}
       >
-        {inheritLabel && <option value="">{inheritLabel}</option>}
-        <optgroup label={claudeLoggedIn === false ? "Claude (no conectado)" : "Claude"}>
-          {claudeOptions
-            .filter((o) => !o.pinned)
-            .map((o) => (
-              <option key={o.value} value={o.value} title={o.title}>
-                {o.label}
-              </option>
-            ))}
-        </optgroup>
-        {claudeOptions.some((o) => o.pinned) && (
-          <optgroup label="Claude · versiones fijas">
-            {claudeOptions
-              .filter((o) => o.pinned)
-              .map((o) => (
-                <option key={o.value} value={o.value} title={o.title}>
-                  {o.label}
-                </option>
+        <span className="truncate">{current}</span>
+        <ChevronDown className={`h-3 w-3 shrink-0 text-zinc-500 transition ${open ? "rotate-180" : ""}`} />
+      </button>
+      {host &&
+        createPortal(
+          <div
+            ref={popRef}
+            style={{ position: "fixed", ...pos }}
+            onBlur={(e) => {
+              const to = e.relatedTarget as Node | null;
+              if (to && !popRef.current?.contains(to) && !buttonRef.current?.contains(to)) close(false);
+            }}
+            className="z-[70] flex flex-col overflow-hidden rounded-lg bg-zinc-900 text-xs ring-1 ring-ui-ink/10 shadow-[var(--shadow-pop)]"
+          >
+            <div id={listId} role="listbox" aria-label="Modelo" onKeyDown={onListKey} className="min-h-0 flex-1 overflow-y-auto py-1">
+              {groups.map((g, gi) => (
+                <div key={gi} role="group" aria-label={g.label} className={gi ? "mt-1 border-t border-ui-ink/[0.06] pt-1" : ""}>
+                  {g.label && <div className="px-2.5 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wide text-zinc-500">{g.label}</div>}
+                  {g.options.map((o) => {
+                    const selected = o.value === (value ? spec : null);
+                    return (
+                      <div
+                        key={o.value ?? "__inherit"}
+                        role="option"
+                        tabIndex={-1}
+                        aria-selected={selected}
+                        aria-disabled={o.disabled || undefined}
+                        title={o.title || undefined}
+                        onClick={() => pick(o)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            pick(o);
+                          }
+                        }}
+                        className={`mx-1 flex items-center gap-2 rounded-md px-1.5 py-1 outline-none ${o.disabled ? "cursor-default opacity-40" : "cursor-pointer hover:bg-ui-ink/5 focus:bg-ui-ink/[0.07]"} ${selected ? "text-indigo-300" : "text-zinc-200"}`}
+                      >
+                        <Check className={`h-3 w-3 shrink-0 ${selected ? "" : "invisible"}`} />
+                        <span className="truncate">{o.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
               ))}
-          </optgroup>
+            </div>
+            {levels.length > 0 && (
+              <div className="shrink-0 border-t border-ui-ink/[0.08] p-2">
+                <div
+                  className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-500"
+                  title="Cuánto piensa el modelo antes de responder. Más esfuerzo = mejor en tareas difíciles, pero más lento y gasta más."
+                >
+                  Esfuerzo
+                </div>
+                <div role="radiogroup" aria-label="Esfuerzo del modelo" className="flex flex-wrap gap-1">
+                  {[null, ...levels].map((l) => (
+                    <button
+                      key={l ?? "default"}
+                      type="button"
+                      role="radio"
+                      aria-checked={effort === l}
+                      onClick={() => pickEffort(l)}
+                      className={`rounded px-1.5 py-0.5 text-[11px] transition ${effort === l ? "bg-indigo-500/15 text-indigo-300 ring-1 ring-indigo-400/40" : "text-zinc-400 ring-1 ring-ui-ink/10 hover:bg-ui-ink/5 hover:text-zinc-200"}`}
+                    >
+                      {l ? EFFORT_LABELS[l] : "Por defecto"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>,
+          host,
         )}
-        <optgroup label={noCodex ? "GPT (Codex no instalado)" : codexOff ? "GPT (Codex no conectado)" : "GPT (Codex)"}>
-          <option value="codex" disabled={!!noCodex}>
-            {modelLabel("codex")}
-          </option>
-          {custom && <option value={custom}>{modelLabel(custom)}</option>}
-          <option value="__other" disabled={!!noCodex}>
-            Otro modelo GPT…
-          </option>
-        </optgroup>
-      </select>
-      {levels.length > 0 && (
-        <select
-          value={effort ?? ""}
-          title="Esfuerzo: cuánto piensa el modelo antes de responder. Más esfuerzo = mejor en tareas difíciles, pero más lento y gasta más."
-          aria-label="Esfuerzo del modelo"
-          onChange={(e) => choose(spec, (e.target.value || null) as Effort | null)}
-          className={`${select} w-[7.5rem] shrink-0`}
-        >
-          <option value="">Esfuerzo por defecto</option>
-          {levels.map((l) => (
-            <option key={l} value={l}>
-              Esfuerzo {EFFORT_LABELS[l].toLowerCase()}
-            </option>
-          ))}
-        </select>
-      )}
     </span>
   );
 }
@@ -329,7 +479,6 @@ function ModelSettings({ project, onSaved }: { project: Project; onSaved: () => 
                 value={(project[r.key] as string | null) ?? null}
                 inheritLabel={r.key === "model_ui" ? "Igual que desarrollo" : undefined}
                 onChange={(v) => save(r.key, v ?? (r.key === "model_ui" ? null : "claude"))}
-                className="w-72"
               />
             </div>
           ))}
