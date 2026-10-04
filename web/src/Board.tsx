@@ -3,7 +3,8 @@ import { reportError } from "./notifications";
 import { DragDropContext, Draggable, Droppable, type DropResult } from "@hello-pangea/dnd";
 import { MachineChip } from "./SyncUI";
 import { useSync } from "./api";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from "react";
+import { createPortal } from "react-dom";
 import { COLUMNS, COLUMN_LABELS, type Card, type Column, type Project, type Tag } from "../../shared/types";
 import { api, type Board as BoardState } from "./api";
 import { ArrowRight, Eye, EyeOff, GitBranch, GitMerge, ListChecks, Play, Plus, Trash2 } from "lucide-react";
@@ -173,7 +174,7 @@ export function Board({
 
   return (
     <DragDropContext onDragStart={onDragStart} onDragEnd={onDragEnd}>
-      <div className="flex h-full items-start gap-3 overflow-x-auto px-4 pt-1 pb-5">
+      <div data-board-scroll className="flex h-full items-start gap-3 overflow-x-auto px-4 pt-1 pb-5">
         {COLUMNS.map((col) => {
           const cards = byColumn(col);
           const canAdd = CAN_ADD.has(col);
@@ -216,13 +217,15 @@ export function Board({
                   >
                     {cards.map((card, i) => (
                       <Draggable key={card.id} draggableId={card.id} index={i}>
-                        {(dp, ds) => (
+                        {(dp, ds) => inBody(ds.isDragging, (
                           <div ref={dp.innerRef} {...dp.draggableProps} {...dp.dragHandleProps} data-card className="board-card cursor-pointer" onKeyDown={e => { if (e.target === e.currentTarget && e.key === "Enter") { e.preventDefault(); e.stopPropagation(); onCursor(col, card.id); onOpen(card.id); } }}>
                             <CardItem
                               card={card}
                               dragging={ds.isDragging}
                               selected={card.id === selectedId}
                               cursor={focused && cursor.id === card.id}
+                              follow={card.id === (focused && cursor.id ? cursor.id : selectedId)}
+                              index={i}
                               previewing={previewCardId === card.id}
                               tags={cardTags(card, tags)}
                               onAdvance={(to) => {
@@ -235,7 +238,7 @@ export function Board({
                               }}
                             />
                           </div>
-                        )}
+                        ))}
                       </Draggable>
                     ))}
                     {p.placeholder}
@@ -271,11 +274,43 @@ const EMPTY: Record<Column, string> = {
   merged: "Aún no hay nada mergeado",
 };
 
+/**
+ * The dragged card is `position: fixed`, but the columns' `backdrop-filter` (board with a background image)
+ * makes them its containing block, so it was drawn off by the column's offset — away from the pointer or
+ * out of sight. While dragging, render it on <body>.
+ */
+function inBody(dragging: boolean, el: ReactElement) {
+  return dragging ? createPortal(el, document.body) : el;
+}
+
+/**
+ * Scroll just the card's column and the board so the card shows. Not `scrollIntoView`: that also scrolls
+ * the app's `overflow: hidden` wrappers, which shifts the whole board off its place.
+ */
+function keepInView(el: HTMLElement) {
+  const pad = 8;
+  const list = el.closest<HTMLElement>("[data-rfd-droppable-id]");
+  if (list) {
+    const c = el.getBoundingClientRect(), r = list.getBoundingClientRect();
+    if (c.top < r.top + pad) list.scrollTop -= r.top + pad - c.top;
+    else if (c.bottom > r.bottom - pad) list.scrollTop += Math.min(c.bottom - r.bottom + pad, c.top - r.top - pad);
+  }
+  const board = el.closest<HTMLElement>("[data-board-scroll]");
+  const column = el.closest("section");
+  if (board && column) {
+    const c = column.getBoundingClientRect(), r = board.getBoundingClientRect();
+    if (c.left < r.left) board.scrollLeft -= r.left - c.left + pad;
+    else if (c.right > r.right) board.scrollLeft += Math.min(c.right - r.right + pad, c.left - r.left);
+  }
+}
+
 function CardItem({
   card,
   dragging,
   selected,
   cursor,
+  follow,
+  index,
   previewing,
   tags,
   onAdvance,
@@ -285,6 +320,9 @@ function CardItem({
   dragging: boolean;
   selected: boolean;
   cursor: boolean;
+  /** the card the view should keep in sight: the keyboard cursor, or else the open one */
+  follow: boolean;
+  index: number;
   previewing: boolean;
   tags: Tag[];
   onAdvance: (to: Column) => void;
@@ -299,9 +337,13 @@ function CardItem({
       ? { label: modelLabel(card.model, true), title: `Modelo elegido: ${modelLabel(card.model)}`, codex: card.model.startsWith("codex") }
       : null;
   const ref = useRef<HTMLDivElement>(null);
+  // Keep it in sight when it gets the focus and whenever it moves (keyboard, advance button, an agent).
+  // Next frame, so the board has laid out its new spot.
   useEffect(() => {
-    if (cursor) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [cursor]);
+    if (!follow || dragging) return;
+    const raf = requestAnimationFrame(() => ref.current && keepInView(ref.current));
+    return () => cancelAnimationFrame(raf);
+  }, [follow, dragging, card.column, index]);
   const merged = card.column === "merged";
   const accent = card.status === "waiting" ? "#a78bfa" : card.status === "error" ? "#f87171" : null;
   const done = card.checkpoints_total > 0 && card.checkpoints_done === card.checkpoints_total;
