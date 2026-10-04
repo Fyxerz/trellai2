@@ -18,6 +18,7 @@ import { claudeLoggedIn, claudeModels, codexDefaultModel, codexModels, codexStat
 import { startPreview, stopPreview } from "./preview.js";
 import { MACHINE } from "./machine.js";
 import * as remote from "./remote.js";
+import { repoLock } from "./lock.js";
 import * as github from "./github.js";
 import { startSync, syncStatus } from "./sync.js";
 import { assistantRunning, sendToAssistant, stopAssistant } from "./assistant.js";
@@ -262,23 +263,86 @@ app.get("/api/projects/:id/git", async (c) => {
   return c.json(await remote.baseStatus(project.repo_path, project.base_branch));
 });
 
+const ACTIVE_COLUMNS = new Set(["plan", "preparation", "doing", "review"]);
+
+/** Every branch with its card and, when it can't be deleted from the menu, why. */
+function branchRows(project: Project) {
+  const list = git.listBranches(project.repo_path!, project.base_branch);
+  const cards = new Map(db.listCards(project.id).filter((k) => k.branch).map((k) => [k.branch!, k]));
+  return {
+    ...list,
+    branches: list.branches.map((b) => {
+      const k = cards.get(b.name);
+      const locked =
+        b.name === project.base_branch
+          ? "Es la rama base."
+          : b.current
+            ? "Estás en esta rama: cámbiate a otra primero."
+            : k && ACTIVE_COLUMNS.has(k.column)
+              ? `Es de la tarjeta «${k.title}», que está en curso: se quita descartando la tarjeta.`
+              : null;
+      return { ...b, card: k ? { id: k.id, title: k.title, column: k.column } : null, locked };
+    }),
+  };
+}
+type BranchRowInfo = ReturnType<typeof branchRows>["branches"][number];
+
+/** Delete one branch (local, worktree and remote). Errors come back in the result, never thrown. */
+async function deleteBranch(project: Project, b: BranchRowInfo, force: boolean) {
+  const repo = project.repo_path!;
+  if (b.locked) return { name: b.name, ok: false, error: b.locked };
+  if (!b.merged && !force)
+    return { name: b.name, ok: false, error: `Tiene ${b.unmerged} commit(s) que no están en ${project.base_branch}; se perderían.` };
+  if (b.dirty && !force) return { name: b.name, ok: false, error: `Su carpeta de trabajo (${b.worktree}) tiene cambios sin commitear.` };
+  const errors: string[] = [];
+  if (b.local || b.worktree) {
+    try {
+      await repoLock(repo, async () => git.deleteLocalBranch(repo, b.name, { worktree: b.worktree, force }));
+    } catch (err) {
+      errors.push((err as Error).message.replace(/^git [^:]*: /, ""));
+    }
+  }
+  if (b.remote && !errors.length) {
+    const r = await remote.deleteRemoteBranchNow(repo, b.name);
+    if (!r.ok) errors.push(r.message!);
+  }
+  return errors.length ? { name: b.name, ok: false, error: errors.join(" — ") } : { name: b.name, ok: true };
+}
+
 /** All branches (local + remote) for the header's branch list, with the card each one belongs to. */
 app.get("/api/projects/:id/branches", async (c) => {
   const project = db.getProject(c.req.param("id"));
   if (!project?.repo_path) return c.json({ error: "Este proyecto no está en este ordenador" }, 400);
   const f = await remote.fetchRemote(project.repo_path, 60_000);
-  const list = git.listBranches(project.repo_path, project.base_branch);
-  const cards = new Map(db.listCards(project.id).filter((k) => k.branch).map((k) => [k.branch!, k]));
+  const list = branchRows(project);
   return c.json({
     ...list,
     base: project.base_branch,
     remoteLabel: list.remote ? remote.remoteLabel(project.repo_path) : null,
     fetch: { ok: f.ok, message: f.message },
-    branches: list.branches.map((b) => {
-      const k = cards.get(b.name);
-      return { ...b, card: k ? { id: k.id, title: k.title, column: k.column } : null };
-    }),
   });
+});
+
+/** Delete one branch from the menu. `force` = the user accepted losing unmerged commits / uncommitted changes. */
+app.post("/api/projects/:id/branches/delete", async (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project?.repo_path) return c.json({ error: "Este proyecto no está en este ordenador" }, 400);
+  const { name, force } = await c.req.json<{ name: string; force?: boolean }>();
+  const b = branchRows(project).branches.find((x) => x.name === name);
+  if (!b) return c.json({ error: `No existe la rama ${name}` }, 404);
+  const r = await deleteBranch(project, b, !!force);
+  return r.ok ? c.json(r) : c.json(r, b.locked ? 400 : 409);
+});
+
+/** Delete every branch already in the base branch (recomputed here; `names`, if given, narrows it to what the user saw). */
+app.post("/api/projects/:id/branches/cleanup", async (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project?.repo_path) return c.json({ error: "Este proyecto no está en este ordenador" }, 400);
+  const { names } = await c.req.json<{ names?: string[] }>().catch(() => ({ names: undefined }));
+  const todo = branchRows(project).branches.filter((b) => b.merged && !b.locked && (!names || names.includes(b.name)));
+  const results = [];
+  for (const b of todo) results.push(await deleteBranch(project, b, false));
+  return c.json({ results });
 });
 
 app.post("/api/projects/:id/pull", async (c) => {

@@ -214,6 +214,20 @@ export function deleteRemoteBranch(repo: string, branch: string) {
   });
 }
 
+/**
+ * Delete a branch on the remote right now (the branch menu asked for it explicitly, so this
+ * ignores TRELLAI_PUSH_BRANCHES) and drop our remote-tracking ref so the list stops showing it.
+ */
+export async function deleteRemoteBranchNow(repo: string, branch: string): Promise<{ ok: boolean; message?: string }> {
+  const remote = await remoteOf(repo);
+  if (!remote) return { ok: true };
+  await flushBranch(branch);
+  const r = await run(repo, ["push", remote, "--delete", branch], 30_000);
+  if (!r.ok && !/remote ref does not exist/i.test(r.err)) return { ok: false, message: `No pude borrarla en ${remoteLabel(repo)}: ${firstLine(r.err)}` };
+  await run(repo, ["update-ref", "-d", `refs/remotes/${remote}/${branch}`]);
+  return { ok: true };
+}
+
 /** Wait for queued pushes of a branch (used before another computer takes the card). */
 export function flushBranch(branch: string) {
   return queues.get(branch) ?? Promise.resolve();
