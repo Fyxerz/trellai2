@@ -173,7 +173,7 @@ export function Board({
 
   return (
     <DragDropContext onDragStart={onDragStart} onDragEnd={onDragEnd}>
-      <div className="flex h-full items-start gap-3 overflow-x-auto px-4 pt-1 pb-5">
+      <div data-board-scroll className="flex h-full items-start gap-3 overflow-x-auto px-4 pt-1 pb-5">
         {COLUMNS.map((col) => {
           const cards = byColumn(col);
           const canAdd = CAN_ADD.has(col);
@@ -273,6 +273,27 @@ const EMPTY: Record<Column, string> = {
   merged: "Aún no hay nada mergeado",
 };
 
+/**
+ * Scroll just the card's column and the board so the card shows. Not `scrollIntoView`: that also scrolls
+ * the app's `overflow: hidden` wrappers, which shifts the whole board off its place.
+ */
+function keepInView(el: HTMLElement) {
+  const pad = 8;
+  const list = el.closest<HTMLElement>("[data-rfd-droppable-id]");
+  if (list) {
+    const c = el.getBoundingClientRect(), r = list.getBoundingClientRect();
+    if (c.top < r.top + pad) list.scrollTop -= r.top + pad - c.top;
+    else if (c.bottom > r.bottom - pad) list.scrollTop += Math.min(c.bottom - r.bottom + pad, c.top - r.top - pad);
+  }
+  const board = el.closest<HTMLElement>("[data-board-scroll]");
+  const column = el.closest("section");
+  if (board && column) {
+    const c = column.getBoundingClientRect(), r = board.getBoundingClientRect();
+    if (c.left < r.left) board.scrollLeft -= r.left - c.left + pad;
+    else if (c.right > r.right) board.scrollLeft += Math.min(c.right - r.right + pad, c.left - r.left);
+  }
+}
+
 function CardItem({
   card,
   dragging,
@@ -310,7 +331,7 @@ function CardItem({
   // Next frame, so the board has laid out its new spot.
   useEffect(() => {
     if (!follow || dragging) return;
-    const raf = requestAnimationFrame(() => ref.current?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+    const raf = requestAnimationFrame(() => ref.current && keepInView(ref.current));
     return () => cancelAnimationFrame(raf);
   }, [follow, dragging, card.column, index]);
   const merged = card.column === "merged";
