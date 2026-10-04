@@ -81,7 +81,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
   const move = (column: Column) => api(`/api/cards/${card.id}/move`, { column }).catch((e) => reportError(e.message));
 
   return (
-    <aside aria-label="Detalle de tarjeta" style={{ "--panel-width": `${width}px` } as React.CSSProperties} className={`work-panel ${expanded ? "expanded" : ""} flex h-full shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel shadow-[var(--shadow-lift)]`}>
+    <aside aria-label="Detalle de tarjeta" style={{ "--panel-width": `${width}px` } as React.CSSProperties} className={`work-panel overlay ${expanded ? "expanded" : ""} flex h-full shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel`}>
       {!expanded && <div role="separator" aria-label="Ancho del panel" aria-orientation="vertical" aria-valuemin={400} aria-valuemax={900} aria-valuenow={width} tabIndex={0} className="panel-resizer" onKeyDown={e => {
         if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); e.stopPropagation(); const next = Math.max(400, Math.min(900, width + (e.key === "ArrowLeft" ? 40 : -40))); setWidth(next); writePreference("panel-width", String(next)); }
       }} onPointerDown={e => { resize.current = { x: e.clientX, width }; e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={e => { if (resize.current) setWidth(Math.max(400, Math.min(900, resize.current.width + resize.current.x - e.clientX))); }} onPointerUp={e => { resize.current = null; writePreference("panel-width", String(width)); e.currentTarget.releasePointerCapture(e.pointerId); }} onPointerCancel={() => { resize.current = null; }} /> }
