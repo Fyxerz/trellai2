@@ -12,7 +12,7 @@
 import { createSdkMcpServer, query, tool, type HookCallback, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -216,7 +216,25 @@ async function runClaude(r: EngineRun, model: string | undefined, resume: string
 // ---------------------------------------------------------------------------
 
 const BRIDGE = join(dirname(fileURLToPath(import.meta.url)), "mcp-bridge.mjs");
-const codexBin = () => process.env.TRELLAI_CODEX_BIN || "codex";
+let bundled: { at: number; bin: string | null } | null = null;
+
+/** codex.exe shipped with the Codex/ChatGPT desktop app (Windows), in a hashed folder that changes on every update. */
+function bundledCodex(): string | null {
+  if (bundled && Date.now() - bundled.at < 60_000) return bundled.bin;
+  let bin: string | null = null;
+  const dir = process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "OpenAI", "Codex", "bin");
+  if (process.platform === "win32" && dir && existsSync(dir)) {
+    const found = readdirSync(dir)
+      .map((d) => join(dir, d, "codex.exe"))
+      .filter((p) => existsSync(p))
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    bin = found[0] ?? null;
+  }
+  bundled = { at: Date.now(), bin };
+  return bin;
+}
+
+const codexBin = () => process.env.TRELLAI_CODEX_BIN || bundledCodex() || "codex";
 
 /** Live tool sets for running Codex agents, keyed by a per-run token. */
 const toolRuns = new Map<string, ToolSpec[]>();

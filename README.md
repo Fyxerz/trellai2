@@ -102,7 +102,7 @@ Cada agente puede usar **Claude** (con tu sesión de Claude Code) o **GPT** (con
 - En las pestañas del Asistente también puedes cambiarlo al vuelo.
 - Si cambias el modelo de una tarjeta a mitad, el nuevo agente recibe la spec, los checkpoints y mira el `git log` de la rama para seguir donde lo dejó el anterior.
 
-Para usar GPT, instala Codex una vez:
+Para usar GPT basta con tener la **app de Codex/ChatGPT** instalada y con sesión iniciada: en Windows Trellai encuentra solo el `codex.exe` que trae (`%LOCALAPPDATA%\OpenAI\Codex\bin\…`), también tras cada actualización. Si no tienes la app, instala la CLI una vez:
 
 ```bash
 npm i -g @openai/codex
