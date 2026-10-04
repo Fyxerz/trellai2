@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MachineChip } from "./SyncUI";
 import { COLUMN_LABELS, type Card, type Checkpoint, type Column, type Message, type Project, type Question } from "../../shared/types";
 import { ModelPicker, modelLabel } from "./models";
+import { SpecImages } from "./ImageEditor";
 import { prettyModel } from "../../shared/models";
 import { confirmDeleteCard, togglePreview } from "./Confirm";
 import {
@@ -194,7 +195,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
       </nav>
 
       <div className="min-h-0 flex-1">
-        {tab === "spec" && <SpecTab card={card} questions={questions} editSignal={editSignal} />}
+        {tab === "spec" && <SpecTab card={card} board={board} questions={questions} editSignal={editSignal} />}
         {tab === "activity" && <Activity card={card} messages={messages} />}
         {tab === "diff" && <DiffTab card={card} />}
       </div>
@@ -224,7 +225,7 @@ function TitleInput({ card }: { card: Card }) {
   </>;
 }
 
-function SpecTab({ card, questions, editSignal }: { card: Card; questions: Question[]; editSignal: number }) {
+function SpecTab({ card, board, questions, editSignal }: { card: Card; board: Board; questions: Question[]; editSignal: number }) {
   const key = `spec-draft:${card.id}`;
   const initialDraft = readPreference(key, card.spec);
   const [spec, setSpec] = useState(initialDraft);
@@ -303,6 +304,7 @@ function SpecTab({ card, questions, editSignal }: { card: Card; questions: Quest
       {card.column !== "backlog" && card.column !== "plan" && (
         <p className="mt-2 text-[11px] text-zinc-500">Si cambias la spec con un agente trabajando, díselo también en Actividad.</p>
       )}
+      <SpecImages card={card} board={board} />
 
       {card.plan && (
         <>

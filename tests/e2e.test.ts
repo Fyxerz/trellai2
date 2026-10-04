@@ -212,3 +212,50 @@ describe("board flow", () => {
     sh("git branch -D suelta-vieja");
   });
 });
+
+describe("images on a card", () => {
+  // 1×1 transparent PNG
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
+  it("upload, list, serve, annotate, copy and delete", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Con imagen", spec: "x" });
+    await expect(api(`/api/cards/${c.id}/attachments`, { name: "a.bmp", data: "data:image/bmp;base64,AAAA" })).rejects.toThrow(/Formato/);
+    const a = await api<any>(`/api/cards/${c.id}/attachments`, { name: "pantalla.png", data: `data:image/png;base64,${PNG}` });
+    expect(a).toMatchObject({ card_id: c.id, name: "pantalla.png", mime: "image/png", annotations: [], has_annotated: false });
+    expect(a.data).toBeUndefined(); // lists stay light
+    expect(await api<any[]>(`/api/cards/${c.id}/attachments`)).toHaveLength(1);
+
+    const img = await fetch(`${URL}/api/attachments/${a.id}/image`);
+    expect(img.headers.get("content-type")).toBe("image/png");
+    expect(Buffer.from(await img.arrayBuffer()).toString("base64")).toBe(PNG);
+
+    const annotations = [{ x: 0.1, y: 0.2, w: 0.5, h: 2, comment: "Este botón más grande" }, { x: 0, y: 0, w: 0, h: 0, comment: "vacía" }];
+    const upd = await api<any>(`/api/attachments/${a.id}`, { annotations, annotated: `data:image/png;base64,${PNG}` }, "PATCH");
+    expect(upd.annotations).toEqual([{ x: 0.1, y: 0.2, w: 0.5, h: 0.8, comment: "Este botón más grande" }]);
+    expect(upd.has_annotated).toBe(true);
+    expect((await fetch(`${URL}/api/attachments/${a.id}/image?annotated=1`)).status).toBe(200);
+
+    const copy = await api<Card>(`/api/cards/${c.id}/copy`, { project_id: projectId });
+    const copied = await api<any[]>(`/api/cards/${copy.id}/attachments`);
+    expect(copied).toHaveLength(1);
+    expect(copied[0]).toMatchObject({ name: "pantalla.png", has_annotated: true, annotations: upd.annotations });
+
+    await api(`/api/attachments/${a.id}`, undefined, "DELETE");
+    expect(await api<any[]>(`/api/cards/${c.id}/attachments`)).toHaveLength(0);
+    // deleting the card takes its images with it
+    await api(`/api/cards/${copy.id}`, undefined, "DELETE");
+    expect((await fetch(`${URL}/api/attachments/${copied[0].id}/image`)).status).toBe(404);
+  });
+
+  it("writes the images where the agent can read them", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Imagen al agente", spec: "x", column: "plan" });
+    const a = await api<any>(`/api/cards/${c.id}/attachments`, { name: "Mi captura.png", data: `data:image/png;base64,${PNG}` });
+    await api(`/api/attachments/${a.id}`, { annotations: [{ x: 0, y: 0, w: 0.5, h: 0.5, comment: "aquí" }], annotated: `data:image/png;base64,${PNG}` }, "PATCH");
+    await api(`/api/cards/${c.id}/move`, { column: "preparation" });
+    await waitFor(c.id, (x) => x.column === "review");
+    const dir = join(repo, ".trellai", "attachments", c.id);
+    expect(readFileSync(join(dir, "1-mi-captura.png")).toString("base64")).toBe(PNG);
+    expect(existsSync(join(dir, "1-mi-captura.anotada.png"))).toBe(true);
+    expect(sh("git status --porcelain")).not.toContain("attachments");
+  });
+});
