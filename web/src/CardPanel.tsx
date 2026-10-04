@@ -802,8 +802,8 @@ function ColumnChip({ column }: { column: Column }) {
   );
 }
 
-/** What the card's dev agent uses when the card has no model of its own: its first tag with a model, else the project's. */
+/** What the card's dev agent uses when the card has no model of its own: the first tag added to it that has a model, else the project's. */
 function inheritedModelLabel(card: Card, tags: Tag[], project: Project | null | undefined) {
   const tag = cardTags(card, tags).find((t) => t.model);
-  return tag ? `Modelo de la etiqueta «${tag.name}» (${modelLabel(tag.model)})` : `Modelo del proyecto (${modelLabel(project?.model_dev)})`;
+  return tag ? `Modelo de la etiqueta «${tag.name}», la primera con modelo (${modelLabel(tag.model)})` : `Modelo del proyecto (${modelLabel(project?.model_dev)})`;
 }

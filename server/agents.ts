@@ -303,9 +303,14 @@ export function cardModel(card: Card, kind: AgentKind): string {
   return card.model || (kind === "dev" ? tagModel(card) : null) || (kind === "prep" ? p?.model_prep : p?.model_dev) || "claude";
 }
 
-/** Model of the card's first tag (in the project's tag order) that has one. */
+/** Model of the card's first tag (in the order they were added to the card) that has one. */
 export function tagModel(card: Card): string | null {
-  return db.getProject(card.project_id)?.tags.find((t) => t.model && card.tags.includes(t.id))?.model ?? null;
+  const tags = db.getProject(card.project_id)?.tags ?? [];
+  for (const id of card.tags) {
+    const model = tags.find((t) => t.id === id)?.model;
+    if (model) return model;
+  }
+  return null;
 }
 
 /** Everything an agent needs when it can't resume the previous session (e.g. the model changed). */

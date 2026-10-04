@@ -1,7 +1,7 @@
 import { Notifications, reportError } from "./notifications";
 import { useMessageDraft, useChatScroll } from "./chat";
 import { projectName, MOD, Appearance, useDialogFocus } from "./preferences";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { COLUMNS, describeClaim, type Column, type Project } from "../../shared/types";
 import { api, useBoard, useProjects, type Board as BoardState } from "./api";
 import { AssistantPanel, type AssistantMode } from "./Assistant";
@@ -31,6 +31,7 @@ import {
 import { ProjectSettings } from "./models";
 import { TagManager } from "./TagManager";
 import { ProjectDocs } from "./ProjectDocs";
+import { useProjectTags } from "./tags";
 import { Sidebar } from "./Sidebar";
 import { BranchStatus, SyncIndicator, UnlinkedBanner } from "./SyncUI";
 import { Button, ChatHint, chatKeyDown, Kbd, ProjectAvatar, timeAgo } from "./ui";
@@ -72,6 +73,7 @@ export default function App() {
   const [showAssistant, setShowAssistant] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showTags, setShowTags] = useState(false);
+  const closeTags = useCallback(() => setShowTags(false), []);
   const [showDocs, setShowDocs] = useState(false);
   const [assistantMode, setAssistantMode] = useState<AssistantMode>("plan");
   const [selected, setSelected] = useState<string | null>(null);
@@ -83,6 +85,7 @@ export default function App() {
   const [view, setView] = useState<"home" | "board">(() => (store.get(VIEW) === "home" ? "home" : "board"));
   const [homeCursor, setHomeCursor] = useState(0);
   const board = useBoard(projectId);
+  const projectTags = useProjectTags(projectId, board);
   const liveNotes = board.notes.filter((n) => !n.archived).length;
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -533,10 +536,11 @@ export default function App() {
               <label className="flex min-w-0 w-full sm:min-w-48 max-w-sm flex-1 items-center gap-2 rounded-lg border border-ui-ink/10 bg-panel px-3 py-2 focus-within:ring-2 focus-within:ring-indigo-400"><Search className="h-4 w-4 text-zinc-500" /><input aria-label="Buscar tarjetas" placeholder="Buscar tarjetas…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); if (query) setQuery(""); else e.currentTarget.blur(); } }} className="ui-field min-w-0 flex-1 bg-transparent text-sm outline-none" />{query && <button aria-label="Limpiar búsqueda" className="text-zinc-500" onClick={() => setQuery("")}>×</button>}</label>
               <div role="group" aria-label="Filtrar tarjetas" className="flex flex-wrap gap-1">{[["all", "Todas"], ["waiting", "Te necesitan"], ["review", "Por revisar"], ["error", "Errores"]].map(([value, label]) => <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)} className={`rounded-lg px-3 py-2 text-sm transition ${filter === value ? "bg-indigo-500/10 text-accent ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}>{label}</button>)}</div>
               {(query || filter !== "all") && <span role="status" className="text-xs text-zinc-500">{Object.keys(visibleBoard.cards).length} resultados</span>}
-              <button onClick={() => setShowTags(true)} title="Gestionar etiquetas: colores y modelo de cada una" className="ml-auto flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm text-zinc-400 ring-1 ring-ui-ink/10 transition hover:bg-ui-ink/5 hover:text-zinc-200"><Tags className="h-4 w-4" />Etiquetas</button>
+              <button data-tags-toggle onClick={() => setShowTags(!showTags)} aria-expanded={showTags} title={showTags ? "Ocultar etiquetas" : "Etiquetas: colores, modelo de cada una y arrastrarlas a las tarjetas"} className={`ml-auto flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm ring-1 transition ${showTags ? "bg-indigo-500/10 text-accent ring-indigo-400/30" : "text-zinc-400 ring-ui-ink/10 hover:bg-ui-ink/5 hover:text-zinc-200"}`}><Tags className="h-4 w-4" />Etiquetas</button>
             </div>
             {!project.repo_path && <UnlinkedBanner project={project} onLinked={reload} />}
-            <div className="min-h-0 flex-1">
+            <div className="relative min-h-0 flex-1">
+            {showTags && <TagManager projectId={project.id} tags={projectTags} draggable onClose={closeTags} className="absolute top-0 right-4 z-40 max-h-[70%] w-[min(26rem,calc(100%-2rem))] overflow-y-auto rounded-2xl bg-panel p-3 shadow-[var(--shadow-pop)] ring-1 ring-ui-ink/[0.1]" />}
             <Board
               projectId={projectId}
               board={visibleBoard}
@@ -576,7 +580,6 @@ export default function App() {
       <CloneToasts onOpen={(p) => openProject(p.id)} onFinished={reload} />
       <ConfirmHost />
       {showHelp && <Help onClose={() => setShowHelp(false)} />}
-      {showTags && project && <TagManager projectId={project.id} onClose={() => setShowTags(false)} onChanged={reload} />}
       {showDocs && project && <ProjectDocs projectId={project.id} onClose={() => setShowDocs(false)} />}
       {showSettings && project && <ProjectSettings project={project} onClose={() => setShowSettings(false)} onSaved={reload} />}
       {showNew && (
