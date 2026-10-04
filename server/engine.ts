@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { z, type ZodRawShape } from "zod";
-import { EFFORT_LABELS, splitEffort, withEffort, type Effort } from "../shared/models.js";
+import { EFFORT_LABELS, EFFORTS, splitEffort, withEffort, type Effort } from "../shared/models.js";
 
 export type Engine = "claude" | "codex";
 
@@ -94,6 +94,32 @@ export function codexDefaultModel(): string | null {
     return toml.split(/^\s*\[/m)[0].match(/^\s*model\s*=\s*"([^"]+)"/m)?.[1] ?? null;
   } catch {
     return null;
+  }
+}
+
+export interface CodexModel {
+  slug: string;
+  label: string;
+  efforts: Effort[];
+  defaultEffort: Effort | null;
+}
+
+/** The GPT models of your ChatGPT account, from the list Codex caches ($CODEX_HOME/models_cache.json). [] if there is none. */
+export function codexModels(): CodexModel[] {
+  try {
+    const raw = JSON.parse(readFileSync(join(process.env.CODEX_HOME || join(homedir(), ".codex"), "models_cache.json"), "utf8"));
+    const isEffort = (e: unknown): e is Effort => (EFFORTS as readonly unknown[]).includes(e);
+    return (Array.isArray(raw?.models) ? raw.models : [])
+      .filter((m: { slug?: unknown; visibility?: unknown }) => typeof m?.slug === "string" && m.visibility === "list")
+      .map((m: { slug: string; display_name?: string; supported_reasoning_levels?: { effort?: unknown }[]; default_reasoning_level?: unknown }) => ({
+        slug: m.slug,
+        label: m.display_name || m.slug,
+        // Codex has levels we don't (e.g. "ultra"): keep only ours
+        efforts: (m.supported_reasoning_levels ?? []).map((l) => l?.effort).filter(isEffort),
+        defaultEffort: isEffort(m.default_reasoning_level) ? m.default_reasoning_level : null,
+      }));
+  } catch {
+    return [];
   }
 }
 
