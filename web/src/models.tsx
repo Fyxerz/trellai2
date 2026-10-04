@@ -1,6 +1,7 @@
 import { projectName, useDialogFocus } from "./preferences";
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { TagManager } from "./TagManager";
 import { CODEX_EFFORTS, EFFORT_LABELS, EFFORTS, prettyModel, splitEffort, withEffort, type Effort } from "../../shared/models";
 
 /**
@@ -201,6 +202,7 @@ export function ProjectSettings({
   onSaved: () => void;
 }) {
   const { codex } = useEngines();
+  const [manageTags, setManageTags] = useState(false);
   const save = async (key: string, value: string | null) => {
     await api(`/api/projects/${project.id}`, { [key]: value }, "PATCH");
     onSaved();
@@ -232,30 +234,16 @@ export function ProjectSettings({
             </div>
           ))}
         </div>
-        {project.tags.length > 0 && (
-          <div className="space-y-2 border-t border-zinc-800 pt-3">
-            <div>
-              <div className="text-sm text-zinc-200">Modelos por etiqueta</div>
-              <div className="text-[11px] text-zinc-500">
-                Para desarrollar, una tarjeta con esta etiqueta usa este modelo (salvo que la tarjeta elija el suyo). Con varias, manda la primera de esta lista.
-              </div>
-            </div>
-            {project.tags.map((t) => (
-              <div key={t.id} className="flex items-center gap-3">
-                <span className="flex min-w-0 flex-1 items-center gap-1.5 text-sm text-zinc-200">
-                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.color }} />
-                  <span className="truncate">{t.name}</span>
-                </span>
-                <ModelPicker
-                  value={t.model ?? null}
-                  inheritLabel="Sin modelo (usa el del proyecto)"
-                  onChange={(v) => api(`/api/projects/${project.id}/tags/${t.id}`, { model: v }, "PATCH").then(onSaved)}
-                  className="w-72"
-                />
-              </div>
-            ))}
+        <div className="flex items-center gap-3 border-t border-zinc-800 pt-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm text-zinc-200">Etiquetas</div>
+            <div className="text-[11px] text-zinc-500">Color y modelo de desarrollo de cada etiqueta.</div>
           </div>
-        )}
+          <button onClick={() => setManageTags(true)} className="rounded-md px-2.5 py-1 text-xs text-zinc-200 ring-1 ring-zinc-700 hover:bg-ui-ink/[0.05]">
+            Gestionar etiquetas
+          </button>
+        </div>
+        {manageTags && <TagManager projectId={project.id} onClose={() => setManageTags(false)} onChanged={onSaved} />}
         <div className="rounded-lg bg-zinc-950 p-3 text-xs text-zinc-400 ring-1 ring-zinc-800">
           {codex?.installed ? (
             <>GPT disponible vía Codex ({codex.version}). Usa tu sesión de <code className="text-zinc-300">codex login</code>.</>

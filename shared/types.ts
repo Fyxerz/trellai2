@@ -56,6 +56,13 @@ export interface Tag {
   model?: string | null;
 }
 
+/** Colors offered in the tag manager's grid (TAG_COLORS are used, in order, for new tags). */
+export const TAG_PALETTE = [
+  "#f87171", "#fb923c", "#fbbf24", "#facc15", "#a3e635", "#4ade80", "#34d399", "#2dd4bf",
+  "#22d3ee", "#38bdf8", "#60a5fa", "#818cf8", "#a78bfa", "#c084fc", "#e879f9", "#f472b6",
+  "#fb7185", "#dc2626", "#ea580c", "#16a34a", "#0d9488", "#2563eb", "#7c3aed", "#a1a1aa",
+];
+
 export const TAG_COLORS = ["#f87171", "#fb923c", "#facc15", "#4ade80", "#2dd4bf", "#60a5fa", "#a78bfa", "#f472b6", "#a1a1aa"];
 
 export type ModelRole = "model_prep" | "model_dev" | "model_plan" | "model_do" | "model_ui";

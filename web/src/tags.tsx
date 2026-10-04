@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Cpu, Plus, Tag as TagIcon, Trash2 } from "lucide-react";
-import { TAG_COLORS, type Card, type Tag } from "../../shared/types";
+import { Check, Cpu, Plus, Settings2, Tag as TagIcon, Trash2 } from "lucide-react";
+import { type Card, type Tag } from "../../shared/types";
 import { api, type Board } from "./api";
 import { confirmDialog } from "./Confirm";
 import { reportError } from "./notifications";
 import { modelLabel } from "./models";
+import { TagManager } from "./TagManager";
 
 /** The project's tags, live (local changes, other tabs and other computers). */
 export function useProjectTags(projectId: string | null | undefined, board: Board) {
@@ -49,6 +50,7 @@ export function cardTags(card: Card, tags: Tag[]) {
 export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [managing, setManaging] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const on = cardTags(card, tags);
 
@@ -72,10 +74,10 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
       reportError((e as Error).message);
     }
   };
-  const recolor = (t: Tag) =>
-    api(`/api/projects/${card.project_id}/tags/${t.id}`, { color: TAG_COLORS[(TAG_COLORS.indexOf(t.color) + 1) % TAG_COLORS.length] }, "PATCH").catch((e) =>
-      reportError(e.message),
-    );
+  const manage = () => {
+    setOpen(false);
+    setManaging(true);
+  };
   const remove = async (t: Tag) => {
     const ok = await confirmDialog({ title: `¿Borrar la etiqueta "${t.name}"?`, body: "Se quitará de todas las tarjetas del proyecto.", confirmLabel: "Borrar", danger: true });
     if (!ok) return;
@@ -129,10 +131,10 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
             {shown.map((t) => (
               <li key={t.id} className="group/tag flex items-center gap-1 rounded-lg hover:bg-ui-ink/[0.05]">
                 <button
-                  onClick={() => recolor(t)}
+                  onClick={manage}
                   className="ml-1.5 h-3.5 w-3.5 shrink-0 rounded-full ring-1 ring-black/20"
                   style={{ background: t.color }}
-                  title="Cambiar color"
+                  title="Cambiar color y modelo"
                   aria-label={`Cambiar color de ${t.name}`}
                 />
                 <button onClick={() => toggle(t)} className="flex min-w-0 flex-1 items-center gap-2 px-1.5 py-1.5 text-left text-sm text-zinc-200">
@@ -162,8 +164,15 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
               <Plus className="h-3.5 w-3.5" /> Crear «{query.trim()}»
             </button>
           )}
+          <button
+            onClick={manage}
+            className="mt-1 flex w-full items-center gap-2 border-t border-ui-ink/[0.06] px-2.5 pt-2 pb-1 text-left text-xs text-zinc-400 hover:text-zinc-100"
+          >
+            <Settings2 className="h-3.5 w-3.5" /> Gestionar etiquetas (colores y modelos)…
+          </button>
         </div>
       )}
+      {managing && <TagManager projectId={card.project_id} onClose={() => setManaging(false)} />}
     </div>
   );
 }
