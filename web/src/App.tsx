@@ -8,6 +8,7 @@ import { AssistantPanel, type AssistantMode } from "./Assistant";
 import { Board, BoardBackground, boardBackground, CAN_ADD, columnCards, moveCard } from "./Board";
 import { CardPanel } from "./CardPanel";
 import { FolderPicker } from "./FolderPicker";
+import { CloneRepo } from "./CloneRepo";
 import { Help } from "./Help";
 import { ConfirmHost, confirmDeleteCard, togglePreview } from "./Confirm";
 import { Home } from "./Home";
@@ -657,7 +658,8 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
 }
 
 function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onCreated: (p: Project) => void; canClose: boolean }) {
-  const dialogRef = useDialogFocus<HTMLFormElement>();
+  const dialogRef = useDialogFocus<HTMLDivElement>();
+  const [tab, setTab] = useState<"local" | "clone">("local");
   const [repo, setRepo] = useState<{ path: string; isRepo: boolean } | null>(null);
   const [name, setName] = useState("");
   const [base, setBase] = useState("");
@@ -672,70 +674,106 @@ function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onC
     setError("");
   };
 
+  const footer = (submit: React.ReactNode) => (
+    <div className="flex justify-end gap-2">
+      {canClose && (
+        <Button type="button" variant="ghost" onClick={onClose}>
+          Cancelar
+        </Button>
+      )}
+      {submit}
+    </div>
+  );
+  const tabs = [
+    ["local", "Carpeta local"],
+    ["clone", "Clonar de GitHub"],
+  ] as const;
+
   return (
     <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={() => canClose && onClose()}>
-      <form
+      <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Nuevo proyecto"
         onClick={(e) => e.stopPropagation()}
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if (!repo || saving || (!repo.isRepo && !init)) return;
-          setError("");
-          setSaving(true);
-          try {
-            onCreated(await api<Project>("/api/projects", { repo_path: repo.path, name, base_branch: base, init }));
-          } catch (err) {
-            setError((err as Error).message);
-          } finally {
-            setSaving(false);
-          }
-        }}
-        className="w-full max-w-xl space-y-4 rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]"
+        className="max-h-[92vh] w-full max-w-xl space-y-4 overflow-y-auto rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]"
       >
-        <div>
-          <h2 className="text-base font-semibold text-zinc-100">Nuevo proyecto</h2>
-          <p className="text-xs text-zinc-500">Elige la carpeta del repo. Las carpetas con git salen en verde.</p>
-        </div>
-
-        <FolderPicker onPick={pick} selected={repo?.path} />
-
-        {repo && (
-          <div className="space-y-3 rounded-lg bg-zinc-950 p-3 ring-1 ring-zinc-800">
-            <div className="truncate font-mono text-xs text-zinc-300">{repo.path}</div>
-            {!repo.isRepo && (
-              <label className="flex items-center gap-2 text-xs text-amber-200">
-                <input type="checkbox" checked={init} onChange={(e) => setInit(e.target.checked)} className="accent-amber-400" />
-                No es un repo git — inicializarlo aquí (git init + primer commit)
-              </label>
-            )}
-            <div className="flex gap-3">
-              <label className="block flex-1 text-xs text-zinc-400">
-                Nombre
-                <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-indigo-500" />
-              </label>
-              <label className="block w-40 text-xs text-zinc-400">
-                Rama base
-                <input value={base} onChange={(e) => setBase(e.target.value)} placeholder="la actual" className="mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 font-mono text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none placeholder:text-zinc-600 focus:ring-indigo-500" />
-              </label>
-            </div>
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-semibold text-zinc-100">Nuevo proyecto</h2>
+            <p className="text-xs text-zinc-500">
+              {tab === "local" ? "Elige la carpeta del repo. Las carpetas con git salen en verde." : "Elige uno de tus repos o pega su URL; se clona y se abre su tablero."}
+            </p>
           </div>
-        )}
-
-        {error && <p className="text-sm text-red-300">{error}</p>}
-        <div className="flex justify-end gap-2">
-          {canClose && (
-            <Button type="button" variant="ghost" onClick={onClose}>
-              Cancelar
-            </Button>
-          )}
-          <Button variant="primary" type="submit" disabled={!repo || (!repo.isRepo && !init) || saving}>
-            Crear proyecto
-          </Button>
+          <div role="tablist" aria-label="Origen del proyecto" className="flex shrink-0 gap-0.5 rounded-lg bg-zinc-950 p-0.5 ring-1 ring-zinc-800">
+            {tabs.map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={tab === id}
+                onClick={() => setTab(id)}
+                className={`rounded-md px-2.5 py-1 text-xs transition ${tab === id ? "bg-ui-ink/[0.09] text-zinc-50 ring-1 ring-ui-ink/[0.1]" : "text-zinc-400 hover:text-zinc-100"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
-      </form>
+
+        {tab === "clone" ? (
+          <CloneRepo onCreated={onCreated} footer={footer} />
+        ) : (
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!repo || saving || (!repo.isRepo && !init)) return;
+              setError("");
+              setSaving(true);
+              try {
+                onCreated(await api<Project>("/api/projects", { repo_path: repo.path, name, base_branch: base, init }));
+              } catch (err) {
+                setError((err as Error).message);
+              } finally {
+                setSaving(false);
+              }
+            }}
+            className="space-y-4"
+          >
+            <FolderPicker onPick={pick} selected={repo?.path} />
+
+            {repo && (
+              <div className="space-y-3 rounded-lg bg-zinc-950 p-3 ring-1 ring-zinc-800">
+                <div className="truncate font-mono text-xs text-zinc-300">{repo.path}</div>
+                {!repo.isRepo && (
+                  <label className="flex items-center gap-2 text-xs text-amber-200">
+                    <input type="checkbox" checked={init} onChange={(e) => setInit(e.target.checked)} className="accent-amber-400" />
+                    No es un repo git — inicializarlo aquí (git init + primer commit)
+                  </label>
+                )}
+                <div className="flex gap-3">
+                  <label className="block flex-1 text-xs text-zinc-400">
+                    Nombre
+                    <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-indigo-500" />
+                  </label>
+                  <label className="block w-40 text-xs text-zinc-400">
+                    Rama base
+                    <input value={base} onChange={(e) => setBase(e.target.value)} placeholder="la actual" className="mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 font-mono text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none placeholder:text-zinc-600 focus:ring-indigo-500" />
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {error && <p className="text-sm text-red-300">{error}</p>}
+            {footer(
+              <Button variant="primary" type="submit" disabled={!repo || (!repo.isRepo && !init) || saving}>
+                Crear proyecto
+              </Button>,
+            )}
+          </form>
+        )}
+      </div>
     </div>
   );
 }

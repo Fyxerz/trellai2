@@ -19,7 +19,7 @@ const groups = (): { title: string; keys: [string, string][] }[] => [
       ["j  k", "Bajar / subir"],
       ["Enter  l", "Abrir proyecto"],
       ["1–9", "Ir al proyecto n"],
-      ["n", "Nuevo proyecto"],
+      ["n", "Nuevo proyecto (carpeta local o clonar de GitHub)"],
       ["Esc  h", "Volver al tablero"],
     ],
   },

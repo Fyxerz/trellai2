@@ -19,6 +19,8 @@ Para desarrollar el propio Trellai: `npm run dev` (UI en http://localhost:5317 c
 
 Para añadir un proyecto, elige la carpeta en el explorador que sale al crear uno (las carpetas con git salen en verde; en Mac también tienes el botón **Finder…**). Si eliges una carpeta sin git, Trellai puede inicializarla.
 
+O usa la pestaña **Clonar de GitHub**: pega la URL del repo (o `usuario/repo`) y se clona dentro de la carpeta donde tienes la mayoría de tus proyectos (si aún no hay ninguno, `~/code`; el diálogo muestra la ruta completa y con **Cambiar…** eliges otra, que se recuerda) y se abre su tablero. Si tienes el CLI [`gh`](https://cli.github.com) con sesión iniciada (`gh auth login`), ves la lista de tus repos (también los de tus organizaciones) con buscador y eliges uno con un clic; Trellai no guarda tokens, usa los de `gh` y respeta `gh config get git_protocol` (ssh/https). Si la carpeta ya tiene ese repo, se reutiliza.
+
 Usa tu sesión de Claude Code: si `claude` funciona en tu terminal, Trellai también funciona. También puedes usar `ANTHROPIC_API_KEY`.
 
 ## Cómo funciona

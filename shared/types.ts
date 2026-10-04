@@ -63,6 +63,25 @@ export interface BgStatus {
   activity: string | null;
 }
 
+/** A repo of your GitHub account, as listed by the `gh` CLI ("Clonar de GitHub"). */
+export interface GitHubRepo {
+  /** "owner/name" */
+  name: string;
+  description: string | null;
+  private: boolean;
+  updated_at: string;
+  /** URL to clone with, following `gh config get git_protocol` (ssh or https) */
+  clone_url: string;
+}
+
+/** GET /api/github/repos: whether `gh` is installed, logged in, and your repos. */
+export interface GitHubRepos {
+  available: boolean;
+  loggedIn: boolean;
+  repos: GitHubRepo[];
+  error?: string;
+}
+
 export interface Tag {
   id: string;
   name: string;

@@ -19,7 +19,7 @@ const LAST_DIR = "trellai:lastDir";
  * A click selects an entry; double click or Enter opens it.
  * Git repos are highlighted; plain folders can be chosen too (the caller decides).
  */
-export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRepo: boolean) => void; selected?: string }) {
+export function FolderPicker({ onPick, selected, start: startAt }: { onPick: (path: string, isRepo: boolean) => void; selected?: string; /** folder to open first (default: the last one visited) */ start?: string }) {
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -53,11 +53,13 @@ export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRe
   };
 
   useEffect(() => {
-    let start = "~/code";
-    try {
-      start = localStorage.getItem(LAST_DIR) ?? start;
-    } catch {
-      /* ignore */
+    let start = startAt || "~/code";
+    if (!startAt) {
+      try {
+        start = localStorage.getItem(LAST_DIR) ?? start;
+      } catch {
+        /* ignore */
+      }
     }
     go(start).then((ok) => !ok && go("~"));
   }, []);
