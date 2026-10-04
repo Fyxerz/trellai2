@@ -127,6 +127,9 @@ addColumn("projects", "tags", "tags TEXT NOT NULL DEFAULT '[]'");
 addColumn("cards", "tags", "tags TEXT NOT NULL DEFAULT '[]'");
 /** Exact model id of the card agent's latest run. */
 addColumn("cards", "agent_model", "agent_model TEXT");
+/** When the card entered Merged (the board groups that column by day). */
+addColumn("cards", "merged_at", "merged_at TEXT");
+db.exec(`UPDATE cards SET merged_at = updated_at WHERE "column" = 'merged' AND merged_at IS NULL`);
 /** JSON Claim[]: what the card's agent is touching while in Doing. */
 addColumn("cards", "claims", "claims TEXT NOT NULL DEFAULT '[]'");
 /** JSON string[]: files a note is about, and cards it's addressed to ([] = everyone). */
@@ -301,6 +304,8 @@ export function placeCard(cardId: string, column: Column, index: number): Card {
     const ordered = [...others.slice(0, i), card, ...others.slice(i)];
     const stmt = db.prepare('UPDATE cards SET "column" = ?, position = ?, updated_at = ? WHERE id = ?');
     ordered.forEach((c, pos) => stmt.run(column, pos, c.id === cardId ? now() : c.updated_at, c.id));
+    if (card.column !== column)
+      db.prepare("UPDATE cards SET merged_at = ? WHERE id = ?").run(column === "merged" ? now() : null, cardId);
   });
   tx();
   return getCard(cardId)!;

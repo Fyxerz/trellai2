@@ -114,7 +114,8 @@ describe("board flow", () => {
     expect(notes.some((n) => n.content.includes("SHARED.md"))).toBe(true);
 
     await api(`/api/cards/${a.id}/move`, { column: "merged" });
-    await waitFor(a.id, (x) => x.column === "merged" && x.status_text.startsWith("Merge "));
+    const aMerged = await waitFor(a.id, (x) => x.column === "merged" && x.status_text.startsWith("Merge "));
+    expect(aMerged.merged_at).toBeTruthy();
 
     // B now conflicts with main → goes back to doing, agent rebases, back to review
     await api(`/api/cards/${b.id}/move`, { column: "merged" });

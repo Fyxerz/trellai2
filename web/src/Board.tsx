@@ -6,7 +6,7 @@ import { useSync } from "./api";
 import { useEffect, useRef, useState } from "react";
 import { COLUMNS, COLUMN_LABELS, type Card, type Column, type Tag } from "../../shared/types";
 import { api, type Board as BoardState } from "./api";
-import { ArrowRight, Eye, GitBranch, GitMerge, ListChecks, Play, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, ChevronRight, Eye, GitBranch, GitMerge, ListChecks, Play, Plus, Trash2 } from "lucide-react";
 import { cardTags, TagChip, useProjectTags } from "./tags";
 import { confirmDeleteCard } from "./Confirm";
 import { Button, COLUMN_HEX, COLUMN_ICON, StatusBadge } from "./ui";
@@ -36,10 +36,40 @@ const NEXT: Partial<Record<Column, { to: Column; label: string; Icon: typeof Pla
 /** Columns where you can create cards (the rest are driven by the workflow). */
 export const CAN_ADD = new Set<Column>(["backlog", "plan"]);
 
+/** Merged is shown newest first, grouped by day. */
+const mergedAt = (c: Card) => c.merged_at ?? c.updated_at;
+
 export function columnCards(cards: Record<string, Card>, col: Column): Card[] {
   return Object.values(cards)
     .filter((c) => c.column === col)
-    .sort((a, b) => a.position - b.position);
+    .sort(col === "merged" ? (a, b) => mergedAt(b).localeCompare(mergedAt(a)) : (a, b) => a.position - b.position);
+}
+
+/** Local calendar day, e.g. "2026-10-04". */
+function dayKey(iso: string) {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function dayLabel(key: string, today: string) {
+  if (key === today) return "Hoy";
+  const d = new Date(`${key}T12:00:00`);
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (key === dayKey(yesterday.toISOString())) return "Ayer";
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }) });
+}
+
+/** Group already-sorted merged cards by the day they were merged. */
+export function mergedDays(cards: Card[]): { day: string; cards: Card[] }[] {
+  const groups: { day: string; cards: Card[] }[] = [];
+  for (const c of cards) {
+    const day = dayKey(mergedAt(c));
+    if (groups.at(-1)?.day === day) groups.at(-1)!.cards.push(c);
+    else groups.push({ day, cards: [c] });
+  }
+  return groups;
 }
 
 /** Move a card locally right away, then tell the server (which may start/stop agents). */
@@ -49,7 +79,7 @@ export async function moveCard(board: BoardState, id: string, to: Column, index:
     if (!prev[id]) return prev;
     const next = { ...prev };
     const from = next[id].column;
-    const moved = { ...next[id], column: to };
+    const moved = { ...next[id], column: to, ...(from !== to && { merged_at: to === "merged" ? new Date().toISOString() : null }) };
     const dest = Object.values(next)
       .filter((c) => c.column === to && c.id !== id)
       .sort((a, b) => a.position - b.position);
@@ -99,6 +129,42 @@ export function Board({
   const byColumn = (col: Column) => columnCards(board.cards, col);
   const tags = useProjectTags(projectId, board);
   useEngines(); // re-render once the exact model versions are known
+
+  // Merged days: only today's start expanded; a click toggles any of them.
+  const today = dayKey(new Date().toISOString());
+  const [openDays, setOpenDays] = useState<Record<string, boolean>>({});
+  const isOpen = (day: string) => openDays[day] ?? day === today;
+  // The keyboard cursor can land on a collapsed day's card: show it.
+  const cursorCard = cursor.id ? board.cards[cursor.id] : undefined;
+  const cursorDay = cursorCard?.column === "merged" ? dayKey(mergedAt(cursorCard)) : null;
+  useEffect(() => {
+    if (cursorDay && !isOpen(cursorDay)) setOpenDays((o) => ({ ...o, [cursorDay]: true }));
+  }, [cursorDay, cursor.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const renderCard = (card: Card, i: number) => (
+    <Draggable key={card.id} draggableId={card.id} index={i}>
+      {(dp, ds) => (
+        <div ref={dp.innerRef} {...dp.draggableProps} {...dp.dragHandleProps} data-card className="cursor-pointer">
+          <CardItem
+            card={card}
+            dragging={ds.isDragging}
+            selected={card.id === selectedId}
+            cursor={focused && cursor.id === card.id}
+            previewing={previewCardId === card.id}
+            tags={cardTags(card, tags)}
+            onAdvance={(to) => {
+              moveCard(board, card.id, to, Number.MAX_SAFE_INTEGER);
+              onCursor(to, card.id);
+            }}
+            onClick={() => {
+              onCursor(card.column, card.id);
+              onOpen(card.id);
+            }}
+          />
+        </div>
+      )}
+    </Draggable>
+  );
 
   // Dropping a card on another project in the sidebar copies it there.
   const dropTarget = useRef<string | null>(null);
@@ -181,30 +247,27 @@ export function Board({
                     {...p.droppableProps}
                     className={`group relative flex min-h-12 flex-col gap-2 overflow-y-auto rounded-b-2xl px-2 pb-12 transition-colors ${snap.isDraggingOver ? "bg-indigo-500/10" : ""} ${canAdd ? "cursor-cell" : ""}`}
                   >
-                    {cards.map((card, i) => (
-                      <Draggable key={card.id} draggableId={card.id} index={i}>
-                        {(dp, ds) => (
-                          <div ref={dp.innerRef} {...dp.draggableProps} {...dp.dragHandleProps} data-card className="cursor-pointer">
-                            <CardItem
-                              card={card}
-                              dragging={ds.isDragging}
-                              selected={card.id === selectedId}
-                              cursor={focused && cursor.id === card.id}
-                              previewing={previewCardId === card.id}
-                              tags={cardTags(card, tags)}
-                              onAdvance={(to) => {
-                                moveCard(board, card.id, to, Number.MAX_SAFE_INTEGER);
-                                onCursor(to, card.id);
-                              }}
-                              onClick={() => {
-                                onCursor(col, card.id);
-                                onOpen(card.id);
-                              }}
-                            />
+                    {col !== "merged" && cards.map(renderCard)}
+                    {col === "merged" && (() => {
+                      let i = 0; // Draggable indexes count only the cards shown
+                      return mergedDays(cards).map(({ day, cards: dayCards }) => {
+                        const open = isOpen(day);
+                        return (
+                          <div key={day} className="flex flex-col gap-2">
+                            <button
+                              onClick={() => setOpenDays((o) => ({ ...o, [day]: !open }))}
+                              className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11.5px] font-medium text-zinc-400 hover:bg-ui-ink/[0.05] hover:text-zinc-200"
+                              aria-expanded={open}
+                            >
+                              <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-zinc-500 transition-transform ${open ? "rotate-90" : ""}`} />
+                              <span className="truncate first-letter:uppercase">{dayLabel(day, today)}</span>
+                              <span className="tabular ml-auto rounded-full bg-ui-ink/[0.06] px-1.5 text-[10.5px] leading-[16px] text-zinc-500">{dayCards.length}</span>
+                            </button>
+                            {open && dayCards.map((card) => renderCard(card, i++))}
                           </div>
-                        )}
-                      </Draggable>
-                    ))}
+                        );
+                      });
+                    })()}
                     {p.placeholder}
                     {canAdd && adding !== col && <button onClick={() => { onCursor(col, null); setAdding(col); }} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-zinc-400 hover:bg-ui-ink/5 hover:text-zinc-100"><Plus className="h-4 w-4" /> Añadir tarjeta</button>}
                     {adding === col && <NewCardInput projectId={projectId} column={col} onDone={() => setAdding(null)} />}
