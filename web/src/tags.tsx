@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, Cpu, Plus, Settings2, Tag as TagIcon, Trash2 } from "lucide-react";
 import { type Card, type Tag } from "../../shared/types";
 import { api, type Board } from "./api";
@@ -41,25 +41,17 @@ export function TagChip({ tag, className = "" }: { tag: Tag; className?: string 
   );
 }
 
-/** The card's tags, in the project's order. */
+/** The card's tags, in the order they were added to it (the first one with a model decides the card's model). */
 export function cardTags(card: Card, tags: Tag[]) {
-  return tags.filter((t) => card.tags?.includes(t.id));
+  return (card.tags ?? []).map((id) => tags.find((t) => t.id === id)).filter((t): t is Tag => !!t);
 }
 
-/** Tags on the card + a popover to add/remove them and to create, recolor or delete project tags. */
+/** Tags on the card + an inline block (inside the card panel) to add/remove them and to create, recolor or delete project tags. */
 export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [managing, setManaging] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
   const on = cardTags(card, tags);
-
-  useEffect(() => {
-    if (!open) return;
-    const away = (e: PointerEvent) => !root.current?.contains(e.target as Node) && setOpen(false);
-    document.addEventListener("pointerdown", away);
-    return () => document.removeEventListener("pointerdown", away);
-  }, [open]);
 
   const setCardTags = (ids: string[]) => api(`/api/cards/${card.id}`, { tags: ids }, "PATCH").catch((e) => reportError(e.message));
   const toggle = (t: Tag) => setCardTags(card.tags.includes(t.id) ? card.tags.filter((id) => id !== t.id) : [...card.tags, t.id]);
@@ -74,10 +66,7 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
       reportError((e as Error).message);
     }
   };
-  const manage = () => {
-    setOpen(false);
-    setManaging(true);
-  };
+  const manage = () => setManaging(!managing);
   const remove = async (t: Tag) => {
     const ok = await confirmDialog({ title: `¿Borrar la etiqueta "${t.name}"?`, body: "Se quitará de todas las tarjetas del proyecto.", confirmLabel: "Borrar", danger: true });
     if (!ok) return;
@@ -89,7 +78,7 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
   const exact = tags.some((t) => t.name.toLowerCase() === q);
 
   return (
-    <div ref={root} className="relative mt-2 flex flex-wrap items-center gap-1.5">
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
       {on.map((t) => (
         <TagChip key={t.id} tag={t} />
       ))}
@@ -104,7 +93,7 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
       </button>
       {open && (
         <div
-          className="absolute top-full left-0 z-30 mt-1.5 w-64 rounded-xl bg-zinc-900 p-1.5 shadow-[var(--shadow-pop)] ring-1 ring-ui-ink/[0.1]"
+          className="w-full rounded-xl bg-zinc-950/60 p-1.5 ring-1 ring-ui-ink/[0.08]"
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               e.stopPropagation();
@@ -140,7 +129,7 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
                 <button onClick={() => toggle(t)} className="flex min-w-0 flex-1 items-center gap-2 px-1.5 py-1.5 text-left text-sm text-zinc-200">
                   <span className="truncate">{t.name}</span>
                   {t.model && (
-                    <span className="flex shrink-0 items-center gap-0.5 text-[10.5px] text-zinc-500" title="Modelo de la etiqueta (se cambia en Ajustes del proyecto)">
+                    <span className="flex shrink-0 items-center gap-0.5 text-[10.5px] text-zinc-500" title="Modelo de la etiqueta (se cambia en «Gestionar etiquetas»)">
                       <Cpu className="h-2.5 w-2.5" />
                       {modelLabel(t.model, true)}
                     </span>
@@ -168,11 +157,11 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
             onClick={manage}
             className="mt-1 flex w-full items-center gap-2 border-t border-ui-ink/[0.06] px-2.5 pt-2 pb-1 text-left text-xs text-zinc-400 hover:text-zinc-100"
           >
-            <Settings2 className="h-3.5 w-3.5" /> Gestionar etiquetas (colores y modelos)…
+            <Settings2 className="h-3.5 w-3.5" /> {managing ? "Ocultar gestión de etiquetas" : "Gestionar etiquetas (colores y modelos)…"}
           </button>
+          {managing && <TagManager projectId={card.project_id} tags={tags} className="mt-1.5 border-t border-ui-ink/[0.06] px-1 pt-2" />}
         </div>
       )}
-      {managing && <TagManager projectId={card.project_id} onClose={() => setManaging(false)} />}
     </div>
   );
 }
