@@ -572,6 +572,10 @@ app.post("/api/cards/:id/message", async (c) => {
   return c.json({ ok: true });
 });
 
+/** ↶ on one of your requests: what it would throw away (GET) and doing it (POST). */
+app.get("/api/cards/:id/messages/:mid/rewind", (c) => c.json(wf.rewindPreview(c.req.param("id"), Number(c.req.param("mid")))));
+app.post("/api/cards/:id/messages/:mid/rewind", async (c) => c.json(await wf.rewindTo(c.req.param("id"), Number(c.req.param("mid")))));
+
 app.post("/api/cards/:id/answers", async (c) => {
   const { answers } = await c.req.json<{ answers: Record<string, string> }>();
   wf.answerQuestions(c.req.param("id"), answers ?? {});
