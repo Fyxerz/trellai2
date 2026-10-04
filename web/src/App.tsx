@@ -458,7 +458,7 @@ export default function App() {
                 }}
               />
               <span className="mx-1 h-4 w-px bg-ui-ink/[0.08]" />
-              <IconButton title="Modelos del proyecto" onClick={() => setShowSettings(true)}>
+              <IconButton title="Ajustes del proyecto: modelos y fondo del tablero" onClick={() => setShowSettings(true)}>
                 <SlidersHorizontal className="h-4 w-4" />
               </IconButton>
             </>

@@ -1,6 +1,9 @@
 import { projectName, useDialogFocus } from "./preferences";
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { Loader2, RefreshCw, Sparkles, X } from "lucide-react";
+import { TAG_PALETTE, type BgMode, type BgStatus, type Project } from "../../shared/types";
+import { reportError } from "./notifications";
 import { CODEX_EFFORTS, EFFORT_LABELS, EFFORTS, prettyModel, splitEffort, withEffort, type Effort } from "../../shared/models";
 
 /**
@@ -228,7 +231,7 @@ export function ProjectSettings({
   onClose,
   onSaved,
 }: {
-  project: import("../../shared/types").Project;
+  project: Project;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -239,10 +242,10 @@ export function ProjectSettings({
   const dialogRef = useDialogFocus();
   return (
     <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={onClose}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Modelos del proyecto" onClick={(e) => e.stopPropagation()} className="w-full max-w-lg space-y-4 rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Ajustes del proyecto" onClick={(e) => e.stopPropagation()} className="max-h-[90vh] w-full max-w-lg space-y-4 overflow-y-auto rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]">
         <div className="flex items-center">
           <div>
-            <h2 className="text-base font-semibold text-zinc-100">Modelos · {projectName(project.name)}</h2>
+            <h2 className="text-base font-semibold text-zinc-100">Ajustes · {projectName(project.name)}</h2>
             <p className="text-xs text-zinc-500">Por defecto para este proyecto. Cada tarjeta puede elegir el suyo.</p>
           </div>
           <button onClick={onClose} className="ml-auto text-zinc-500 hover:text-zinc-200">✕</button>
@@ -264,6 +267,7 @@ export function ProjectSettings({
           ))}
         </div>
         <EngineStatus />
+        <BackgroundSettings project={project} codexInstalled={null} onSaved={onSaved} />
       </div>
     </div>
   );
@@ -354,5 +358,144 @@ function EngineStatus() {
         {error("codex")}
       </div>
     </div>
+  );
+}
+
+/** URL of the project's generated background (versioned, so a new one isn't cached). */
+export const backgroundUrl = (p: Project) => `/api/projects/${p.id}/background?v=${encodeURIComponent(p.bg_image ?? "")}`;
+
+const BG_MODES: { value: BgMode; label: string }[] = [
+  { value: "none", label: "Ninguno" },
+  { value: "color", label: "Color" },
+  { value: "image", label: "Imagen" },
+];
+
+/** "Fondo del tablero": none, a color, or an image Codex draws from what the repo is about. */
+function BackgroundSettings({ project, codexInstalled, onSaved }: { project: Project; codexInstalled: boolean | null; onSaved: () => void }) {
+  const [status, setStatus] = useState<BgStatus>({ running: false, error: null, activity: null });
+  const url = `/api/projects/${project.id}/background`;
+  const save = (patch: Partial<Pick<Project, "bg_mode" | "bg_color">>) =>
+    api(`/api/projects/${project.id}`, patch, "PATCH").then(onSaved).catch((e) => reportError(e.message));
+
+  // Generation runs on the server; follow it while it lasts.
+  useEffect(() => {
+    let stop = false;
+    let t: ReturnType<typeof setTimeout>;
+    let wasRunning = false;
+    const poll = () =>
+      api<BgStatus>(`${url}/status`)
+        .then((s) => {
+          if (stop) return;
+          if (wasRunning && !s.running) onSaved(); // new image (or error): refresh the project
+          wasRunning = s.running;
+          setStatus(s);
+          t = setTimeout(poll, s.running ? 1500 : 4000);
+        })
+        .catch(() => !stop && (t = setTimeout(poll, 4000)));
+    poll();
+    return () => {
+      stop = true;
+      clearTimeout(t);
+    };
+  }, [project.id]);
+
+  const generate = () => {
+    setStatus({ running: true, error: null, activity: "Empezando…" });
+    api<BgStatus>(`${url}/generate`, {})
+      .then(setStatus)
+      .catch((e) => setStatus({ running: false, error: (e as Error).message, activity: null }));
+  };
+  const cancel = () => api<BgStatus>(`${url}/stop`, {}).then(setStatus).catch(() => {});
+  const color = project.bg_color ?? "#2563eb";
+  const btn = "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-zinc-300 ring-1 ring-ui-ink/10 transition hover:bg-ui-ink/5 disabled:opacity-50";
+
+  return (
+    <section className="space-y-3 border-t border-ui-ink/[0.08] pt-4" aria-label="Fondo del tablero">
+      <div>
+        <h3 className="text-sm font-semibold text-zinc-100">Fondo del tablero</h3>
+        <p className="text-[11px] text-zinc-500">Para distinguir los proyectos de un vistazo.</p>
+      </div>
+      <div role="radiogroup" aria-label="Tipo de fondo" className="flex gap-1">
+        {BG_MODES.map((m) => (
+          <button
+            key={m.value}
+            role="radio"
+            aria-checked={project.bg_mode === m.value}
+            onClick={() =>
+              project.bg_mode !== m.value && save(m.value === "color" && !project.bg_color ? { bg_mode: m.value, bg_color: color } : { bg_mode: m.value })
+            }
+            className={`rounded-lg px-3 py-1.5 text-sm transition ${project.bg_mode === m.value ? "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {project.bg_mode === "color" && (
+        <div className="flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label="Color de fondo">
+          {TAG_PALETTE.map((c) => (
+            <button
+              key={c}
+              role="radio"
+              aria-checked={color.toLowerCase() === c}
+              aria-label={c}
+              onClick={() => save({ bg_color: c })}
+              className={`h-6 w-6 rounded-md transition hover:scale-110 ${color.toLowerCase() === c ? "ring-2 ring-zinc-100 ring-offset-2 ring-offset-zinc-900" : "ring-1 ring-black/20"}`}
+              style={{ background: c }}
+            />
+          ))}
+          <label className="ml-1 flex items-center gap-1.5 text-xs text-zinc-400" title="Elegir otro color">
+            <input type="color" value={color} onChange={(e) => save({ bg_color: e.target.value })} className="h-6 w-8 cursor-pointer rounded bg-transparent" />
+            Otro
+          </label>
+        </div>
+      )}
+
+      {project.bg_mode === "image" && (
+        <div className="space-y-2">
+          <div className="flex items-start gap-3">
+            <div className="aspect-video w-40 shrink-0 overflow-hidden rounded-lg bg-zinc-950 ring-1 ring-zinc-800">
+              {project.bg_image ? (
+                <img src={backgroundUrl(project)} alt="Imagen de fondo actual" className="h-full w-full object-cover" />
+              ) : (
+                <div className="flex h-full items-center justify-center p-2 text-center text-[11px] text-zinc-500">Sin imagen en este ordenador</div>
+              )}
+            </div>
+            <div className="min-w-0 flex-1 space-y-2">
+              <p className="text-[11px] text-zinc-500">
+                Codex explora el repo, deduce de qué va el proyecto y dibuja un fondo con su herramienta de imágenes (tarda unos minutos). Se guarda solo en
+                este ordenador, en <code className="text-zinc-400">.trellai/</code>.
+              </p>
+              {status.running ? (
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-indigo-300" />
+                  <span className="min-w-0 flex-1 truncate text-xs text-zinc-300" title={status.activity ?? ""}>
+                    {status.activity ?? "Generando…"}
+                  </span>
+                  <button onClick={cancel} className={btn}>
+                    <X className="h-3.5 w-3.5" /> Cancelar
+                  </button>
+                </div>
+              ) : (
+                <button onClick={generate} disabled={codexInstalled === false} className={btn} title={codexInstalled === false ? "Hace falta Codex" : undefined}>
+                  {project.bg_image ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  {project.bg_image ? "Regenerar" : "Generar imagen"}
+                </button>
+              )}
+            </div>
+          </div>
+          {codexInstalled === false && (
+            <p className="text-xs text-amber-300">
+              Hace falta Codex: <code>npm i -g @openai/codex</code> y <code>codex login</code> con tu cuenta de ChatGPT.
+            </p>
+          )}
+          {status.error && !status.running && (
+            <p role="alert" className="text-xs text-red-300">
+              {status.error}
+            </p>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
