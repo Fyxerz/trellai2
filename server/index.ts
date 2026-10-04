@@ -121,7 +121,21 @@ app.post("/api/projects", async (c) => {
 /** Your GitHub repos through the `gh` CLI (+ whether it's installed / logged in). */
 app.get("/api/github/repos", async (c) => c.json(await github.listRepos()));
 
-/** Clone a repo (default: ~/code/<name>) and add it to the board. A folder already holding that repo is reused. */
+/** Where clones go by default: the folder most of your projects live in (else ~/code). */
+function cloneDir(): string {
+  const count = new Map<string, number>();
+  for (const p of db.listProjects()) {
+    if (!p.repo_path || !existsSync(p.repo_path)) continue;
+    const parent = dirname(resolve(p.repo_path));
+    count.set(parent, (count.get(parent) ?? 0) + 1);
+  }
+  const best = [...count].sort((a, b) => b[1] - a[1])[0];
+  return best ? best[0] : expandHome("~/code");
+}
+
+app.get("/api/clone-dir", (c) => c.json({ dir: cloneDir(), sep: process.platform === "win32" ? "\\" : "/" }));
+
+/** Clone a repo (default: <cloneDir>/<name>) and add it to the board. A folder already holding that repo is reused. */
 app.post("/api/projects/clone", async (c) => {
   const body = await c.req.json<{ url?: string; dest?: string; name?: string; base_branch?: string }>();
   let url = String(body.url ?? "").trim();
@@ -130,7 +144,7 @@ app.post("/api/projects/clone", async (c) => {
   if (/^[\w.-]+\/[\w.-]+$/.test(url) && !existsSync(expandHome(url))) url = `https://github.com/${url}.git`;
   const dirName = github.repoDirName(url);
   if (!dirName) return c.json({ error: `No entiendo esa URL: ${url}` }, 400);
-  const dest = expandHome(body.dest?.trim() || join("~/code", dirName));
+  const dest = expandHome(body.dest?.trim() || join(cloneDir(), dirName));
   const opts = { name: body.name?.trim() || dirName, base_branch: body.base_branch };
   if (existsSync(dest)) {
     if (git.isRepo(dest) && git.sameRemoteSync(git.remoteUrlSync(dest), url)) {

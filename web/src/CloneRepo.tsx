@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Lock, RefreshCw } from "lucide-react";
 import type { GitHubRepos, Project } from "../../shared/types";
 import { api } from "./api";
+import { FolderPicker } from "./FolderPicker";
 import { Button, Spinner, timeAgo } from "./ui";
 
 /** Folder name for a clone URL: last path segment without ".git" (same as the server). */
@@ -13,18 +14,30 @@ const dirName = (url: string) =>
     .split(/[/:\\]/)
     .pop() || "";
 
+const CLONE_DIR = "trellai:cloneDir";
+
 const input = "mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none placeholder:text-zinc-600 focus:ring-indigo-500";
 
 /**
  * "Nuevo proyecto → Clonar de GitHub": your repos through the `gh` CLI (if it's logged in),
- * or any URL pasted by hand. Clones into ~/code/<name> unless you pick another folder.
+ * or any URL pasted by hand. Clones into <folder>/<name>: by default the folder most of your
+ * projects live in (or the last one you chose here), shown in full so you know where it goes.
  */
 export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => void; footer: (submit: React.ReactNode) => React.ReactNode }) {
   const [gh, setGh] = useState<GitHubRepos | null>(null);
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [query, setQuery] = useState("");
   const [url, setUrl] = useState("");
-  const [dest, setDest] = useState("");
+  // Folder the repo is cloned *into* (the clone is <parent>/<name>)
+  const [parent, setParent] = useState(() => {
+    try {
+      return localStorage.getItem(CLONE_DIR) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [sep, setSep] = useState("/");
+  const [picking, setPicking] = useState(false);
   const [name, setName] = useState("");
   const [cloning, setCloning] = useState(false);
   const [error, setError] = useState("");
@@ -41,10 +54,27 @@ export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => vo
   };
   useEffect(() => {
     loadRepos();
+    api<{ dir: string; sep: string }>("/api/clone-dir")
+      .then((d) => {
+        setSep(d.sep);
+        setParent((p) => p || d.dir);
+      })
+      .catch(() => {});
   }, []);
 
+  const chooseParent = (path: string) => {
+    setParent(path);
+    setPicking(false);
+    try {
+      localStorage.setItem(CLONE_DIR, path);
+    } catch {
+      /* optional storage */
+    }
+  };
+
   const folder = dirName(url);
-  const defaultDest = folder ? `~/code/${folder}` : "~/code/<nombre>";
+  const base = parent.trim().replace(/[/\\]+$/, "");
+  const dest = base && folder ? `${base}${sep}${folder}` : "";
   const q = query.trim().toLowerCase();
   const repos = (gh?.repos ?? []).filter((r) => !q || r.name.toLowerCase().includes(q) || (r.description ?? "").toLowerCase().includes(q));
 
@@ -53,7 +83,7 @@ export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => vo
     setError("");
     setCloning(true);
     try {
-      onCreated(await api<Project>("/api/projects/clone", { url: target.trim(), dest: dest.trim() || undefined, name: name.trim() || undefined }));
+      onCreated(await api<Project>("/api/projects/clone", { url: target.trim(), dest: (base && `${base}${sep}${dirName(target)}`) || undefined, name: name.trim() || undefined }));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -69,6 +99,17 @@ export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => vo
       }}
       className="space-y-4"
     >
+      {picking ? (
+        <div className="space-y-2">
+          <p className="text-xs text-zinc-400">Entra en la carpeta donde quieres el repo y pulsa «Usar esta carpeta».</p>
+          <FolderPicker onPick={(path) => chooseParent(path)} selected={parent} start={base || undefined} />
+          <div className="flex justify-end">
+            <Button type="button" size="sm" variant="ghost" onClick={() => setPicking(false)}>
+              Volver a la lista
+            </Button>
+          </div>
+        </div>
+      ) : (
       <div className="overflow-hidden rounded-lg ring-1 ring-zinc-700">
         <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-950 px-3 py-1.5">
           <input
@@ -129,6 +170,7 @@ export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => vo
             ))}
         </ul>
       </div>
+      )}
 
       <div className="space-y-3 rounded-lg bg-zinc-950 p-3 ring-1 ring-zinc-800">
         <label className="block text-xs text-zinc-400">
@@ -142,15 +184,24 @@ export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => vo
           />
         </label>
         <div className="flex gap-3">
-          <label className="block flex-1 text-xs text-zinc-400">
-            Carpeta de destino
-            <input value={dest} onChange={(e) => setDest(e.target.value)} placeholder={defaultDest} spellCheck={false} className={`${input} font-mono`} />
-          </label>
+          <div className="min-w-0 flex-1 text-xs text-zinc-400">
+            <label htmlFor="clone-parent">Clonar dentro de</label>
+            <div className="mt-1 flex gap-1.5">
+              <input id="clone-parent" value={parent} onChange={(e) => setParent(e.target.value)} placeholder="carpeta" spellCheck={false} className={`${input} !mt-0 min-w-0 flex-1 font-mono`} />
+              <Button type="button" onClick={() => setPicking((v) => !v)} className="shrink-0">
+                Cambiar…
+              </Button>
+            </div>
+          </div>
           <label className="block w-40 text-xs text-zinc-400">
             Nombre
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder={folder || "el del repo"} className={input} />
           </label>
         </div>
+        <p className="text-xs text-zinc-500">
+          Se clonará en{" "}
+          <span className="break-all font-mono text-zinc-200">{dest || `${base || "…"}${sep}<nombre del repo>`}</span>
+        </p>
         {cloning && (
           <p className="flex items-center gap-2 text-xs text-zinc-400">
             <Spinner /> Clonando… puede tardar un poco si el repo es grande.

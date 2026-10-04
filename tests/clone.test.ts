@@ -37,6 +37,7 @@ beforeAll(async () => {
   sh("git add -A && git commit -qm init", src);
   origin = join(dir, "hola.git");
   sh(`git clone -q --bare "${src}" "${origin}"`, dir);
+  for (const other of ["adios", "tercero"]) sh(`git clone -q --bare "${src}" "${join(dir, other + ".git")}"`, dir);
 
   server = spawn("npx", ["tsx", "server/index.ts"], {
     env: { ...process.env, PORT: String(PORT), TRELLAI_DB: join(dir, "t.db"), TRELLAI_FAKE_AGENT: "1", TRELLAI_GH: join(dir, "no-such-gh") },
@@ -102,6 +103,18 @@ describe("clone from GitHub", () => {
     const bad = await call("/api/projects/clone", { url: join(dir, "nope.git"), dest: join(dir, "clones", "nope") });
     expect(bad.status).toBe(400);
     expect(bad.json.error).toMatch(/No pude clonar/);
+  });
+});
+
+describe("default clone folder", () => {
+  it("is where most of your projects live, and clones go there without a dest", async () => {
+    // projects so far: clones/hola and empty → one more in clones/ makes it the favourite
+    expect((await call("/api/projects/clone", { url: join(dir, "adios.git"), dest: join(dir, "clones", "adios") })).status).toBe(200);
+    const { json } = await call<{ dir: string; sep: string }>("/api/clone-dir");
+    expect(same(json.dir, join(dir, "clones"))).toBe(true);
+    const { status, json: p } = await call<Project>("/api/projects/clone", { url: join(dir, "tercero.git") });
+    expect(status).toBe(200);
+    expect(same(p.repo_path, join(dir, "clones", "tercero"))).toBe(true);
   });
 });
 
