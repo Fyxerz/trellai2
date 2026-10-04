@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Plus, Tag as TagIcon, Trash2 } from "lucide-react";
+import { Check, Cpu, Plus, Tag as TagIcon, Trash2 } from "lucide-react";
 import { TAG_COLORS, type Card, type Tag } from "../../shared/types";
 import { api, type Board } from "./api";
 import { confirmDialog } from "./Confirm";
 import { reportError } from "./notifications";
+import { modelLabel } from "./models";
 
 /** The project's tags, live (local changes, other tabs and other computers). */
 export function useProjectTags(projectId: string | null | undefined, board: Board) {
@@ -30,9 +31,11 @@ export function TagChip({ tag, className = "" }: { tag: Tag; className?: string 
     <span
       className={`inline-flex max-w-full items-center gap-1 rounded-md px-1.5 text-[10.5px] leading-[18px] font-medium ${className}`}
       style={{ background: `${tag.color}22`, color: tag.color }}
+      title={tag.model ? `Modelo: ${modelLabel(tag.model)}` : undefined}
     >
       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: tag.color }} />
       <span className="truncate">{tag.name}</span>
+      {tag.model && <Cpu className="h-2.5 w-2.5 shrink-0 opacity-80" aria-label={`Modelo: ${modelLabel(tag.model)}`} />}
     </span>
   );
 }
@@ -134,6 +137,12 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
                 />
                 <button onClick={() => toggle(t)} className="flex min-w-0 flex-1 items-center gap-2 px-1.5 py-1.5 text-left text-sm text-zinc-200">
                   <span className="truncate">{t.name}</span>
+                  {t.model && (
+                    <span className="flex shrink-0 items-center gap-0.5 text-[10.5px] text-zinc-500" title="Modelo de la etiqueta (se cambia en Ajustes del proyecto)">
+                      <Cpu className="h-2.5 w-2.5" />
+                      {modelLabel(t.model, true)}
+                    </span>
+                  )}
                   {card.tags.includes(t.id) && <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-indigo-300" />}
                 </button>
                 <button
