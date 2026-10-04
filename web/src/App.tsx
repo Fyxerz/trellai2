@@ -537,9 +537,9 @@ export default function App() {
               {(query || filter !== "all") && <span role="status" className="text-xs text-zinc-500">{Object.keys(visibleBoard.cards).length} resultados</span>}
               <button onClick={() => setShowTags(!showTags)} aria-expanded={showTags} title={showTags ? "Ocultar etiquetas" : "Etiquetas: colores, modelo de cada una y arrastrarlas a las tarjetas"} className={`ml-auto flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm ring-1 transition ${showTags ? "bg-indigo-500/10 text-accent ring-indigo-400/30" : "text-zinc-400 ring-ui-ink/10 hover:bg-ui-ink/5 hover:text-zinc-200"}`}><Tags className="h-4 w-4" />Etiquetas</button>
             </div>
-            {showTags && <TagManager projectId={project.id} tags={projectTags} draggable className="mx-4 mb-3 max-h-[40vh] overflow-y-auto rounded-2xl bg-panel p-3 ring-1 ring-ui-ink/[0.08]" />}
             {!project.repo_path && <UnlinkedBanner project={project} onLinked={reload} />}
-            <div className="min-h-0 flex-1">
+            <div className="relative min-h-0 flex-1">
+            {showTags && <TagManager projectId={project.id} tags={projectTags} draggable className="absolute top-0 right-4 z-40 max-h-[70%] w-[min(26rem,calc(100%-2rem))] overflow-y-auto rounded-2xl bg-panel p-3 shadow-[var(--shadow-pop)] ring-1 ring-ui-ink/[0.1]" />}
             <Board
               projectId={projectId}
               board={visibleBoard}

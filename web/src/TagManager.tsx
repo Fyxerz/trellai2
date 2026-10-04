@@ -139,7 +139,7 @@ export function TagManager({
         {draggable && "Arrastra una etiqueta sobre una tarjeta para ponérsela. "}
         Una tarjeta usa el modelo de la primera etiqueta que se le puso con modelo; si ninguna tiene, el del proyecto (salvo que la tarjeta elija el suyo).
       </p>
-      <ul className="grid grid-cols-[repeat(auto-fill,minmax(19rem,1fr))] gap-1.5">
+      <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(19rem,100%),1fr))] gap-1.5">
         {tags.map((t) => (
           <li
             key={t.id}
