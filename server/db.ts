@@ -3,7 +3,9 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import type {
+  Annotation,
   AssistantMessage,
+  Attachment,
   Card,
   Checkpoint,
   Claim,
@@ -91,6 +93,17 @@ CREATE TABLE IF NOT EXISTS assistant_messages (
   card_id TEXT,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  data TEXT NOT NULL,
+  annotated TEXT,
+  annotations TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_card ON attachments(card_id);
 CREATE INDEX IF NOT EXISTS idx_assistant_project ON assistant_messages(project_id);
 CREATE INDEX IF NOT EXISTS idx_checkpoints_card ON checkpoints(card_id);
 CREATE INDEX IF NOT EXISTS idx_cards_project ON cards(project_id);
@@ -135,7 +148,7 @@ addColumn("notes", "targets", "targets TEXT NOT NULL DEFAULT '[]'");
 addColumn("notes", "archived", "archived INTEGER NOT NULL DEFAULT 0");
 
 /** Tables whose rows use a local INTEGER id; `uid` identifies them across computers. */
-export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages"] as const;
+export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages", "attachments"] as const;
 for (const t of UID_TABLES) {
   addColumn(t, "uid", "uid TEXT");
   db.exec(`UPDATE ${t} SET uid = lower(hex(randomblob(8))) WHERE uid IS NULL`);
@@ -500,4 +513,67 @@ export function takeAssistantPending(projectId: string, mode: AssistantMode): st
   if (!r) return [];
   db.prepare(`UPDATE projects SET ${PENDING_COL[mode]} = '[]' WHERE id = ?`).run(projectId);
   return safeJson<string[]>(r.p, []);
+}
+
+// ---------- attachments (images on a card; base64 so they travel with the sync) ----------
+
+const ATTACHMENT_COLS = "id, uid, card_id, name, mime, annotations, annotated IS NOT NULL AS has_annotated, created_at";
+type AttachmentRow = Omit<Attachment, "annotations" | "has_annotated"> & { annotations: string; has_annotated: number };
+const toAttachment = (r: AttachmentRow): Attachment => ({ ...r, annotations: safeJson(r.annotations, []), has_annotated: !!r.has_annotated });
+
+export function listAttachments(cardId: string): Attachment[] {
+  return (
+    db.prepare(`SELECT ${ATTACHMENT_COLS} FROM attachments WHERE card_id = ? ORDER BY created_at, id`).all(cardId) as AttachmentRow[]
+  ).map(toAttachment);
+}
+
+export function getAttachment(id: number): Attachment | undefined {
+  const r = db.prepare(`SELECT ${ATTACHMENT_COLS} FROM attachments WHERE id = ?`).get(id) as AttachmentRow | undefined;
+  return r && toAttachment(r);
+}
+
+/** By uid: the same image on every computer (chat messages link to it this way). */
+export function getAttachmentByUid(uid: string): Attachment | undefined {
+  const r = db.prepare(`SELECT ${ATTACHMENT_COLS} FROM attachments WHERE uid = ?`).get(uid) as AttachmentRow | undefined;
+  return r && toAttachment(r);
+}
+
+/** The image bytes (base64), or the copy with the boxes drawn on it. */
+export function attachmentData(id: number, annotated = false): string | null {
+  const r = db.prepare("SELECT data, annotated FROM attachments WHERE id = ?").get(id) as { data: string; annotated: string | null } | undefined;
+  return r ? (annotated ? r.annotated : r.data) : null;
+}
+
+export function addAttachment(
+  cardId: string,
+  a: { name: string; mime: string; data: string; annotated?: string | null; annotations?: Annotation[] },
+): Attachment {
+  const r = db
+    .prepare("INSERT INTO attachments (uid, card_id, name, mime, data, annotated, annotations, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(uid(), cardId, a.name, a.mime, a.data, a.annotated ?? null, JSON.stringify(a.annotations ?? []), now());
+  return getAttachment(Number(r.lastInsertRowid))!;
+}
+
+/** `annotated: null` drops the drawn copy (e.g. no boxes left). */
+export function updateAttachment(id: number, patch: { annotations?: Annotation[]; annotated?: string | null; name?: string }): Attachment | undefined {
+  if (patch.annotations !== undefined) db.prepare("UPDATE attachments SET annotations = ? WHERE id = ?").run(JSON.stringify(patch.annotations), id);
+  if (patch.annotated !== undefined) db.prepare("UPDATE attachments SET annotated = ? WHERE id = ?").run(patch.annotated, id);
+  if (patch.name !== undefined) db.prepare("UPDATE attachments SET name = ? WHERE id = ?").run(patch.name, id);
+  return getAttachment(id);
+}
+
+export function deleteAttachment(id: number) {
+  db.prepare("DELETE FROM attachments WHERE id = ?").run(id);
+}
+
+/** Copy a card's images to another card (duplicating a card). */
+export function copyAttachments(fromCardId: string, toCardId: string) {
+  const rows = db.prepare("SELECT name, mime, data, annotated, annotations FROM attachments WHERE card_id = ? ORDER BY created_at, id").all(fromCardId) as {
+    name: string;
+    mime: string;
+    data: string;
+    annotated: string | null;
+    annotations: string;
+  }[];
+  for (const r of rows) addAttachment(toCardId, { ...r, annotations: safeJson(r.annotations, []) });
 }

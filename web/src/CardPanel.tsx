@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MachineChip } from "./SyncUI";
 import { COLUMN_LABELS, type Card, type Checkpoint, type Column, type Message, type Project, type Question } from "../../shared/types";
 import { ModelPicker, modelLabel } from "./models";
+import { AddImageButton, SpecImages, useChatImages } from "./ImageEditor";
 import { prettyModel } from "../../shared/models";
 import { confirmDeleteCard, togglePreview } from "./Confirm";
 import {
@@ -194,7 +195,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
       </nav>
 
       <div className="min-h-0 flex-1">
-        {tab === "spec" && <SpecTab card={card} questions={questions} editSignal={editSignal} />}
+        {tab === "spec" && <SpecTab card={card} board={board} questions={questions} editSignal={editSignal} />}
         {tab === "activity" && <Activity card={card} messages={messages} />}
         {tab === "diff" && <DiffTab card={card} />}
       </div>
@@ -224,7 +225,7 @@ function TitleInput({ card }: { card: Card }) {
   </>;
 }
 
-function SpecTab({ card, questions, editSignal }: { card: Card; questions: Question[]; editSignal: number }) {
+function SpecTab({ card, board, questions, editSignal }: { card: Card; board: Board; questions: Question[]; editSignal: number }) {
   const key = `spec-draft:${card.id}`;
   const initialDraft = readPreference(key, card.spec);
   const [spec, setSpec] = useState(initialDraft);
@@ -303,6 +304,7 @@ function SpecTab({ card, questions, editSignal }: { card: Card; questions: Quest
       {card.column !== "backlog" && card.column !== "plan" && (
         <p className="mt-2 text-[11px] text-zinc-500">Si cambias la spec con un agente trabajando, díselo también en Actividad.</p>
       )}
+      <SpecImages card={card} board={board} />
 
       {card.plan && (
         <>
@@ -455,6 +457,7 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
   const scroll = useChatScroll(messages.length);
   const busy = useRef(false);
   const [sending, setSending] = useState(false);
+  const images = useChatImages(card);
 
   const placeholder: Record<Column, string> = {
     backlog: "Comentario…",
@@ -467,10 +470,10 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
 
   const send = async () => {
     const t = current.current.trim();
-    if (!t || busy.current) return;
+    if ((!t && !images.ids.length) || images.uploading || busy.current) return;
     busy.current = true; setSending(true);
     const submitted = current.current;
-    try { await api(`/api/cards/${card.id}/message`, { text: t }); if (current.current === submitted) setText(""); }
+    try { await api(`/api/cards/${card.id}/message`, { text: t, attachments: images.ids }); if (current.current === submitted) setText(""); images.clear(); }
     catch (e) { reportError((e as Error).message); }
     finally { busy.current = false; setSending(false); }
   };
@@ -496,7 +499,8 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
         <div ref={scroll.end} />
       </div>
       {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300">Nuevos mensajes ↓</button>}
-      <div className="border-t border-zinc-800 p-3">
+      <div className="border-t border-zinc-800 p-3" onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()} onDrop={images.onDrop}>
+        {images.strip}
         <div className="flex items-end gap-2">
           <textarea
             aria-label="Mensaje al agente"
@@ -504,11 +508,13 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => chatKeyDown(e, send, setText)}
+            onPaste={images.onPaste}
             rows={2}
             placeholder={placeholder[card.column]}
             className="flex-1 resize-none rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
           />
-          <Button variant={card.column === "review" ? "primary" : "default"} onClick={send} disabled={!text.trim() || sending}>
+          <AddImageButton onFiles={(f) => void images.add(f)} />
+          <Button variant={card.column === "review" ? "primary" : "default"} onClick={send} disabled={(!text.trim() && !images.ids.length) || images.uploading || sending}>
             {card.column === "review" ? "Pedir cambios" : "Enviar"}
           </Button>
         </div>
