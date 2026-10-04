@@ -52,6 +52,8 @@ export interface Tag {
   name: string;
   /** hex color */
   color: string;
+  /** model the dev agent uses on cards with this tag (unless the card picks its own); absent = none */
+  model?: string | null;
 }
 
 export const TAG_COLORS = ["#f87171", "#fb923c", "#facc15", "#4ade80", "#2dd4bf", "#60a5fa", "#a78bfa", "#f472b6", "#a1a1aa"];

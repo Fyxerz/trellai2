@@ -167,11 +167,11 @@ export function setProjectTags(id: string, tags: Tag[]): Tag[] {
 }
 
 /** The project's tag with this name (case-insensitive), created if missing. */
-export function ensureTag(projectId: string, name: string, color: string): Tag {
+export function ensureTag(projectId: string, name: string, color: string, model: string | null = null): Tag {
   const tags = getProject(projectId)!.tags;
   const found = tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
   if (found) return found;
-  const tag = { id: nanoid(8), name, color };
+  const tag: Tag = { id: nanoid(8), name, color, model };
   setProjectTags(projectId, [...tags, tag]);
   return tag;
 }
