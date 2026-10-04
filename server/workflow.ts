@@ -605,14 +605,15 @@ export async function rewindTo(cardId: string, messageId: number) {
   card = r.card;
   const wt = card.worktree!;
   const lost = git.commitSubjects(wt, target);
+  const kept = new Set(git.commitSubjects(wt, projectOf(card).base_branch, target));
   const dirty = git.hasChanges(wt);
   git.resetHard(wt, target);
   db.clearPendingInput(card.id);
   rebaseAttempts.delete(card.id);
   if (card.branch) await remote.pushCardBranch(wt, card.branch);
 
-  // Checkpoints whose commit is gone are pending again.
-  const subjects = new Set(lost);
+  // Checkpoints whose commit is gone (and not also kept from earlier) are pending again.
+  const subjects = new Set(lost.filter((s) => !kept.has(s)));
   const undone = db.listCheckpoints(card.id).filter((c) => c.done && subjects.has(c.text.split("\n")[0].trim()));
   for (const c of undone) db.updateCheckpoint(c.id, { done: false });
   if (undone.length) emitCheckpoints(card.project_id, card.id);
