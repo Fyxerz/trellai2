@@ -258,4 +258,17 @@ describe("images on a card", () => {
     expect(existsSync(join(dir, "1-mi-captura.anotada.png"))).toBe(true);
     expect(sh("git status --porcelain")).not.toContain("attachments");
   });
+
+  it("asking for changes with only an image", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Cambio con imagen", spec: "x", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    await expect(api(`/api/cards/${c.id}/message`, { text: " " })).rejects.toThrow(/vacío/);
+    const a = await api<any>(`/api/cards/${c.id}/attachments`, { name: "fallo.png", data: `data:image/png;base64,${PNG}` });
+    await api(`/api/cards/${c.id}/message`, { text: "", attachments: [a.id] });
+    await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    const msgs = await api<any[]>(`/api/cards/${c.id}/messages`);
+    expect(msgs.some((m) => m.role === "user" && m.content === `![fallo.png](/api/attachments/${a.uid}/image)`)).toBe(true);
+    expect((await fetch(`${URL}/api/attachments/${a.uid}/image`)).headers.get("content-type")).toBe("image/png");
+  });
 });

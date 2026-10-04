@@ -8,7 +8,7 @@
  */
 import { existsSync } from "node:fs";
 import { COLUMN_LABELS, describeClaim, type Card, type Column, type Project } from "../shared/types.js";
-import { attachmentsBlock, removeAttachmentFiles } from "./attachments.js";
+import { attachmentsBlock, messageImageMarkdown, removeAttachmentFiles, withMessageImages } from "./attachments.js";
 import * as claims from "./claims.js";
 import * as db from "./db.js";
 import { emitCard, emitMessage } from "./events.js";
@@ -506,10 +506,14 @@ async function mergeClean(card: Card, project: Project, bounce: (msg: string) =>
 // Human input
 // ---------------------------------------------------------------------------
 
-export function sendMessage(cardId: string, text: string) {
+export function sendMessage(cardId: string, said: string, attachmentIds: number[] = []) {
   const card = db.getCard(cardId);
   if (!card) throw new Error("Tarjeta no encontrada");
-  log(card, "user", text);
+  // Images go in the message as Markdown (Pedro sees them in the chat); the agent gets their files too.
+  const images = attachmentIds.map((id) => db.getAttachment(id)).filter((a) => !!a).map(messageImageMarkdown);
+  const shown = [said, images.join("\n")].filter(Boolean).join("\n\n");
+  log(card, "user", shown);
+  const text = withMessageImages(card, projectOf(card).repo_path, shown);
 
   if (runningElsewhere(card)) {
     // The owner sees this message through the sync and hands it to its agent.
@@ -657,7 +661,8 @@ onSync({
   },
   message(m) {
     // Pedro wrote from another computer to an agent running here.
-    if (m.role === "user" && isRunning(m.card_id)) db.pushPendingInput(m.card_id, m.content);
+    const card = db.getCard(m.card_id);
+    if (m.role === "user" && card && isRunning(m.card_id)) db.pushPendingInput(m.card_id, withMessageImages(card, projectOf(card).repo_path, m.content));
   },
   projectDeleting(projectId) {
     const project = db.getProject(projectId);

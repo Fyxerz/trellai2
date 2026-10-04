@@ -97,3 +97,21 @@ describe("attachmentsBlock", () => {
     expect(db.getAttachment(c.id)).toBeUndefined();
   });
 });
+
+describe("images in a chat message", () => {
+  it("links them by uid and tells the agent where to read only those", () => {
+    const card = db.createCard({ project_id: projectId, title: "Pedir cambios" });
+    const old = db.addAttachment(card.id, { name: "vieja.png", mime: "image/png", data: PNG });
+    const sent = db.addAttachment(card.id, { name: "nueva [v2].png", mime: "image/png", data: PNG, annotations: [{ x: 0, y: 0, w: 1, h: 0.5, comment: "arriba" }] });
+    const md = att.messageImageMarkdown(sent);
+    expect(md).toBe(`![nueva v2.png](/api/attachments/${sent.uid}/image)`);
+
+    const text = att.withMessageImages(card, repo, `Cambia esto\n\n${md}`);
+    expect(text.startsWith(`Cambia esto\n\n${md}`)).toBe(true);
+    expect(text).toContain("Images attached to this message");
+    expect(text).toContain(join(att.attachmentsDir(repo, card.id), "2-nueva-v2.png"));
+    expect(text).toContain("1. x 0%, y 0%, 100% × 50% — arriba");
+    expect(text).not.toContain(old.name);
+    expect(att.withMessageImages(card, repo, "Sin imágenes")).toBe("Sin imágenes");
+  });
+});

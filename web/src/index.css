@@ -81,6 +81,7 @@ button, select, input, textarea { font: inherit; }
 .md pre code { @apply bg-transparent p-0; }
 .md h1, .md h2, .md h3 { @apply font-semibold text-zinc-100 mt-3 mb-1; }
 .md h1 { @apply text-[15px]; } .md h2 { @apply text-sm; } .md h3 { @apply text-sm; }
+.md img { @apply my-1 inline-block max-h-48 max-w-full rounded-md ring-1 ring-ui-ink/10; }
 .md strong { @apply text-zinc-100 font-semibold; }
 .md a { @apply text-indigo-300 underline decoration-indigo-300/40 underline-offset-2; }
 .md .md-table { @apply max-w-full overflow-x-auto my-2 rounded-md border border-ui-ink/[0.08]; }

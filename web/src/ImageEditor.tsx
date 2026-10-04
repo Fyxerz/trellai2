@@ -407,3 +407,102 @@ export function ImageEditor({ attachment, onClose, onSaved }: { attachment: Atta
     </div>
   );
 }
+
+/**
+ * Images for a chat message: uploaded right away as the card's images (so the agent gets them
+ * with the card from then on), sent as ids with the message. Removing one before sending deletes it.
+ */
+export function useChatImages(card: Card) {
+  const [items, setItems] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(0);
+  const [editing, setEditing] = useState<number | null>(null);
+  useEffect(() => setItems([]), [card.id]);
+
+  const add = async (files: File[]) => {
+    if (!files.length) return;
+    setUploading((n) => n + files.length);
+    for (const file of files) {
+      try {
+        const data = await prepareImage(file);
+        const name = file.name && file.name !== "image.png" ? file.name : `captura-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}`;
+        const att = await api<Attachment>(`/api/cards/${card.id}/attachments`, { name, data });
+        setItems((prev) => [...prev, att]);
+      } catch (e) {
+        reportError(`No se pudo subir ${file.name || "la imagen"}: ${(e as Error).message}`);
+      } finally {
+        setUploading((n) => n - 1);
+      }
+    }
+  };
+  const remove = (a: Attachment) => {
+    setItems((prev) => prev.filter((x) => x.id !== a.id));
+    void api(`/api/attachments/${a.id}`, undefined, "DELETE").catch((e) => reportError((e as Error).message));
+  };
+  const onPaste = (e: React.ClipboardEvent) => {
+    const files = imageFiles(e.clipboardData?.files);
+    if (!files.length) return;
+    e.preventDefault();
+    void add(files);
+  };
+  const onDrop = (e: React.DragEvent) => {
+    const files = imageFiles(e.dataTransfer?.files);
+    if (!files.length) return;
+    e.preventDefault();
+    void add(files);
+  };
+  const current = items.find((a) => a.id === editing);
+  const strip =
+    items.length || uploading ? (
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        {items.map((a) => (
+          <div key={a.id} className="group relative">
+            <button
+              onClick={() => setEditing(a.id)}
+              title="Marcar zonas y comentar"
+              className="block h-14 overflow-hidden rounded-md bg-zinc-900 ring-1 ring-zinc-800 hover:ring-indigo-400"
+            >
+              <img src={imageUrl(a)} alt={a.name} className="h-full w-auto max-w-[120px] object-cover" draggable={false} />
+            </button>
+            {a.annotations.length > 0 && (
+              <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded bg-rose-500 px-1 text-[10px] font-semibold text-white">{a.annotations.length}</span>
+            )}
+            <button
+              onClick={() => remove(a)}
+              aria-label={`Quitar ${a.name}`}
+              className="absolute -top-1.5 -right-1.5 rounded-full bg-zinc-800 p-0.5 text-zinc-300 ring-1 ring-zinc-700 hover:text-red-300"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        ))}
+        {uploading > 0 && <Spinner />}
+        {current && (
+          <ImageEditor attachment={current} onClose={() => setEditing(null)} onSaved={(a) => setItems((prev) => prev.map((x) => (x.id === a.id ? a : x)))} />
+        )}
+      </div>
+    ) : null;
+  return { items, ids: items.map((a) => a.id), uploading: uploading > 0, add, onPaste, onDrop, clear: () => setItems([]), strip };
+}
+
+/** Paperclip-style button that opens the file picker for chat images. */
+export function AddImageButton({ onFiles }: { onFiles: (files: File[]) => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <Button variant="ghost" size="md" aria-label="Añadir imagen" title="Añadir imagen (también puedes pegarla o arrastrarla)" onClick={() => input.current?.click()} className="px-2.5">
+        <ImagePlus className="h-4 w-4" />
+      </Button>
+      <input
+        ref={input}
+        type="file"
+        accept="image/*"
+        multiple
+        hidden
+        onChange={(e) => {
+          onFiles(imageFiles(e.target.files));
+          e.target.value = "";
+        }}
+      />
+    </>
+  );
+}

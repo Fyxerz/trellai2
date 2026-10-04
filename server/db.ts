@@ -532,6 +532,12 @@ export function getAttachment(id: number): Attachment | undefined {
   return r && toAttachment(r);
 }
 
+/** By uid: the same image on every computer (chat messages link to it this way). */
+export function getAttachmentByUid(uid: string): Attachment | undefined {
+  const r = db.prepare(`SELECT ${ATTACHMENT_COLS} FROM attachments WHERE uid = ?`).get(uid) as AttachmentRow | undefined;
+  return r && toAttachment(r);
+}
+
 /** The image bytes (base64), or the copy with the boxes drawn on it. */
 export function attachmentData(id: number, annotated = false): string | null {
   const r = db.prepare("SELECT data, annotated FROM attachments WHERE id = ?").get(id) as { data: string; annotated: string | null } | undefined;

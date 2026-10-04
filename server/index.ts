@@ -505,11 +505,12 @@ app.post("/api/cards/:id/attachments", async (c) => {
   return c.json(att);
 });
 
+/** :id is the local id, or the uid (same on every computer). */
 app.get("/api/attachments/:id/image", (c) => {
-  const id = Number(c.req.param("id"));
-  const att = db.getAttachment(id);
+  const key = c.req.param("id");
+  const att = /^\d+$/.test(key) ? db.getAttachment(Number(key)) : db.getAttachmentByUid(key);
   const annotated = c.req.query("annotated") === "1";
-  const data = att && db.attachmentData(id, annotated);
+  const data = att && db.attachmentData(att.id, annotated);
   if (!att || !data) return c.json({ error: "Imagen no encontrada" }, 404);
   // The original never changes; the drawn copy is redone whenever the boxes change.
   const cache = annotated ? "no-store" : "private, max-age=31536000, immutable";
@@ -562,9 +563,10 @@ app.get("/api/cards/:id/messages", (c) => c.json(db.listMessages(c.req.param("id
 app.get("/api/cards/:id/questions", (c) => c.json(db.listQuestions(c.req.param("id"))));
 
 app.post("/api/cards/:id/message", async (c) => {
-  const { text } = await c.req.json<{ text: string }>();
-  if (!text?.trim()) return c.json({ error: "Mensaje vacío" }, 400);
-  wf.sendMessage(c.req.param("id"), text.trim());
+  const { text, attachments } = await c.req.json<{ text: string; attachments?: number[] }>();
+  const ids = (Array.isArray(attachments) ? attachments : []).map(Number).filter((id) => db.getAttachment(id)?.card_id === c.req.param("id"));
+  if (!text?.trim() && !ids.length) return c.json({ error: "Mensaje vacío" }, 400);
+  wf.sendMessage(c.req.param("id"), text?.trim() ?? "", ids);
   return c.json({ ok: true });
 });
 
