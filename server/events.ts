@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { AssistantMessage, Card, Message, Note, ServerEvent, Tag } from "../shared/types.js";
+import type { AssistantMessage, BgStatus, Card, Message, Note, ServerEvent, Tag } from "../shared/types.js";
 import { getCard } from "./db.js";
 
 /** Per-project event bus feeding the SSE stream. */
@@ -64,6 +64,10 @@ export function emitPreview(projectId: string, cardId: string | null) {
 
 export function emitTags(projectId: string, tags: Tag[]) {
   emit(projectId, { type: "tags", tags });
+}
+
+export function emitBackground(projectId: string, status: BgStatus) {
+  emit(projectId, { type: "background", status });
 }
 
 export function emitSync(projectId: string) {
