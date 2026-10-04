@@ -1,8 +1,8 @@
 import { Notifications, reportError } from "./notifications";
-import { useMessageDraft, useChatScroll } from "./chat";
+import { useMessageDraft } from "./chat";
 import { projectName, MOD, Appearance, useDialogFocus } from "./preferences";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { COLUMNS, describeClaim, type Column, type Project } from "../../shared/types";
+import { COLUMNS, type Column, type Project } from "../../shared/types";
 import { api, useBoard, useProjects, type Board as BoardState } from "./api";
 import { AssistantPanel, type AssistantMode } from "./Assistant";
 import { Board, BoardBackground, boardBackground, CAN_ADD, columnCards, moveCard, storedIndex } from "./Board";
@@ -154,6 +154,23 @@ export default function App() {
     document.addEventListener("pointerdown", onDown);
     return () => document.removeEventListener("pointerdown", onDown);
   }, [selected]);
+  useEffect(() => {
+    if ((!showAssistant && !showNotes) || selected) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Element | null;
+      if (!t?.isConnected || document.querySelector("[data-modal], [aria-modal=\"true\"]")) return;
+      if (t.closest('[aria-label="Asistente"], [aria-label="Canal de agentes"], [data-panel-toggle], [role="dialog"], [role="alert"], [role="status"]')) return;
+      setShowAssistant(false);
+      setShowNotes(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [showAssistant, showNotes, selected]);
+  const openPanelCard = (id: string) => {
+    setShowAssistant(false);
+    setShowNotes(false);
+    setSelected(id);
+  };
   const actions = useRef({ openProject, goHome });
   actions.current = { openProject, goHome };
   const pendingG = useRef(0);
@@ -565,7 +582,7 @@ export default function App() {
             key={projectId}
             projectId={projectId}
             board={board}
-            onOpenCard={setSelected}
+            onOpenCard={openPanelCard}
             mode={assistantMode}
             setMode={setAssistantMode}
             project={project}
@@ -573,7 +590,7 @@ export default function App() {
             onClose={() => setShowAssistant(false)}
           />
         )}
-        {inBoard && showNotes && projectId && !card && <NotesPanel key={projectId} projectId={projectId} board={board} onOpen={setSelected} onClose={() => setShowNotes(false)} />}
+        {inBoard && showNotes && projectId && !card && <NotesPanel key={projectId} projectId={projectId} board={board} onOpen={openPanelCard} onClose={() => setShowNotes(false)} />}
       </main>
 
       <Notifications />
@@ -603,7 +620,7 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
   const live = board.notes.filter((n) => !n.archived);
   const old = board.notes.filter((n) => n.archived);
   const [history, setHistory] = useState(false);
-  const scroll = useChatScroll(live.length);
+  const pending = useRef<HTMLElement>(null);
   const working = Object.values(board.cards).filter((c) => c.column === "doing").sort((a, b) => a.position - b.position);
   const archive = (id: number) => api(`/api/notes/${id}/archive`, {}).catch((e) => reportError((e as Error).message));
   const busy = useRef(false);
@@ -616,74 +633,84 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
     catch (e) { reportError((e as Error).message); }
     finally { busy.current = false; setSending(false); }
   };
+  const renderNote = (n: BoardState["notes"][number]) => (
+    <div key={n.id} className={`ui-message group text-sm ${n.archived ? "opacity-50" : ""}`}>
+      <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-zinc-500">
+        {n.card_id ? (
+          <button onClick={() => onOpen(n.card_id!)} className="font-medium text-zinc-300 hover:underline">
+            {n.card_title}
+          </button>
+        ) : (
+          <span className="font-medium text-zinc-400">Trellai</span>
+        )}
+        <span>{timeAgo(n.created_at)}</span>
+        {n.targets.length > 0 && <span>para {n.targets.map((t) => board.cards[t]?.title ?? "una tarjeta").join(" y ")}</span>}
+        {!n.archived && (
+          <button
+            title="Archivar: los agentes dejan de verla"
+            aria-label="Archivar nota"
+            onClick={() => archive(n.id)}
+            className="ui-reveal ml-auto rounded p-0.5 text-zinc-500 opacity-0 hover:text-zinc-300 focus:opacity-100 group-hover:opacity-100"
+          >
+            <Archive className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      {n.files.length > 0 && <div className="mb-0.5 font-mono text-[11px] text-zinc-500">{n.files.join(", ")}</div>}
+      <div className="ui-message whitespace-pre-wrap text-zinc-300">{n.content}</div>
+    </div>
+  );
   return (
-    <aside aria-label="Canal de agentes" style={{ "--panel-width": "360px" } as React.CSSProperties} className="work-panel overlay flex h-full shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel">
-      <div className="border-b border-zinc-800 px-4 py-3">
+    <aside aria-label="Canal de agentes" style={{ "--panel-width": "640px" } as React.CSSProperties} className="work-panel overlay flex h-full min-h-0 shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel">
+      <div className="shrink-0 border-b border-zinc-800 px-4 py-3">
         <div className="flex items-center justify-between"><h2 className="text-sm font-semibold text-zinc-100">Canal de agentes</h2><button aria-label="Cerrar canal" onClick={onClose} className="rounded-lg p-2 text-zinc-400 hover:bg-ui-ink/5"><X className="h-4 w-4" /></button></div>
         <p className="text-xs text-zinc-500">Qué toca cada agente ahora y lo que se cuentan. Cada uno solo recibe lo que afecta a sus ficheros; al salir de Doing se borra lo suyo.</p>
+        {live.length > 0 && <button onClick={() => pending.current?.scrollIntoView({ block: "start" })} className="mt-2 rounded text-sm font-medium text-accent hover:underline">Ver mensajes pendientes · {live.length} ↓</button>}
       </div>
-      {working.length > 0 && (
-        <section aria-label="En uso ahora" className="max-h-56 overflow-y-auto border-b border-zinc-800 px-4 py-3">
-          <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">En uso ahora</h3>
-          <ul className="space-y-2">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-4 py-4">
+        <section aria-label="En uso ahora">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-100">En uso ahora <span className="rounded-full bg-indigo-500/10 px-2 py-0.5 text-xs text-accent">{working.length}</span></h3>
+          <ul className="space-y-4">
             {working.map((c) => (
-              <li key={c.id} className="text-sm">
-                <button onClick={() => onOpen(c.id)} className="font-medium text-zinc-300 hover:underline">{c.title}</button>
+              <li key={c.id} className="min-w-0 rounded-xl border border-ui-ink/15 bg-zinc-900 p-4 text-sm shadow-sm">
+                <button onClick={() => onOpen(c.id)} className="ui-message w-full rounded text-left text-base font-semibold text-zinc-100 hover:text-accent hover:underline focus-visible:outline-2 focus-visible:outline-accent">{c.title}<span className="ml-2 inline-block text-xs font-normal text-accent">Abrir tarjeta ↗</span></button>
                 {(c.claims ?? []).length ? (
-                  <ul className="mt-0.5 space-y-0.5">
+                  <ul className="mt-3 divide-y divide-ui-ink/10">
                     {c.claims.map((cl) => (
-                      <li key={cl.file} className="text-xs text-zinc-500">
-                        <span className="font-mono text-zinc-400">{cl.file}</span> · {describeClaim(cl)}
+                      <li key={cl.file} className="ui-message min-w-0 py-3 first:pt-0 last:pb-0">
+                        <p className="font-mono text-sm font-medium text-zinc-200">{cl.file}</p>
+                        <dl className="mt-2 space-y-1 text-sm text-zinc-300">
+                          {cl.area && <div><dt className="inline font-medium text-zinc-400">Zona: </dt><dd className="inline">{cl.area}</dd></div>}
+                          {cl.purpose && <div><dt className="inline font-medium text-zinc-400">Trabajo: </dt><dd className="inline">{cl.purpose}</dd></div>}
+                          <div><dt className="inline font-medium text-zinc-400">Cambios: </dt><dd className="inline">{cl.lines === "nuevo" ? "Fichero nuevo" : cl.lines === "borrado" ? "Fichero eliminado" : cl.lines ? `Líneas ${cl.lines}` : cl.source === "plan" ? "Previsto" : "Sin líneas registradas"}</dd></div>
+                        </dl>
                       </li>
                     ))}
                   </ul>
                 ) : (
-                  <p className="text-xs text-zinc-500">Sin ficheros todavía.</p>
+                  <p className="mt-2 text-sm text-zinc-400">Sin archivos declarados todavía.</p>
                 )}
               </li>
             ))}
           </ul>
+          {working.length === 0 && <p className="text-sm text-zinc-400">No hay tarjetas en Doing.</p>}
         </section>
-      )}
-      <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+        <section ref={pending} aria-label="Mensajes pendientes" className="space-y-4 border-t border-ui-ink/10 pt-4">
+          <h3 className="text-sm font-semibold text-zinc-100">Mensajes pendientes · {live.length}</h3>
+          {live.length === 0 && <p className="text-sm text-zinc-500">Nada pendiente.</p>}
+          {live.map(renderNote)}
+        </section>
         {old.length > 0 && (
-          <button onClick={() => setHistory(!history)} aria-expanded={history} className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300">
-            <ChevronRight className={`h-3 w-3 transition ${history ? "rotate-90" : ""}`} />
-            Historial · {old.length}
-          </button>
+          <section aria-label="Historial archivado" className="space-y-4 border-t border-ui-ink/10 pt-2">
+            <button onClick={() => setHistory(!history)} aria-expanded={history} className="flex items-center gap-1 rounded py-2 text-xs text-zinc-500 hover:text-zinc-300">
+              <ChevronRight className={`h-3 w-3 transition ${history ? "rotate-90" : ""}`} />
+              {history ? "Ocultar historial" : "Mostrar historial"} · {old.length}
+            </button>
+            {history && old.map(renderNote)}
+          </section>
         )}
-        {live.length === 0 && !history && <p className="text-sm text-zinc-500">Nada pendiente.</p>}
-        {[...(history ? old : []), ...live].map((n) => (
-          <div key={n.id} className={`ui-message group text-sm ${n.archived ? "opacity-50" : ""}`}>
-            <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-zinc-500">
-              {n.card_id ? (
-                <button onClick={() => onOpen(n.card_id!)} className="font-medium text-zinc-300 hover:underline">
-                  {n.card_title}
-                </button>
-              ) : (
-                <span className="font-medium text-zinc-400">Trellai</span>
-              )}
-              <span>{timeAgo(n.created_at)}</span>
-              {n.targets.length > 0 && <span>para {n.targets.map((t) => board.cards[t]?.title ?? "una tarjeta").join(" y ")}</span>}
-              {!n.archived && (
-                <button
-                  title="Archivar: los agentes dejan de verla"
-                  aria-label="Archivar nota"
-                  onClick={() => archive(n.id)}
-                  className="ui-reveal ml-auto rounded p-0.5 text-zinc-500 opacity-0 hover:text-zinc-300 focus:opacity-100 group-hover:opacity-100"
-                >
-                  <Archive className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </div>
-            {n.files.length > 0 && <div className="mb-0.5 font-mono text-[11px] text-zinc-500">{n.files.join(", ")}</div>}
-            <div className="ui-message whitespace-pre-wrap text-zinc-300">{n.content}</div>
-          </div>
-        ))}
-        <div ref={scroll.end} />
       </div>
-      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-accent">Nuevos mensajes ↓</button>}
-      <div className="border-t border-zinc-800 p-3">
+      <div className="max-h-[40%] shrink-0 overflow-y-auto border-t border-zinc-800 p-3">
         <textarea aria-label="Mensaje al canal de agentes" rows={2} value={text} onChange={e => setText(e.target.value)} onKeyDown={e => chatKeyDown(e, send, setText)} placeholder="Avisa a todos los agentes…" className="ui-field ui-control w-full resize-y rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-500" />
         <div className="mt-2 flex items-center justify-between gap-2"><p className="text-xs text-zinc-500"><ChatHint /></p><Button variant="primary" onClick={send} disabled={!text.trim() || sending}>Enviar</Button></div>
       </div>
@@ -827,6 +854,8 @@ function Logo() {
 function HeaderButton({ active, icon, label, kbd, onClick }: { active: boolean; icon: React.ReactNode; label: string; kbd: string; onClick: () => void }) {
   return (
     <button
+      data-panel-toggle
+      aria-pressed={active}
       onClick={onClick}
       className={`flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] transition ${
         active ? "bg-ui-ink/[0.09] text-zinc-50 ring-1 ring-ui-ink/[0.1]" : "text-zinc-400 hover:bg-ui-ink/[0.05] hover:text-zinc-100"
