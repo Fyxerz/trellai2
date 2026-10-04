@@ -10,7 +10,7 @@
  * reach Codex through a tiny stdio MCP bridge that calls back into this server.
  */
 import { createSdkMcpServer, query, tool, type HookCallback, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -217,7 +217,45 @@ async function runClaude(r: EngineRun, model: string | undefined, resume: string
 // ---------------------------------------------------------------------------
 
 const BRIDGE = join(dirname(fileURLToPath(import.meta.url)), "mcp-bridge.mjs");
-const codexBin = () => process.env.TRELLAI_CODEX_BIN || "codex";
+let codexBinCache: string | null = null;
+
+/**
+ * The Codex CLI: TRELLAI_CODEX_BIN, `codex` from the PATH (npm i -g @openai/codex), or the one bundled
+ * with OpenAI's Codex desktop app, which shares its ChatGPT login (~/.codex).
+ */
+function codexBin(): string {
+  if (process.env.TRELLAI_CODEX_BIN) return process.env.TRELLAI_CODEX_BIN;
+  if (codexBinCache) return codexBinCache;
+  return (codexBinCache = findCodexBin());
+}
+
+function findCodexBin(): string {
+  const works = (bin: string) => {
+    try {
+      execFileSync(bin, ["--version"], { timeout: 10_000, stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (works("codex")) return "codex";
+  const candidates: string[] = [];
+  if (process.platform === "win32") {
+    // Microsoft Store app: its folder can't be listed, so ask Windows where it lives
+    try {
+      const dir = execFileSync("powershell.exe", ["-NoProfile", "-Command", "(Get-AppxPackage OpenAI.Codex).InstallLocation"], {
+        timeout: 15_000,
+        encoding: "utf8",
+      }).trim();
+      if (dir) candidates.push(join(dir.split(/\r?\n/)[0], "app", "resources", "codex.exe"));
+    } catch {
+      // no PowerShell / no app
+    }
+  } else if (process.platform === "darwin") {
+    candidates.push("/Applications/Codex.app/Contents/Resources/codex", join(homedir(), "Applications/Codex.app/Contents/Resources/codex"));
+  }
+  return candidates.find((c) => existsSync(c) && works(c)) ?? "codex";
+}
 
 /** Live tool sets for running Codex agents, keyed by a per-run token. */
 const toolRuns = new Map<string, ToolSpec[]>();
@@ -314,6 +352,7 @@ export function loginState(engine: Engine): LoginState {
 
 /** Forget cached sessions / model lists so the next /api/engines sees the new login. */
 function resetEngineCaches() {
+  codexBinCache = null;
   claudeAuthCache = null;
   claudeModelsCache = null;
   codexInfo = null;
@@ -343,7 +382,7 @@ export function startLogin(engine: Engine): LoginState {
       (err as NodeJS.ErrnoException).code === "ENOENT"
         ? engine === "claude"
           ? "No encuentro el comando `claude`. Instala Claude Code y vuelve a intentarlo."
-          : "No encuentro el comando `codex`. Instálalo con `npm i -g @openai/codex`."
+          : "No encuentro Codex. Instala la app de Codex de OpenAI (o `npm i -g @openai/codex`)."
         : `No se pudo lanzar el login de ${name}: ${err.message}`;
   });
   child.on("close", (code, signal) => {
@@ -429,7 +468,7 @@ async function runCodex(r: EngineRun, model: string | undefined, resume: string 
       child.on("error", (err) => {
         error =
           (err as NodeJS.ErrnoException).code === "ENOENT"
-            ? "No encuentro el comando `codex`. Instálalo con `npm i -g @openai/codex` y haz `codex login`."
+            ? "No encuentro Codex. Instala la app de Codex de OpenAI (o `npm i -g @openai/codex`) y conéctalo con tu cuenta de ChatGPT en Modelos del proyecto."
             : err.message;
       });
       child.stderr.on("data", (d) => stderr.push(String(d)));

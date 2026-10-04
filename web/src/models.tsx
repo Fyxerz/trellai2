@@ -146,7 +146,7 @@ export function ModelPicker({
         title={
           title ??
           (noCodex
-            ? "Para usar GPT instala Codex: npm i -g @openai/codex y luego conéctalo en Modelos del proyecto"
+            ? "Para usar GPT instala la app de Codex de OpenAI y conéctala con tu cuenta de ChatGPT en Modelos del proyecto"
             : claudeLoggedIn === false || codexOff
               ? "Hay motores sin conectar: conéctalos en Modelos del proyecto"
               : undefined)
@@ -330,7 +330,7 @@ function EngineStatus() {
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           {dot(codexOn)}
-          <span className="text-zinc-200">GPT (Codex)</span>
+          <span className="text-zinc-200">GPT · cuenta de ChatGPT</span>
           <span>
             {!codex ? "Comprobando…" : !codex.installed ? "No instalado" : codex.loggedIn === false ? "No conectado" : `Conectado · ${codex.version}`}
           </span>
@@ -338,8 +338,8 @@ function EngineStatus() {
         </div>
         {codex && !codex.installed && (
           <div className="text-[11px] text-zinc-500">
-            Para usar GPT instala Codex: <code className="text-zinc-300">npm i -g @openai/codex</code>. Después podrás conectarlo aquí con tu cuenta
-            de ChatGPT.
+            Para usar GPT hace falta la app de Codex de OpenAI (o <code className="text-zinc-300">npm i -g @openai/codex</code>). Después
+            podrás conectarla aquí con tu cuenta de ChatGPT.
           </div>
         )}
         {waiting.codex && waitingHint}
