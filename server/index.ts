@@ -108,10 +108,26 @@ function addProject(path: string, opts: { name?: string; base_branch?: string; i
   // Already on the board from another computer? Then this is just where it lives here.
   const twin = db.listProjects().find((p) => !p.repo_path && git.sameRemoteSync(p.remote_url, remoteUrl));
   if (twin) return { project: db.updateProject(twin.id, { repo_path: repo })! };
-  const base = opts.base_branch?.trim() || git.currentBranch(repo);
+  const base = opts.base_branch?.trim() || git.defaultBranch(repo);
+  if (!base) return { error: "No encuentro ninguna rama en el repo para usar como base." };
+  const problem = git.baseBranchProblem(repo, base);
+  if (problem) return { error: problem };
+  try {
+    git.ensureLocalBranch(repo, base);
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
   const name = basename(opts.name?.trim() || repo);
   return { project: db.createProject({ name, repo_path: repo, base_branch: base, remote_url: remoteUrl }) };
 }
+
+/** Branches of a folder that isn't a project yet (for "Nuevo proyecto"), plus the one to preselect. */
+app.get("/api/branches", (c) => {
+  const path = expandHome(String(c.req.query("path") ?? "").trim());
+  if (!path || !git.isRepo(path)) return c.json({ local: [], remote: [], suggested: null });
+  const repo = git.topLevel(path);
+  return c.json({ ...git.branchNames(repo), suggested: git.defaultBranch(repo) });
+});
 
 app.post("/api/projects", async (c) => {
   const body = await c.req.json<{ name?: string; repo_path?: string; base_branch?: string; init?: boolean }>();
@@ -315,9 +331,11 @@ app.get("/api/projects/:id/branches", async (c) => {
   if (!project?.repo_path) return c.json({ error: "Este proyecto no está en este ordenador" }, 400);
   const f = await remote.fetchRemote(project.repo_path, 60_000);
   const list = branchRows(project);
+  const where = project.base_branch === "HEAD" ? null : git.branchWhere(project.repo_path, project.base_branch);
   return c.json({
     ...list,
     base: project.base_branch,
+    baseMissing: !where || (!where.local && !where.remote),
     remoteLabel: list.remote ? remote.remoteLabel(project.repo_path) : null,
     fetch: { ok: f.ok, message: f.message },
   });
@@ -359,7 +377,20 @@ app.post("/api/projects/:id/pull", async (c) => {
 
 app.patch("/api/projects/:id", async (c) => {
   const body = await c.req.json<Record<string, string | null>>();
-  if (!db.getProject(c.req.param("id"))) return c.json({ error: "Proyecto no encontrado" }, 404);
+  const project = db.getProject(c.req.param("id"));
+  if (!project) return c.json({ error: "Proyecto no encontrado" }, 404);
+  if (body.base_branch !== undefined && body.base_branch !== project.base_branch) {
+    const base = String(body.base_branch ?? "").trim();
+    if (!project.repo_path) return c.json({ error: "Este proyecto no está en este ordenador: no puedo comprobar sus ramas." }, 400);
+    const problem = git.baseBranchProblem(project.repo_path, base);
+    if (problem) return c.json({ error: problem }, 400);
+    try {
+      await repoLock(project.repo_path, async () => git.ensureLocalBranch(project.repo_path!, base));
+    } catch (err) {
+      return c.json({ error: (err as Error).message.replace(/^git [^:]*: /, "") }, 400);
+    }
+    body.base_branch = base;
+  }
   if (body.auto_doing !== undefined && typeof body.auto_doing !== "boolean") return c.json({ error: "auto_doing debe ser true o false" }, 400);
   if (body.bg_mode !== undefined && !["none", "color", "image"].includes(body.bg_mode as string))
     return c.json({ error: "Fondo no válido (none, color o image)" }, 400);

@@ -47,12 +47,24 @@ interface BranchList {
   remote: string | null;
   remoteLabel: string | null;
   base: string;
+  /** the base is `HEAD` or a branch that no longer exists */
+  baseMissing: boolean;
   fetch: { ok: boolean; message?: string };
   branches: BranchRow[];
 }
 
 /** Base branch pill in the header, with ↓/↑ against GitHub. Click to see every branch (and sync). */
-export function BranchStatus({ project, board, onOpenCard }: { project: Project; board: Board; onOpenCard: (id: string) => void }) {
+export function BranchStatus({
+  project,
+  board,
+  onOpenCard,
+  onProjectChange,
+}: {
+  project: Project;
+  board: Board;
+  onOpenCard: (id: string) => void;
+  onProjectChange: () => unknown;
+}) {
   const [st, setSt] = useState<GitStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
@@ -88,7 +100,7 @@ export function BranchStatus({ project, board, onOpenCard }: { project: Project;
       clearInterval(t);
       off();
     };
-  }, [project.id, project.repo_path]);
+  }, [project.id, project.repo_path, project.base_branch]);
 
   const out = st && (st.ahead > 0 || st.behind > 0);
   const sync = async () => {
@@ -153,6 +165,7 @@ export function BranchStatus({ project, board, onOpenCard }: { project: Project;
           title={title}
           syncing={busy}
           onSync={out ? sync : undefined}
+          onProjectChange={onProjectChange}
           onOpenCard={(id) => {
             setOpen(false);
             onOpenCard(id);
@@ -169,6 +182,7 @@ function BranchMenu({
   title,
   syncing,
   onSync,
+  onProjectChange,
   onOpenCard,
 }: {
   project: Project;
@@ -176,6 +190,7 @@ function BranchMenu({
   title: string;
   syncing: boolean;
   onSync?: () => void;
+  onProjectChange: () => unknown;
   onOpenCard: (id: string) => void;
 }) {
   const [list, setList] = useState<BranchList | null>(null);
@@ -185,6 +200,11 @@ function BranchMenu({
   /** last delete error per branch */
   const [failed, setFailed] = useState<Record<string, string>>({});
   const reload = useRef<() => void>(() => {});
+  /** the "Cambiar" picker for the base branch */
+  const [choosing, setChoosing] = useState(false);
+  const [newBase, setNewBase] = useState("");
+  const [savingBase, setSavingBase] = useState(false);
+  const [baseError, setBaseError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -279,6 +299,43 @@ function BranchMenu({
       () => api<{ results: DeleteResult[] }>(`/api/projects/${project.id}/branches/cleanup`, { names: cleanable.map((b) => b.name) }).then((r) => r.results),
     );
   };
+  const changeBase = async () => {
+    if (!newBase || newBase === list?.base) return setChoosing(false);
+    const active = Object.values(board.cards).filter((k) => k.project_id === project.id && ACTIVE_COLUMNS.includes(k.column));
+    if (active.length) {
+      const ok = await confirmDialog({
+        title: `¿Cambiar la rama base a ${newBase}?`,
+        body: [
+          `Hay ${active.length} tarjeta(s) en curso que salieron de ${list?.base}:`,
+          ...active.map((k) => `• ${k.title} (${COLUMN_LABELS[k.column]})`),
+          "",
+          `No se tocan ahora: al mergearlas se rebasarán sobre ${newBase}.`,
+        ].join("\n"),
+        confirmLabel: "Cambiar rama base",
+      });
+      if (!ok) return;
+    }
+    setSavingBase(true);
+    setBaseError(null);
+    try {
+      await api(`/api/projects/${project.id}`, { base_branch: newBase }, "PATCH");
+      await onProjectChange();
+      setChoosing(false);
+      reload.current();
+    } catch (e) {
+      setBaseError((e as Error).message);
+    } finally {
+      setSavingBase(false);
+    }
+  };
+  const startChoosing = () => {
+    setNewBase(list && !list.baseMissing ? list.base : (branches.find((b) => b.local)?.name ?? ""));
+    setBaseError(null);
+    setChoosing(true);
+  };
+  const localNames = branches.filter((b) => b.local).map((b) => b.name);
+  const remoteNames = branches.filter((b) => !b.local && b.remote).map((b) => b.name);
+
   const rowProps = { remote: list?.remoteLabel ?? null, base: list?.base ?? "", busy, failed, onDelete: remove, onOpenCard };
 
   return (
@@ -321,7 +378,67 @@ function BranchMenu({
               </Button>
             </div>
           )}
-          <BranchGroup label="Rama base" rows={base} {...rowProps} />
+          <BranchGroup
+            label="Rama base"
+            rows={base}
+            action={
+              !choosing && (
+                <button onClick={startChoosing} className="rounded px-1.5 text-[11px] font-medium tracking-normal text-accent normal-case hover:bg-ui-ink/[0.06]">
+                  Cambiar
+                </button>
+              )
+            }
+            {...rowProps}
+          >
+            {list.baseMissing && (
+              <div className="mx-1 mb-1.5 rounded-lg bg-amber-400/10 px-2.5 py-1.5 text-[11px] text-warning">
+                {list.base === "HEAD" ? "La rama base es «HEAD», que no es una rama de verdad." : `La rama base «${list.base}» ya no existe.`} Elige otra con «Cambiar».
+              </div>
+            )}
+            {choosing && (
+              <div className="mx-1 mb-1.5 space-y-1.5 rounded-lg bg-ui-ink/[0.03] px-2.5 py-2">
+                <div className="flex items-center gap-1.5">
+                  <select
+                    aria-label="Nueva rama base"
+                    value={newBase}
+                    onChange={(e) => setNewBase(e.target.value)}
+                    className="ui-field ui-control min-w-0 flex-1 rounded-md bg-zinc-950 px-2 py-1 font-mono text-[12px] text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-indigo-500"
+                  >
+                    {!newBase && <option value="">Elige una rama…</option>}
+                    {localNames.length > 0 && (
+                      <optgroup label="En este ordenador">
+                        {localNames.map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {remoteNames.length > 0 && (
+                      <optgroup label={`Solo en ${list.remoteLabel ?? "el remoto"}`}>
+                        {remoteNames.map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </select>
+                  <Button size="sm" variant="primary" onClick={changeBase} disabled={savingBase || !newBase || newBase === list.base}>
+                    {savingBase && <Spinner className="h-3.5 w-3.5" />}
+                    Usar como base
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setChoosing(false)} disabled={savingBase}>
+                    Cancelar
+                  </Button>
+                </div>
+                {remoteNames.includes(newBase) && (
+                  <div className="text-[10.5px] text-zinc-500">Solo está en {list.remoteLabel ?? "el remoto"}: se creará la rama local que la sigue.</div>
+                )}
+                {baseError && <div className="text-[11px] text-danger">{baseError}</div>}
+              </div>
+            )}
+          </BranchGroup>
           <BranchGroup label="De tarjetas" rows={cards} {...rowProps} />
           <BranchGroup label="Otras" rows={others} {...rowProps} />
           {branches.length === 1 && <div className="px-2 pt-1 pb-2 text-[11.5px] text-zinc-500">No hay más ramas.</div>}
@@ -340,13 +457,23 @@ interface RowProps {
   onOpenCard: (id: string) => void;
 }
 
-function BranchGroup({ label, rows, ...props }: { label: string; rows: BranchRow[] } & RowProps) {
-  if (!rows.length) return null;
+function BranchGroup({
+  label,
+  rows,
+  action,
+  children,
+  ...props
+}: { label: string; rows: BranchRow[]; action?: React.ReactNode; children?: React.ReactNode } & RowProps) {
+  if (!rows.length && !action && !children) return null;
   return (
     <div className="mb-1">
-      <div className="px-2 pt-1.5 pb-1 text-[10.5px] font-semibold tracking-wide text-zinc-600 uppercase">
-        {label} · {rows.length}
+      <div className="flex items-center px-2 pt-1.5 pb-1 text-[10.5px] font-semibold tracking-wide text-zinc-600 uppercase">
+        <span className="flex-1">
+          {label} · {rows.length}
+        </span>
+        {action}
       </div>
+      {children}
       <ul>
         {rows.map((b) => (
           <BranchItem key={b.name} b={b} {...props} />
@@ -355,6 +482,8 @@ function BranchGroup({ label, rows, ...props }: { label: string; rows: BranchRow
     </div>
   );
 }
+
+const ACTIVE_COLUMNS: Column[] = ["plan", "preparation", "doing", "review"];
 
 const TAG = "shrink-0 rounded px-1 text-[10px] leading-4";
 

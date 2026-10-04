@@ -421,3 +421,65 @@ export function resetHard(cwd: string, ref: string) {
   git(cwd, ["reset", "--hard", "-q", ref]);
   git(cwd, ["clean", "-fdq"]);
 }
+
+/** "origin" if it exists, else the first remote, else null. */
+export function remoteNameSync(repo: string): string | null {
+  const names = git(repo, ["remote"], { allowFail: true }).split("\n").filter(Boolean);
+  return names.includes("origin") ? "origin" : (names[0] ?? null);
+}
+
+/** Where a branch exists: in refs/heads and/or on the remote. */
+export function branchWhere(repo: string, branch: string): { local: boolean; remote: boolean } {
+  const r = remoteNameSync(repo);
+  return {
+    local: !!shaOf(repo, `refs/heads/${branch}`),
+    remote: !!r && !!shaOf(repo, `refs/remotes/${r}/${branch}`),
+  };
+}
+
+/** Local + remote branch names (no `HEAD`), locals first. Nothing is fetched here. */
+export function branchNames(repo: string): { local: string[]; remote: string[] } {
+  const r = remoteNameSync(repo);
+  const list = (ref: string, prefix: string) =>
+    git(repo, ["for-each-ref", "--sort=-committerdate", "--format=%(refname)", ref], { allowFail: true })
+      .split("\n")
+      .filter(Boolean)
+      .map((x) => x.slice(prefix.length))
+      .filter((x) => x && x !== "HEAD");
+  const local = list("refs/heads", "refs/heads/");
+  const remote = r ? list(`refs/remotes/${r}`, `refs/remotes/${r}/`).filter((x) => !local.includes(x)) : [];
+  return { local, remote };
+}
+
+/** The branch a new project should use as base: the remote's default, then main, then master, then any local branch. Never `HEAD`. */
+export function defaultBranch(repo: string): string | null {
+  const r = remoteNameSync(repo);
+  if (r) {
+    const head = git(repo, ["symbolic-ref", "--quiet", `refs/remotes/${r}/HEAD`], { allowFail: true });
+    const name = head.replace(`refs/remotes/${r}/`, "");
+    if (name && name !== head && name !== "HEAD") return name;
+  }
+  for (const b of ["main", "master"]) {
+    const w = branchWhere(repo, b);
+    if (w.local || w.remote) return b;
+  }
+  const { local, remote } = branchNames(repo);
+  return local[0] ?? remote[0] ?? null;
+}
+
+/** Why `branch` can't be a project's base branch (Spanish), or null if it can. */
+export function baseBranchProblem(repo: string, branch: string): string | null {
+  if (!branch) return "Elige una rama base.";
+  if (branch === "HEAD") return "«HEAD» no es una rama: elige una rama de verdad como base.";
+  const w = branchWhere(repo, branch);
+  if (!w.local && !w.remote) return `La rama «${branch}» no existe en este repo.`;
+  return null;
+}
+
+/** Make sure `branch` exists locally: if it's only on the remote, create the local one tracking it. */
+export function ensureLocalBranch(repo: string, branch: string) {
+  if (shaOf(repo, `refs/heads/${branch}`)) return;
+  const r = remoteNameSync(repo);
+  if (!r || !shaOf(repo, `refs/remotes/${r}/${branch}`)) throw new Error(`La rama «${branch}» no existe en este repo.`);
+  git(repo, ["branch", "--track", branch, `${r}/${branch}`]);
+}

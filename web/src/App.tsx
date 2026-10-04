@@ -422,7 +422,7 @@ export default function App() {
             <ChevronRight className="h-3.5 w-3.5 text-zinc-600" />
             <ProjectAvatar id={project!.id} name={projectName(project!.name)} size={30} />
             <span title={project!.repo_path || project!.name} className="app-project-title ui-title max-w-[28rem] truncate">{projectName(project!.name)}</span>
-            <BranchStatus project={project!} board={board} onOpenCard={setSelected} />
+            <BranchStatus project={project!} board={board} onOpenCard={setSelected} onProjectChange={reload} />
           </>
         )}
         {view === "home" && (
@@ -724,6 +724,8 @@ function NewProject({ onClose, onCreated, onCloneStarted, canClose }: { onClose:
   const [repo, setRepo] = useState<{ path: string; isRepo: boolean } | null>(null);
   const [name, setName] = useState("");
   const [base, setBase] = useState("");
+  const [branches, setBranches] = useState<{ local: string[]; remote: string[] } | null>(null);
+  const picked = useRef("");
   const [init, setInit] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -733,6 +735,17 @@ function NewProject({ onClose, onCreated, onCloneStarted, canClose }: { onClose:
     setName(projectName(path));
     setInit(!isRepo);
     setError("");
+    setBase("");
+    setBranches(null);
+    picked.current = path;
+    if (isRepo)
+      api<{ local: string[]; remote: string[]; suggested: string | null }>(`/api/branches?path=${encodeURIComponent(path)}`)
+        .then((r) => {
+          if (picked.current !== path) return;
+          setBranches(r);
+          setBase(r.suggested ?? r.local[0] ?? "");
+        })
+        .catch(() => setBranches({ local: [], remote: [] }));
   };
 
   const footer = (submit: React.ReactNode) => (
@@ -818,9 +831,41 @@ function NewProject({ onClose, onCreated, onCloneStarted, canClose }: { onClose:
                     Nombre
                     <input value={name} onChange={(e) => setName(e.target.value)} className="ui-field ui-control mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-indigo-500" />
                   </label>
-                  <label className="block w-40 text-xs text-zinc-400">
+                  <label className="block w-44 text-xs text-zinc-400">
                     Rama base
-                    <input value={base} onChange={(e) => setBase(e.target.value)} placeholder="la actual" className="ui-field ui-control mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 font-mono text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none placeholder:text-zinc-600 focus:ring-indigo-500" />
+                    <select
+                      value={base}
+                      onChange={(e) => setBase(e.target.value)}
+                      disabled={!repo.isRepo || !branches}
+                      className="ui-field ui-control mt-1 w-full rounded-md bg-zinc-900 px-2 py-2 font-mono text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-indigo-500 disabled:text-zinc-500"
+                    >
+                      {!repo.isRepo ? (
+                        <option value="">la que cree git</option>
+                      ) : !branches ? (
+                        <option value="">Cargando…</option>
+                      ) : (
+                        <>
+                          {branches.local.length > 0 && (
+                            <optgroup label="En este ordenador">
+                              {branches.local.map((b) => (
+                                <option key={b} value={b}>
+                                  {b}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {branches.remote.length > 0 && (
+                            <optgroup label="Solo en el remoto">
+                              {branches.remote.map((b) => (
+                                <option key={b} value={b}>
+                                  {b}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                        </>
+                      )}
+                    </select>
                   </label>
                 </div>
               </div>
@@ -828,7 +873,7 @@ function NewProject({ onClose, onCreated, onCloneStarted, canClose }: { onClose:
 
             {error && <p className="ui-alert">{error}</p>}
             {footer(
-              <Button variant="primary" type="submit" disabled={!repo || (!repo.isRepo && !init) || saving}>
+              <Button variant="primary" type="submit" disabled={!repo || (!repo.isRepo && !init) || (repo.isRepo && !branches) || saving}>
                 Crear proyecto
               </Button>,
             )}
