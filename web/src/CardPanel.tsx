@@ -38,7 +38,8 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
   const { messages, questions, checkpoints, setCheckpoints } = useCardDetail(board, card.id);
   const tags = useProjectTags(card.project_id, board);
   const open = questions.filter((q) => q.answer === null);
-  const defaultTab: Tab = "activity";
+  // Cards still being planned open on their spec; the rest on the activity feed.
+  const defaultTab: Tab = card.column === "plan" ? "spec" : "activity";
   const [tab, setTab] = useState<Tab>(defaultTab);
   useEffect(() => setTab(defaultTab), [card.id]);
   const [editSignal, setEditSignal] = useState(0);
