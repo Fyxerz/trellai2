@@ -6,6 +6,7 @@ import type {
   AssistantMessage,
   Card,
   Checkpoint,
+  Claim,
   CardStatus,
   Column,
   Message,
@@ -126,6 +127,12 @@ addColumn("projects", "tags", "tags TEXT NOT NULL DEFAULT '[]'");
 addColumn("cards", "tags", "tags TEXT NOT NULL DEFAULT '[]'");
 /** Exact model id of the card agent's latest run. */
 addColumn("cards", "agent_model", "agent_model TEXT");
+/** JSON Claim[]: what the card's agent is touching while in Doing. */
+addColumn("cards", "claims", "claims TEXT NOT NULL DEFAULT '[]'");
+/** JSON string[]: files a note is about, and cards it's addressed to ([] = everyone). */
+addColumn("notes", "files", "files TEXT NOT NULL DEFAULT '[]'");
+addColumn("notes", "targets", "targets TEXT NOT NULL DEFAULT '[]'");
+addColumn("notes", "archived", "archived INTEGER NOT NULL DEFAULT 0");
 
 /** Tables whose rows use a local INTEGER id; `uid` identifies them across computers. */
 export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages"] as const;
@@ -196,7 +203,7 @@ export function deleteProject(id: string) {
 
 // ---------- cards ----------
 
-type CardRow = Omit<Card, "files" | "tags"> & { files: string; tags: string; pending_input: string };
+type CardRow = Omit<Card, "files" | "tags" | "claims"> & { files: string; tags: string; claims: string; pending_input: string };
 
 /** Card columns plus checkpoint counters. */
 const CARD_SELECT = `SELECT c.*,
@@ -206,8 +213,8 @@ const CARD_SELECT = `SELECT c.*,
 
 function toCard(row: CardRow | undefined): Card | undefined {
   if (!row) return undefined;
-  const { pending_input: _p, files, tags, ...rest } = row;
-  return { ...rest, files: safeJson(files, []), tags: safeJson(tags, []) };
+  const { pending_input: _p, files, tags, claims, ...rest } = row;
+  return { ...rest, files: safeJson(files, []), tags: safeJson(tags, []), claims: safeJson(claims, []) };
 }
 
 function safeJson<T>(s: string, fallback: T): T {
@@ -266,6 +273,7 @@ export interface CardPatch {
   machine?: string | null;
   stop_req?: string | null;
   tags?: string[];
+  claims?: Claim[];
   agent_model?: string | null;
 }
 
@@ -274,7 +282,7 @@ export function updateCard(id: string, patch: CardPatch): Card {
   if (entries.length) {
     const sets = entries.map(([k]) => `"${k}" = @${k}`).join(", ");
     const params: Record<string, unknown> = { id, updated_at: now() };
-    for (const [k, v] of entries) params[k] = k === "files" || k === "tags" ? JSON.stringify(v) : v;
+    for (const [k, v] of entries) params[k] = k === "files" || k === "tags" || k === "claims" ? JSON.stringify(v) : v;
     db.prepare(`UPDATE cards SET ${sets}, updated_at = @updated_at WHERE id = @id`).run(params);
   }
   return getCard(id)!;
@@ -358,32 +366,42 @@ export function answerQuestion(cardId: string, questionId: number, answer: strin
 // ---------- notes (shared channel between agents) ----------
 
 const NOTE_SELECT = `SELECT n.*, c.title AS card_title FROM notes n LEFT JOIN cards c ON c.id = n.card_id`;
+type NoteRow = Omit<Note, "files" | "targets" | "archived"> & { files: string; targets: string; archived: number };
+const toNote = (r: NoteRow): Note => ({ ...r, files: safeJson(r.files, []), targets: safeJson(r.targets, []), archived: !!r.archived });
 
-export function addNote(projectId: string, cardId: string | null, content: string): Note {
+export function addNote(
+  projectId: string,
+  cardId: string | null,
+  content: string,
+  { files = [], targets = [] }: { files?: string[]; targets?: string[] } = {},
+): Note {
   const r = db
-    .prepare("INSERT INTO notes (uid, project_id, card_id, content, created_at) VALUES (?, ?, ?, ?, ?)")
-    .run(uid(), projectId, cardId, content, now());
-  return db.prepare(`${NOTE_SELECT} WHERE n.id = ?`).get(r.lastInsertRowid) as Note;
+    .prepare("INSERT INTO notes (uid, project_id, card_id, content, files, targets, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(uid(), projectId, cardId, content, JSON.stringify(files), JSON.stringify(targets), now());
+  return getNote(Number(r.lastInsertRowid))!;
+}
+
+export function getNote(id: number): Note | undefined {
+  const r = db.prepare(`${NOTE_SELECT} WHERE n.id = ?`).get(id) as NoteRow | undefined;
+  return r && toNote(r);
 }
 
 export function listNotes(projectId: string, limit = 200): Note[] {
   return (
-    db.prepare(`${NOTE_SELECT} WHERE n.project_id = ? ORDER BY n.id DESC LIMIT ?`).all(projectId, limit) as Note[]
-  ).reverse();
+    db.prepare(`${NOTE_SELECT} WHERE n.project_id = ? ORDER BY n.id DESC LIMIT ?`).all(projectId, limit) as NoteRow[]
+  )
+    .reverse()
+    .map(toNote);
 }
 
-/** Notes from *other* cards newer than `afterId`. */
-export function notesSince(projectId: string, cardId: string, afterId: number): Note[] {
-  return db
-    .prepare(
-      `${NOTE_SELECT} WHERE n.project_id = ? AND n.id > ? AND (n.card_id IS NULL OR n.card_id != ?) ORDER BY n.id`,
-    )
-    .all(projectId, afterId, cardId) as Note[];
+/** Notes agents still see. */
+export function liveNotes(projectId: string): Note[] {
+  return (db.prepare(`${NOTE_SELECT} WHERE n.project_id = ? AND n.archived = 0 ORDER BY n.id`).all(projectId) as NoteRow[]).map(toNote);
 }
 
-export function lastNoteId(projectId: string): number {
-  const r = db.prepare("SELECT MAX(id) AS m FROM notes WHERE project_id = ?").get(projectId) as { m: number | null };
-  return r.m ?? 0;
+export function archiveNotes(ids: number[]) {
+  const stmt = db.prepare("UPDATE notes SET archived = 1 WHERE id = ? AND archived = 0");
+  db.transaction(() => ids.forEach((id) => stmt.run(id)))();
 }
 
 // ---------- checkpoints ----------

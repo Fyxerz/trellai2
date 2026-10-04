@@ -27,6 +27,24 @@ export async function api<T = unknown>(path: string, body?: unknown, method?: st
   return json as T;
 }
 
+export interface BuildInfo {
+  id: string;
+  /** Trellai's server code changed (branch switch) and isn't loaded yet */
+  restartPending: boolean;
+  /** Maitre restarts it by itself once no agent is running */
+  autoRestart: boolean;
+}
+
+/** The UI build this page was loaded with: a different one on the server (branch switch) → reload. */
+let loadedBuild: string | null = null;
+export async function checkBuild() {
+  const b = await api<BuildInfo>("/api/build").catch(() => null);
+  if (!b) return null;
+  if (loadedBuild === null) loadedBuild = b.id;
+  else if (b.id !== loadedBuild) location.reload();
+  return b;
+}
+
 export function useProjects() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const reload = () => api<Project[]>("/api/projects").then(setProjects).catch(() => {});
@@ -80,6 +98,7 @@ export function useBoard(projectId: string | null) {
   const [cards, setCards] = useState<Record<string, Card>>({});
   const [notes, setNotes] = useState<Note[]>([]);
   const [connected, setConnected] = useState(false);
+  const [build, setBuild] = useState<BuildInfo | null>(null);
   const listeners = useRef(new Set<Listener>());
 
   useEffect(() => {
@@ -97,12 +116,14 @@ export function useBoard(projectId: string | null) {
       setNotes(ns);
     };
 
+    const checkUpdate = () => checkBuild().then((b) => !closed && b && setBuild(b));
     let reloadTimer: ReturnType<typeof setTimeout> | null = null;
     const connect = () => {
       es = new EventSource(`/api/projects/${projectId}/events`);
       es.addEventListener("ready", () => {
         setConnected(true);
         load(); // resync after (re)connect
+        checkUpdate(); // the server may have restarted with new code
       });
       es.onmessage = (ev) => {
         const e = JSON.parse(ev.data) as ServerEvent;
@@ -113,12 +134,14 @@ export function useBoard(projectId: string | null) {
             delete next[e.id];
             return next;
           });
-        else if (e.type === "note") setNotes((prev) => [...prev, e.note]);
+        else if (e.type === "note")
+          // new, or archived
+          setNotes((prev) => (prev.some((n) => n.id === e.note.id) ? prev.map((n) => (n.id === e.note.id ? e.note : n)) : [...prev, e.note]));
         else if (e.type === "sync") {
           // another computer changed this project: reload (debounced)
           if (reloadTimer) clearTimeout(reloadTimer);
           reloadTimer = setTimeout(load, 250);
-        }
+        } else if (e.type === "build") checkUpdate();
         listeners.current.forEach((fn) => fn(e));
       };
       es.onerror = () => setConnected(false);
@@ -142,7 +165,7 @@ export function useBoard(projectId: string | null) {
   const patchLocal = (id: string, patch: Partial<Card>) =>
     setCards((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], ...patch } } : prev));
 
-  return { cards, notes, connected, on, patchLocal, setCards };
+  return { cards, notes, connected, build, on, patchLocal, setCards };
 }
 
 export type Board = ReturnType<typeof useBoard>;
