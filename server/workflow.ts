@@ -6,6 +6,7 @@
  *                     (agent asks     (agents in    (you)    (git merge)
  *                      or auto-moves)  parallel)
  */
+import { forAgent } from "./chatImages.js";
 import { existsSync } from "node:fs";
 import { COLUMN_LABELS, describeClaim, type Card, type Column, type Project } from "../shared/types.js";
 import * as claims from "./claims.js";
@@ -507,6 +508,7 @@ export function sendMessage(cardId: string, text: string) {
   const card = db.getCard(cardId);
   if (!card) throw new Error("Tarjeta no encontrada");
   log(card, "user", text);
+  text = forAgent(text);
 
   if (runningElsewhere(card)) {
     // The owner sees this message through the sync and hands it to its agent.
@@ -653,7 +655,7 @@ onSync({
   },
   message(m) {
     // Pedro wrote from another computer to an agent running here.
-    if (m.role === "user" && isRunning(m.card_id)) db.pushPendingInput(m.card_id, m.content);
+    if (m.role === "user" && isRunning(m.card_id)) db.pushPendingInput(m.card_id, forAgent(m.content));
   },
   projectDeleting(projectId) {
     const project = db.getProject(projectId);

@@ -20,6 +20,7 @@ import * as remote from "./remote.js";
 import { startSync, syncStatus } from "./sync.js";
 import { assistantRunning, sendToAssistant, stopAssistant } from "./assistant.js";
 import { buildInfo, distDir, startSelfUpdate } from "./selfupdate.js";
+import { readChatImage, saveChatImage } from "./chatImages.js";
 
 const app = new Hono();
 
@@ -508,10 +509,23 @@ app.get("/api/cards/:id/messages", (c) => c.json(db.listMessages(c.req.param("id
 app.get("/api/cards/:id/questions", (c) => c.json(db.listQuestions(c.req.param("id"))));
 
 app.post("/api/cards/:id/message", async (c) => {
-  const { text } = await c.req.json<{ text: string }>();
-  if (!text?.trim()) return c.json({ error: "Mensaje vacío" }, 400);
-  wf.sendMessage(c.req.param("id"), text.trim());
+  const { text, images } = await c.req.json<{ text: string; images?: string[] }>();
+  let links: string[];
+  try {
+    links = (Array.isArray(images) ? images.slice(0, 10) : []).map((img) => `![imagen](${saveChatImage(img)})`);
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400);
+  }
+  const full = [text?.trim(), ...links].filter(Boolean).join("\n\n");
+  if (!full) return c.json({ error: "Mensaje vacío" }, 400);
+  wf.sendMessage(c.req.param("id"), full);
   return c.json({ ok: true });
+});
+
+app.get("/api/chat-images/:name", (c) => {
+  const img = readChatImage(c.req.param("name"));
+  if (!img) return c.json({ error: "Imagen no encontrada" }, 404);
+  return c.body(new Uint8Array(img.data), 200, { "Content-Type": img.type, "Cache-Control": "public, max-age=31536000, immutable" });
 });
 
 app.post("/api/cards/:id/answers", async (c) => {
