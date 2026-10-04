@@ -480,7 +480,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex min-h-0 flex-1">
+      <main className="relative flex min-h-0 flex-1">
         {sidebarOpen && projects && projects.length > 0 && (
           <Sidebar
             projects={projects}
