@@ -103,7 +103,7 @@ export function AssistantPanel({
 }) {
   const roleKey = mode === "plan" ? "model_plan" : "model_do";
   return (
-    <aside className="work-panel flex h-full w-[min(480px,100vw)] shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel shadow-[-24px_0_48px_-24px_rgb(0_0_0/0.6)]">
+    <aside aria-label="Asistente" style={{ "--panel-width": "480px" } as React.CSSProperties} className="work-panel overlay flex h-full shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel">
       <div className="ui-tabs flex-wrap border-b border-ui-ink/10 px-3 pt-2">
         {(["plan", "do"] as AssistantMode[]).map((m) => (
           <button
