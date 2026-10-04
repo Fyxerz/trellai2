@@ -6,7 +6,7 @@
  *   codex   → OpenAI Codex CLI (`codex exec`, your ChatGPT/OpenAI login) — GPT models
  *
  * A model is written as "engine" or "engine:model", e.g. "claude", "claude:opus", "codex",
- * "codex:gpt-5-codex". Trellai's own tools (ask_questions, check_checkpoint, create_cards…)
+ * "codex:gpt-5-codex", optionally followed by an effort: "claude:opus@high". Trellai's own tools (ask_questions, check_checkpoint, create_cards…)
  * reach Codex through a tiny stdio MCP bridge that calls back into this server.
  */
 import { createSdkMcpServer, query, tool, type HookCallback, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { z, type ZodRawShape } from "zod";
+import { EFFORT_LABELS, splitEffort, withEffort, type Effort } from "../shared/models.js";
 
 export type Engine = "claude" | "codex";
 
@@ -29,17 +30,17 @@ export interface ToolSpec {
   run: (args: any) => string;
 }
 
-export function parseModel(spec: string | null | undefined): { engine: Engine; model?: string } {
-  const s = (spec || "claude").trim();
-  const [engine, ...rest] = s.split(":");
+export function parseModel(full: string | null | undefined): { engine: Engine; model?: string; effort: Effort | null } {
+  const { spec, effort } = splitEffort((full || "claude").trim());
+  const [engine, ...rest] = (spec || "claude").split(":");
   const model = rest.join(":") || undefined;
-  return engine === "codex" ? { engine: "codex", model } : { engine: "claude", model };
+  return engine === "codex" ? { engine: "codex", model, effort } : { engine: "claude", model, effort };
 }
 
 export function modelLabel(spec: string | null | undefined): string {
-  const { engine, model } = parseModel(spec);
-  if (engine === "codex") return model ? `GPT · ${model}` : "GPT (Codex)";
-  return model ? `Claude ${model[0].toUpperCase()}${model.slice(1)}` : "Claude";
+  const { engine, model, effort } = parseModel(spec);
+  const name = engine === "codex" ? (model ? `GPT · ${model}` : "GPT (Codex)") : model ? `Claude ${model[0].toUpperCase()}${model.slice(1)}` : "Claude";
+  return effort ? `${name} · ${EFFORT_LABELS[effort]}` : name;
 }
 
 export interface ClaudeModel {
@@ -50,6 +51,8 @@ export interface ClaudeModel {
   /** e.g. "Opus 5.5" */
   label: string;
   description: string;
+  /** effort levels this model accepts (empty = no effort setting) */
+  efforts: Effort[];
 }
 
 let claudeModelsCache: { at: number; models: Promise<ClaudeModel[]> } | null = null;
@@ -66,7 +69,13 @@ export function claudeModels(): Promise<ClaudeModel[]> {
     const q = query({ prompt: idle(), options: { abortController: abort, cwd: process.cwd() } });
     try {
       const list = await q.supportedModels();
-      return list.map((m) => ({ value: m.value, resolved: m.resolvedModel ?? null, label: m.displayName, description: m.description }));
+      return list.map((m) => ({
+        value: m.value,
+        resolved: m.resolvedModel ?? null,
+        label: m.displayName,
+        description: m.description,
+        efforts: m.supportsEffort ? (m.supportedEffortLevels ?? []) : [],
+      }));
     } finally {
       abort.abort();
     }
@@ -125,13 +134,15 @@ export interface EngineResult {
 }
 
 export async function runEngine(r: EngineRun): Promise<EngineResult> {
-  const { engine, model } = parseModel(r.model);
+  const { engine, model, effort } = parseModel(r.model);
   const prev = decodeSession(r.resume);
   const resume = prev && prev.engine === engine ? prev.id : null;
   const prompt = !resume && prev && r.contextIfFresh ? `${r.contextIfFresh}\n\n---\n\n${r.prompt}` : r.prompt;
+  // the exact model reported for each run carries the effort too: "claude-opus-5-5@high"
+  const onModel = r.onModel && ((m: string) => r.onModel!(withEffort(m, effort)));
   return engine === "codex"
-    ? runCodex({ ...r, prompt }, model, resume)
-    : runClaude({ ...r, prompt }, model ?? process.env.TRELLAI_MODEL ?? undefined, resume);
+    ? runCodex({ ...r, prompt, onModel }, model, resume, effort)
+    : runClaude({ ...r, prompt, onModel }, model ?? process.env.TRELLAI_MODEL ?? undefined, resume, effort);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +158,7 @@ function summarize(name: string, input: Record<string, unknown>): string {
   return s ? `${name} · ${s.length > 140 ? s.slice(0, 140) + "…" : s}` : name;
 }
 
-async function runClaude(r: EngineRun, model: string | undefined, resume: string | null): Promise<EngineResult> {
+async function runClaude(r: EngineRun, model: string | undefined, resume: string | null, effort: Effort | null): Promise<EngineResult> {
   const abort = new AbortController();
   r.signal.addEventListener("abort", () => abort.abort());
   const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
@@ -171,6 +182,7 @@ async function runClaude(r: EngineRun, model: string | undefined, resume: string
         resume: resume ?? undefined,
         abortController: abort,
         model,
+        effort: effort ?? undefined,
         systemPrompt: { type: "preset", preset: "claude_code", append: r.instructions },
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
@@ -241,7 +253,7 @@ function toml(s: string) {
   return JSON.stringify(s); // TOML basic strings use the same escaping as JSON for our needs
 }
 
-async function runCodex(r: EngineRun, model: string | undefined, resume: string | null): Promise<EngineResult> {
+async function runCodex(r: EngineRun, model: string | undefined, resume: string | null, effort: Effort | null): Promise<EngineResult> {
   const token = randomBytes(16).toString("hex");
   const tools = r.pollNotes
     ? r.tools.map((t) => ({
@@ -267,7 +279,7 @@ async function runCodex(r: EngineRun, model: string | undefined, resume: string 
   ];
   const access =
     r.access === "write" ? ["--dangerously-bypass-approvals-and-sandbox"] : ["-c", 'sandbox_mode="read-only"'];
-  const modelArgs = model ? ["-m", model] : [];
+  const modelArgs = [...(model ? ["-m", model] : []), ...(effort ? ["-c", `model_reasoning_effort=${toml(effort)}`] : [])];
   const prompt = resume ? r.prompt : `<instructions>\n${r.instructions}\n</instructions>\n\n${r.prompt}`;
   const args = resume
     ? ["exec", "resume", "--json", "--skip-git-repo-check", ...access, ...modelArgs, ...config, resume, prompt]

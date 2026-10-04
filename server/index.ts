@@ -153,6 +153,25 @@ app.get("/api/projects/:id/git", async (c) => {
   return c.json(await remote.baseStatus(project.repo_path, project.base_branch));
 });
 
+/** All branches (local + remote) for the header's branch list, with the card each one belongs to. */
+app.get("/api/projects/:id/branches", async (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project?.repo_path) return c.json({ error: "Este proyecto no está en este ordenador" }, 400);
+  const f = await remote.fetchRemote(project.repo_path, 60_000);
+  const list = git.listBranches(project.repo_path, project.base_branch);
+  const cards = new Map(db.listCards(project.id).filter((k) => k.branch).map((k) => [k.branch!, k]));
+  return c.json({
+    ...list,
+    base: project.base_branch,
+    remoteLabel: list.remote ? remote.remoteLabel(project.repo_path) : null,
+    fetch: { ok: f.ok, message: f.message },
+    branches: list.branches.map((b) => {
+      const k = cards.get(b.name);
+      return { ...b, card: k ? { id: k.id, title: k.title, column: k.column } : null };
+    }),
+  });
+});
+
 app.post("/api/projects/:id/pull", async (c) => {
   const project = db.getProject(c.req.param("id"));
   if (!project?.repo_path) return c.json({ error: "Proyecto no vinculado" }, 400);

@@ -58,6 +58,15 @@ export function startPreview(card: Card): PreviewResult {
   if (!card.branch) throw new Error("Esta tarjeta todavía no tiene rama.");
   const repo = project.repo_path;
   const current = getPreview(project.id);
+  // Include the agent's latest edits when nobody is mid-edit. First, so the clash check below
+  // sees the files the agent just created.
+  if (card.worktree && card.status !== "running") {
+    try {
+      git.commitAll(card.worktree, `${card.title} (wip)`);
+    } catch {
+      /* nothing to commit */
+    }
+  }
   // Untracked files the card's branch also has would stop the checkout: they go in the stash too.
   const clashes = git.untrackedClashes(repo, card.branch);
   const files = fileList(repo, clashes);
@@ -66,14 +75,6 @@ export function startPreview(card: Card): PreviewResult {
     ? git.stashSave(repo, `trellai: cambios hechos mientras veías otra tarjeta`, clashes)
     : git.stashSave(repo, `trellai: tus cambios antes de ver "${card.title}"`, clashes);
 
-  // Include the agent's latest edits when nobody is mid-edit.
-  if (card.worktree && card.status !== "running") {
-    try {
-      git.commitAll(card.worktree, `${card.title} (wip)`);
-    } catch {
-      /* nothing to commit */
-    }
-  }
   const prev = current?.prev ?? git.headRef(repo);
   try {
     git.checkoutDetached(repo, card.branch);
