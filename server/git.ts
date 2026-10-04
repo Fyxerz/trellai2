@@ -189,6 +189,54 @@ export function trackedDirty(repo: string): string[] {
   return git(repo, ["status", "--porcelain", "--untracked-files=no"], { allowFail: true }).split("\n").filter(Boolean);
 }
 
+/**
+ * Untracked files in the checkout that `ref` tracks: checking out or merging `ref` would refuse
+ * to overwrite them (e.g. another Claude created the same file in your folder).
+ */
+export function untrackedClashes(repo: string, ref: string): string[] {
+  const untracked = git(repo, ["ls-files", "--others", "--exclude-standard", "-z"], { allowFail: true }).split("\0").filter(Boolean);
+  if (!untracked.length) return [];
+  const inRef = new Set(git(repo, ["ls-tree", "-r", "--name-only", "-z", ref], { allowFail: true }).split("\0"));
+  return untracked.filter((f) => inRef.has(f));
+}
+
+/**
+ * Put tracked local edits — plus these untracked files, if any — in a stash.
+ * Returns its commit sha (null when there was nothing to save).
+ */
+export function stashSave(repo: string, message: string, untracked: string[] = []): string | null {
+  const tracked = trackedDirty(repo).length > 0;
+  if (!tracked && !untracked.length) return null;
+  if (!untracked.length) git(repo, ["stash", "push", "-m", message]);
+  else {
+    const changed = tracked ? git(repo, ["diff", "HEAD", "--name-only", "-z"]).split("\0").filter(Boolean) : [];
+    git(repo, ["--literal-pathspecs", "stash", "push", "--include-untracked", "-m", message, "--", ...changed, ...untracked]);
+  }
+  return git(repo, ["rev-parse", "stash@{0}"]);
+}
+
+/**
+ * Re-apply the stash with this sha and drop it. On a conflict the stash is kept and this throws
+ * so the caller can tell Pedro. With `fromClean` (the tree was clean before) a failed apply is
+ * undone with a reset; otherwise nothing is reset, so other restored edits stay.
+ */
+export function stashRestore(repo: string, sha: string, { fromClean = true }: { fromClean?: boolean } = {}) {
+  try {
+    git(repo, ["stash", "apply", "--index", sha]);
+  } catch (first) {
+    if (!fromClean) throw first;
+    git(repo, ["reset", "--hard", "-q"], { allowFail: true });
+    try {
+      git(repo, ["stash", "apply", sha]); // staged state couldn't be restored: plain apply
+    } catch (err) {
+      git(repo, ["reset", "--hard", "-q"], { allowFail: true });
+      throw err;
+    }
+  }
+  const i = git(repo, ["stash", "list", "--format=%H"], { allowFail: true }).split("\n").indexOf(sha);
+  if (i >= 0) git(repo, ["stash", "drop", "-q", `stash@{${i}}`], { allowFail: true });
+}
+
 /** Where HEAD points: a branch name, or a sha when detached. */
 export function headRef(repo: string): string {
   const b = git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]);

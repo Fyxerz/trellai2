@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { MOD, readPreference } from "./preferences";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -87,15 +89,16 @@ export function Button({
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "default" | "primary" | "danger" | "ghost"; size?: "sm" | "md" }) {
   const styles = {
-    default: "bg-white/[0.05] hover:bg-white/[0.09] text-zinc-100 ring-1 ring-white/[0.08] hover:ring-white/[0.14]",
+    default: "bg-ui-ink/[0.05] hover:bg-ui-ink/[0.09] text-zinc-100 ring-1 ring-ui-ink/[0.08] hover:ring-ui-ink/[0.14]",
     primary:
       "bg-gradient-to-b from-indigo-400 to-indigo-500 hover:from-indigo-300 hover:to-indigo-500 text-white font-medium shadow-[0_1px_0_0_rgb(255_255_255/0.25)_inset,0_1px_2px_rgb(0_0_0/0.4)]",
     danger: "bg-transparent hover:bg-red-500/10 text-red-300 ring-1 ring-red-400/25",
-    ghost: "bg-transparent hover:bg-white/[0.06] text-zinc-300 hover:text-zinc-100",
+    ghost: "bg-transparent hover:bg-ui-ink/[0.06] text-zinc-300 hover:text-zinc-100",
   }[variant];
-  const sizes = { sm: "h-7 px-2.5 text-xs", md: "h-8 px-3 text-[13px]" }[size];
+  const sizes = { sm: "h-7 px-2.5 text-xs", md: "h-9 px-3.5 text-sm" }[size];
   return (
     <button
+      type="button"
       {...props}
       className={`inline-flex items-center justify-center gap-1.5 rounded-lg transition-all disabled:pointer-events-none disabled:opacity-40 ${sizes} ${styles} ${className}`}
     />
@@ -104,7 +107,7 @@ export function Button({
 
 export function Kbd({ children }: { children: React.ReactNode }) {
   return (
-    <kbd className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-white/10 bg-white/[0.04] px-1 font-mono text-[10px] text-zinc-400">
+    <kbd className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-ui-ink/10 bg-ui-ink/[0.04] px-1 font-mono text-[10px] text-zinc-400">
       {children}
     </kbd>
   );
@@ -152,26 +155,23 @@ export function timeAgo(iso: string) {
   return `${Math.floor(s / 86400)} d`;
 }
 
-/**
- * Chat textareas: Enter sends, ⌘/Ctrl+Enter (or ⇧Enter) inserts a new line.
- */
-export function chatKeyDown(
-  e: React.KeyboardEvent<HTMLTextAreaElement>,
-  send: () => void,
-  setText: (v: string) => void,
-) {
-  if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
-  if (e.shiftKey) return; // native newline
+/** Shift+Enter always inserts a newline. Respect the user's sending preference. */
+export function chatKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>, send: () => void, _setText?: (v: string) => void) {
+  if (e.key !== "Enter" || e.nativeEvent.isComposing || e.shiftKey || e.altKey) return;
+  const modified = e.metaKey || e.ctrlKey;
+  if (readPreference("send", "enter") === "mod" ? !modified : modified) return;
   e.preventDefault();
-  if (e.metaKey || e.ctrlKey) {
-    const ta = e.currentTarget;
-    const { selectionStart: a, selectionEnd: b, value } = ta;
-    const next = value.slice(0, a) + "\n" + value.slice(b);
-    setText(next);
-    requestAnimationFrame(() => {
-      ta.selectionStart = ta.selectionEnd = a + 1;
-    });
-    return;
-  }
+  if (e.repeat) return;
   send();
+}
+
+export function ChatHint() {
+  const [mode, setMode] = useState(() => readPreference("send", "enter"));
+  useEffect(() => {
+    const update = () => setMode(readPreference("send", "enter"));
+    window.addEventListener("trellai:preferences", update);
+    window.addEventListener("storage", update);
+    return () => { window.removeEventListener("trellai:preferences", update); window.removeEventListener("storage", update); };
+  }, []);
+  return <span>{mode === "mod" ? `${MOD}+Enter envía · Enter nueva línea` : "Enter envía · Shift+Enter nueva línea"}</span>;
 }

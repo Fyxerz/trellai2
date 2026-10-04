@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { prettyModel } from "../shared/models.js";
 import type { Card } from "../shared/types.js";
 import * as db from "./db.js";
-import { emitCheckpoints, emitMessage, emitNote, emitQuestions } from "./events.js";
+import { emitCard, emitCheckpoints, emitMessage, emitNote, emitQuestions } from "./events.js";
 import { runFakeAgent } from "./fake-agent.js";
 import { commitAll } from "./git.js";
 import { followPreview } from "./preview.js";
@@ -263,6 +264,9 @@ function cardContext(card: Card, kind: AgentKind) {
 // Runner
 // ---------------------------------------------------------------------------
 
+/** Phase + exact model last announced in each card's activity. */
+const lastModel = new Map<string, string>();
+
 export async function runAgent(opts: RunOptions): Promise<RunResult> {
   const { card, kind } = opts;
   if (running.has(card.id)) throw new Error("Agent already running for this card");
@@ -302,6 +306,14 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       signal: abort.signal,
       onText: (t) => log("assistant", t),
       onTool: (t) => log("tool", t),
+      onModel: (model) => {
+        const seen = `${kind}|${model}`;
+        if (lastModel.get(card.id) !== seen) {
+          lastModel.set(card.id, seen);
+          log("system", `🤖 ${kind === "prep" ? "Preparación" : "Desarrollo"} con ${prettyModel(model)} · \`${model.replace(/^codex:/, "")}\``);
+        }
+        if (db.getCard(card.id)?.agent_model !== model) emitCard(db.updateCard(card.id, { agent_model: model }));
+      },
     });
     return { ok: !res.error, aborted: abort.signal.aborted, error: res.error, sessionId: res.sessionId, signals };
   } catch (err) {

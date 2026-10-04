@@ -1,10 +1,13 @@
+import { projectName, useDialogFocus } from "./preferences";
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { prettyModel } from "../../shared/models";
 
 /**
  * Models are written "engine" or "engine:model":
- *   claude, claude:opus, claude:sonnet, claude:haiku  → Claude (your Claude Code login)
- *   codex, codex:<model>                              → GPT via OpenAI Codex CLI (your ChatGPT login)
+ *   claude, claude:opus, claude:sonnet, claude:claude-opus-4-8…  → Claude (your Claude Code login)
+ *   codex, codex:<model>                                          → GPT via OpenAI Codex CLI (your ChatGPT login)
+ * Aliases (opus, sonnet…) always run the latest version; the pickers show which one that is today.
  */
 export const PRESETS: { value: string; label: string; group: "Claude" | "GPT (Codex)" }[] = [
   { value: "claude", label: "Claude (por defecto)", group: "Claude" },
@@ -14,25 +17,54 @@ export const PRESETS: { value: string; label: string; group: "Claude" | "GPT (Co
   { value: "codex", label: "GPT (por defecto de Codex)", group: "GPT (Codex)" },
 ];
 
+interface ClaudeModel {
+  value: string;
+  resolved: string | null;
+  label: string;
+  description: string;
+}
+interface Engines {
+  claude: { models: ClaudeModel[] };
+  codex: { installed: boolean; version?: string; defaultModel?: string | null };
+}
+
+/** spec ("claude", "claude:opus", "codex") → exact version name ("Opus 5.5"), once /api/engines answers. */
+const versions = new Map<string, string>();
+let enginesCache: Promise<Engines> | null = null;
+const loadEngines = () =>
+  (enginesCache ??= api<Engines>("/api/engines").then((e) => {
+    for (const m of e.claude?.models ?? []) {
+      const name = m.resolved ? prettyModel(m.resolved) : m.label;
+      versions.set(m.value === "default" ? "claude" : `claude:${m.value}`, name);
+    }
+    if (e.codex?.defaultModel) versions.set("codex", prettyModel(`codex:${e.codex.defaultModel}`));
+    return e;
+  }));
+
 export function modelLabel(spec: string | null | undefined, short = false): string {
   const s = spec || "claude";
   const [engine, ...rest] = s.split(":");
   const model = rest.join(":");
-  if (engine === "codex") return model ? (short ? "GPT" : `GPT · ${model}`) : short ? "GPT" : "GPT (Codex)";
+  const exact = versions.get(s);
+  if (engine === "codex") {
+    if (model) return short ? "GPT" : `GPT · ${model}`;
+    return short ? "GPT" : exact ? `${exact} (por defecto de Codex)` : "GPT (Codex)";
+  }
+  if (exact) return short || model ? exact : `Claude por defecto · ${exact}`;
   if (!model) return "Claude";
-  const name = model[0].toUpperCase() + model.slice(1);
+  const name = model.startsWith("claude-") ? prettyModel(model) : model[0].toUpperCase() + model.slice(1);
   return short ? name : `Claude ${name}`;
 }
 
-let enginesCache: Promise<{ codex: { installed: boolean; version?: string } }> | null = null;
-
+/** Engines + exact model versions (re-renders the caller when they arrive). */
 export function useEngines() {
-  const [codex, setCodex] = useState<{ installed: boolean; version?: string } | null>(null);
+  const [engines, setEngines] = useState<Engines | null>(null);
   useEffect(() => {
-    enginesCache ??= api<{ codex: { installed: boolean; version?: string } }>("/api/engines");
-    enginesCache.then((r) => setCodex(r.codex)).catch(() => setCodex({ installed: false }));
+    loadEngines()
+      .then(setEngines)
+      .catch(() => setEngines({ claude: { models: [] }, codex: { installed: false } }));
   }, []);
-  return { codex };
+  return { codex: engines?.codex ?? null, claude: engines?.claude.models ?? null };
 }
 
 export function ModelPicker({
@@ -49,9 +81,19 @@ export function ModelPicker({
   className?: string;
   title?: string;
 }) {
-  const { codex } = useEngines();
+  const { codex, claude } = useEngines();
   const noCodex = codex && !codex.installed;
-  const custom = value && !PRESETS.some((p) => p.value === value) ? value : null;
+  // Aliases first (they follow the latest version), then pinned versions.
+  const claudeOptions = claude?.length
+    ? claude.map((m) => ({
+        value: m.value === "default" ? "claude" : `claude:${m.value}`,
+        label: m.value === "default" ? `Por defecto · ${modelLabel("claude", true)}` : modelLabel(`claude:${m.value}`, true),
+        title: `${m.description}${m.resolved ? ` · ${m.resolved}` : ""}`,
+        pinned: m.value.startsWith("claude-"),
+      }))
+    : PRESETS.filter((p) => p.group === "Claude").map((p) => ({ ...p, title: "", pinned: false }));
+  const known = [...claudeOptions.map((o) => o.value), "codex"];
+  const custom = value && !known.includes(value) ? value : null;
 
   return (
     <select
@@ -70,18 +112,29 @@ export function ModelPicker({
     >
       {inheritLabel && <option value="">{inheritLabel}</option>}
       <optgroup label="Claude">
-        {PRESETS.filter((p) => p.group === "Claude").map((p) => (
-          <option key={p.value} value={p.value}>
-            {p.label}
-          </option>
-        ))}
+        {claudeOptions
+          .filter((o) => !o.pinned)
+          .map((o) => (
+            <option key={o.value} value={o.value} title={o.title}>
+              {o.label}
+            </option>
+          ))}
       </optgroup>
+      {claudeOptions.some((o) => o.pinned) && (
+        <optgroup label="Claude · versiones fijas">
+          {claudeOptions
+            .filter((o) => o.pinned)
+            .map((o) => (
+              <option key={o.value} value={o.value} title={o.title}>
+                {o.label}
+              </option>
+            ))}
+        </optgroup>
+      )}
       <optgroup label={noCodex ? "GPT (Codex no instalado)" : "GPT (Codex)"}>
-        {PRESETS.filter((p) => p.group === "GPT (Codex)").map((p) => (
-          <option key={p.value} value={p.value} disabled={!!noCodex}>
-            {p.label}
-          </option>
-        ))}
+        <option value="codex" disabled={!!noCodex}>
+          {modelLabel("codex")}
+        </option>
         {custom && <option value={custom}>{modelLabel(custom)}</option>}
         <option value="__other" disabled={!!noCodex}>
           Otro modelo GPT…
@@ -113,12 +166,13 @@ export function ProjectSettings({
     await api(`/api/projects/${project.id}`, { [key]: value }, "PATCH");
     onSaved();
   };
+  const dialogRef = useDialogFocus();
   return (
     <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-lg space-y-4 rounded-2xl bg-zinc-900 p-5 ring-1 ring-white/[0.08] shadow-[var(--shadow-pop)]">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Modelos del proyecto" onClick={(e) => e.stopPropagation()} className="w-full max-w-lg space-y-4 rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]">
         <div className="flex items-center">
           <div>
-            <h2 className="text-base font-semibold text-zinc-100">Modelos · {project.name}</h2>
+            <h2 className="text-base font-semibold text-zinc-100">Modelos · {projectName(project.name)}</h2>
             <p className="text-xs text-zinc-500">Por defecto para este proyecto. Cada tarjeta puede elegir el suyo.</p>
           </div>
           <button onClick={onClose} className="ml-auto text-zinc-500 hover:text-zinc-200">✕</button>

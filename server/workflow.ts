@@ -7,7 +7,7 @@
  *                      or auto-moves)  parallel)
  */
 import { existsSync } from "node:fs";
-import type { Card, Column, Project } from "../shared/types.js";
+import { COLUMN_LABELS, type Card, type Column, type Project } from "../shared/types.js";
 import * as db from "./db.js";
 import { emitCard, emitMessage, emitNote } from "./events.js";
 import * as git from "./git.js";
@@ -68,7 +68,13 @@ function bg(p: Promise<unknown>, card: Card) {
 // Moving cards
 // ---------------------------------------------------------------------------
 
-export function moveCard(cardId: string, column: Column, index = Number.MAX_SAFE_INTEGER): Card {
+/** Every column change leaves a line in the card's activity: from, to and why. */
+function logMove(card: Card, from: Column, to: Column, why: string) {
+  log(card, "system", `↪ ${COLUMN_LABELS[from]} → ${COLUMN_LABELS[to]} · ${why}`);
+}
+
+/** `why`: who or what moved it (default: you, from the board). */
+export function moveCard(cardId: string, column: Column, index = Number.MAX_SAFE_INTEGER, why = `movida por ti en ${MACHINE}`): Card {
   const before = db.getCard(cardId);
   if (!before) throw new Error("Tarjeta no encontrada");
   if (before.column !== column && runningElsewhere(before)) {
@@ -77,6 +83,7 @@ export function moveCard(cardId: string, column: Column, index = Number.MAX_SAFE
   const card = db.placeCard(cardId, column, index);
   emitColumn(card.project_id, column);
   if (before.column !== column) {
+    logMove(card, before.column, column, why);
     emitColumn(card.project_id, before.column);
     bg(onEnter(card, before.column), card);
   }
@@ -129,7 +136,15 @@ async function waitUntilStopped(cardId: string) {
 // Running agents
 // ---------------------------------------------------------------------------
 
-async function launch(card: Card, kind: AgentKind, prompt: string, resume: string | null): Promise<void> {
+interface LaunchOpts {
+  /** Column the card must still be in when the agent finishes (default: its phase's column). */
+  column?: Column;
+  statusText?: string;
+  /** What to do when it finishes, instead of the phase's usual next step. */
+  after?: (card: Card, res: RunResult) => Promise<void>;
+}
+
+async function launch(card: Card, kind: AgentKind, prompt: string, resume: string | null, opts: LaunchOpts = {}): Promise<void> {
   const project = projectOf(card);
   // Picking up a card another computer worked on: its agent sessions don't exist here.
   if (card.machine && card.machine !== MACHINE) resume = null;
@@ -139,7 +154,12 @@ async function launch(card: Card, kind: AgentKind, prompt: string, resume: strin
     prompt = `${kind === "prep" ? prepBrief(card) : devBrief(card)}\n\n${recentActivity(card)}## Now\n\n${prompt}`;
   }
   const cwd = kind === "dev" ? card.worktree! : project.repo_path;
-  card = set(card.id, { status: "running", status_text: kind === "prep" ? "Preparando…" : "Trabajando…", machine: MACHINE, stop_req: null });
+  card = set(card.id, {
+    status: "running",
+    status_text: opts.statusText ?? (kind === "prep" ? "Preparando…" : "Trabajando…"),
+    machine: MACHINE,
+    stop_req: null,
+  });
 
   const res = await runAgent({ card, kind, prompt, cwd, repo: project.repo_path, resume });
 
@@ -164,7 +184,7 @@ async function launch(card: Card, kind: AgentKind, prompt: string, resume: strin
     return;
   }
   // You may have moved the card while the agent was finishing.
-  const expected: Column = kind === "prep" ? "preparation" : "doing";
+  const expected: Column = opts.column ?? (kind === "prep" ? "preparation" : "doing");
   if (now.column !== expected) {
     set(card.id, { status: "idle", status_text: "" });
     return;
@@ -173,9 +193,10 @@ async function launch(card: Card, kind: AgentKind, prompt: string, resume: strin
   const pending = db.takePendingInput(card.id);
   if (pending.length) {
     const resumeId = kind === "prep" ? db.getCard(card.id)!.prep_session_id : db.getCard(card.id)!.session_id;
-    return launch(db.getCard(card.id)!, kind, `Message from Pedro:\n\n${pending.join("\n\n")}`, resumeId);
+    return launch(db.getCard(card.id)!, kind, `Message from Pedro:\n\n${pending.join("\n\n")}`, resumeId, opts);
   }
 
+  if (opts.after) return opts.after(db.getCard(card.id)!, res);
   return kind === "prep" ? afterPrep(db.getCard(card.id)!, res) : afterDev(db.getCard(card.id)!, res);
 }
 
@@ -213,7 +234,7 @@ async function afterPrep(card: Card, res: RunResult): Promise<void> {
   if (res.signals.ready) {
     set(card.id, { plan: res.signals.ready.plan, files: res.signals.ready.files, status: "idle", status_text: "" });
     log(card, "system", "✅ Spec clara — pasa a Doing automáticamente.");
-    moveCard(card.id, "doing");
+    moveCard(card.id, "doing", Number.MAX_SAFE_INTEGER, "automático: la preparación ha terminado");
     return;
   }
   if (res.signals.asked || db.openQuestions(card.id).length) {
@@ -338,7 +359,7 @@ async function afterDev(card: Card, res: RunResult): Promise<void> {
   const summary = res.signals.done ?? "Listo para revisar";
   log(card, "system", `🟢 ${summary}`);
   set(card.id, { status: "idle", status_text: summary.split("\n")[0].slice(0, 120) });
-  moveCard(card.id, "review");
+  moveCard(card.id, "review", Number.MAX_SAFE_INTEGER, "automático: el agente ha terminado");
 }
 
 function rebasePrompt(base: string) {
@@ -348,6 +369,59 @@ function rebasePrompt(base: string) {
 // ---------------------------------------------------------------------------
 // Merge
 // ---------------------------------------------------------------------------
+
+/** The merge couldn't happen: back to To Review with the reason. */
+function bounceToReview(card: Card, msg: string) {
+  const c = db.placeCard(card.id, "review", Number.MAX_SAFE_INTEGER);
+  emitColumn(c.project_id, "review");
+  emitColumn(c.project_id, "merged");
+  logMove(c, "merged", "review", "automático: no se pudo mergear");
+  log(c, "system", `⛔ No se pudo mergear: ${msg}`);
+  set(c.id, { status: "error", status_text: msg });
+}
+
+const mergeFixAttempts = new Map<string, number>();
+
+function mergeConflictPrompt(base: string) {
+  return `MERGE CONFLICT — REBASE needed: Pedro asked to merge this card, but your branch conflicts with the latest "${base}" (other work was merged meanwhile). Rebase onto "${base}" now (\`git rebase ${base}\`), resolve every conflict so BOTH your feature and the merged work keep working, \`git add\` and \`git rebase --continue\` until done, run the tests, then call report_done. Don't change anything else: Trellai merges your branch as soon as you finish.`;
+}
+
+/**
+ * The card's branch conflicts with the base branch while merging: its agent rebases and
+ * resolves the conflict in the card's worktree (never in your checkout), then the merge
+ * runs again by itself. The card stays in Merged all along.
+ */
+async function resolveMergeConflict(card: Card, project: Project): Promise<void> {
+  const base = project.base_branch;
+  const n = (mergeFixAttempts.get(card.id) ?? 0) + 1;
+  mergeFixAttempts.set(card.id, n);
+  if (n > MAX_REBASE_ATTEMPTS) {
+    mergeFixAttempts.delete(card.id);
+    return bounceToReview(card, `Conflictos con ${base} sin resolver tras ${MAX_REBASE_ATTEMPTS} intentos`);
+  }
+  log(card, "system", `🔀 Conflicto al mergear en ${base}. El agente lo resuelve ahora y el merge sigue solo en cuanto termine.`);
+  return launch(card, "dev", mergeConflictPrompt(base), card.session_id, {
+    column: "merged",
+    statusText: "Resolviendo conflicto para mergear…",
+    after: async (c) => {
+      if (db.openQuestions(c.id).length) {
+        // Needs Pedro: carry on like any card in Doing (answer, then review and merge again).
+        const moved = db.placeCard(c.id, "doing", Number.MAX_SAFE_INTEGER);
+        emitColumn(moved.project_id, "doing");
+        emitColumn(moved.project_id, "merged");
+        logMove(moved, "merged", "doing", "automático: el agente necesita preguntarte algo para resolver el conflicto");
+        set(c.id, { status: "waiting", status_text: "Tiene preguntas para ti (conflicto al mergear)" });
+        return;
+      }
+      git.commitAll(c.worktree!, `${c.title}: conflicto con ${base} resuelto`);
+      // No-op when the agent already rebased; if it didn't manage to, try again.
+      if (!git.rebaseOnto(c.worktree!, base).ok) return resolveMergeConflict(db.getCard(c.id)!, project);
+      if (c.branch) await remote.pushCardBranch(c.worktree!, c.branch);
+      log(c, "system", "✅ Conflicto resuelto — sigo con el merge.");
+      return merge(db.getCard(c.id)!);
+    },
+  });
+}
 
 async function merge(card: Card) {
   const project = projectOf(card);
@@ -360,13 +434,7 @@ async function merge(card: Card) {
     set(card.id, { status: "idle", status_text: "Sin rama — nada que mergear" });
     return;
   }
-  const bounce = (msg: string) => {
-    const c = db.placeCard(card.id, "review", Number.MAX_SAFE_INTEGER);
-    emitColumn(c.project_id, "review");
-    emitColumn(c.project_id, "merged");
-    log(c, "system", `⛔ No se pudo mergear: ${msg}`);
-    set(c.id, { status: "error", status_text: msg });
-  };
+  const bounce = (msg: string) => bounceToReview(card, msg);
   if (assistantRunning(card.project_id, "do")) return bounce("El chat Directo está cambiando el repo; vuelve a mergear cuando termine.");
   if (getPreview(project.id)) {
     try {
@@ -380,7 +448,31 @@ async function merge(card: Card) {
   return repoLock(repo, () => mergeLocked(card, project, bounce));
 }
 
+/**
+ * Uncommitted edits in the main checkout (yours, or another Claude working there) don't block
+ * the merge: they're stashed for the pull + merge and put back afterwards.
+ */
 async function mergeLocked(card: Card, project: Project, bounce: (msg: string) => void) {
+  const repo = project.repo_path;
+  if (!card.branch) return;
+  const dirty = git.trackedDirty(repo).map(git.porcelainPath);
+  const stash = git.stashSave(repo, `trellai: tus cambios mientras se mergeaba "${card.title}"`);
+  if (stash) log(card, "system", `📦 Aparto tus cambios sin commitear (${dirty.slice(0, 4).join(", ")}${dirty.length > 4 ? "…" : ""}) para mergear; los vuelvo a poner al terminar.`);
+  try {
+    await mergeClean(card, project, bounce);
+  } finally {
+    if (stash) {
+      try {
+        git.stashRestore(repo, stash);
+        log(card, "system", "📦 Tus cambios sin commitear vuelven a estar en tu repo.");
+      } catch {
+        log(card, "system", `⚠️ Tus cambios sin commitear chocan con lo mergeado: siguen a salvo en el stash "tus cambios mientras se mergeaba…" (git stash list / git stash pop).`);
+      }
+    }
+  }
+}
+
+async function mergeClean(card: Card, project: Project, bounce: (msg: string) => void) {
   const repo = project.repo_path;
   if (!card.branch) return;
 
@@ -399,8 +491,21 @@ async function mergeLocked(card: Card, project: Project, bounce: (msg: string) =
   }
 
   // 3. Merge, 4. push.
+  // Untracked files the card also adds would stop the merge: park them, then try to put them back.
+  const clashes = git.untrackedClashes(repo, card.branch);
+  const parked = git.stashSave(repo, `trellai: tus ficheros sin commitear que "${card.title}" también trae`, clashes);
+  if (parked) log(card, "system", `📦 Aparto ${clashes.join(", ")}: no están en git y la tarjeta también los trae.`);
   const r = git.mergeIntoBase(repo, project.base_branch, card.branch, `Merge "${card.title}" (trellai)`);
+  if (parked) {
+    try {
+      git.stashRestore(repo, parked, { fromClean: false });
+      log(card, "system", `📦 ${clashes.join(", ")}: tu versión vuelve a estar en tu repo.`);
+    } catch {
+      log(card, "system", `⚠️ ${clashes.join(", ")}: ahora lo trae ${project.base_branch}, así que dejo tu versión sin commitear en el stash "tus ficheros sin commitear que…" (git stash list / git stash show -p).`);
+    }
+  }
   if (r.ok) {
+    mergeFixAttempts.delete(card.id);
     git.removeWorktree(repo, local ? card.worktree : null, card.branch);
     remote.deleteRemoteBranch(repo, card.branch);
     log(card, "system", `✅ Mergeada en ${project.base_branch} (${r.sha.slice(0, 7)})`);
@@ -416,12 +521,9 @@ async function mergeLocked(card: Card, project: Project, bounce: (msg: string) =
     return;
   }
   if (r.reason === "conflict") {
-    log(card, "system", `🔀 Conflicto al mergear en ${project.base_branch}. Vuelve a Doing para que el agente lo resuelva.`);
-    const c = db.placeCard(card.id, "doing", Number.MAX_SAFE_INTEGER);
-    emitColumn(c.project_id, "doing");
-    emitColumn(c.project_id, "merged");
-    // runs for minutes: start it outside the repo lock
-    outsideLocks(() => bg(startDev(c, rebasePrompt(project.base_branch)), c));
+    // The card stays in Merged: its agent resolves the conflict and the merge carries on by itself.
+    // Runs for minutes: start it outside the repo lock.
+    outsideLocks(() => bg(resolveMergeConflict(db.getCard(card.id)!, project), card));
     return;
   }
   bounce(r.error);
@@ -458,7 +560,7 @@ export function sendMessage(cardId: string, text: string) {
       const c = db.placeCard(card.id, "doing", Number.MAX_SAFE_INTEGER);
       emitColumn(c.project_id, "doing");
       emitColumn(c.project_id, "review");
-      log(c, "system", "↩️ Cambios pedidos — vuelve a Doing.");
+      logMove(c, "review", "doing", "has pedido cambios");
       bg(startDev(c, `Pedro reviewed your work and requests changes:\n\n${text}\n\nApply them, then call report_done.`), c);
       return;
     }
@@ -501,6 +603,7 @@ export function retry(cardId: string) {
   if (isRunning(card.id)) return;
   if (runningElsewhere(card)) throw new Error(`Está trabajando en ${card.machine}.`);
   rebaseAttempts.delete(card.id);
+  mergeFixAttempts.delete(card.id);
   bg(onEnter(card, card.column), card);
 }
 

@@ -12,6 +12,8 @@
 import { createSdkMcpServer, query, tool, type HookCallback, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -38,6 +40,51 @@ export function modelLabel(spec: string | null | undefined): string {
   const { engine, model } = parseModel(spec);
   if (engine === "codex") return model ? `GPT · ${model}` : "GPT (Codex)";
   return model ? `Claude ${model[0].toUpperCase()}${model.slice(1)}` : "Claude";
+}
+
+export interface ClaudeModel {
+  /** what we store after "claude:" ("default" = no model) */
+  value: string;
+  /** exact model id it runs today, e.g. "claude-opus-5-5" */
+  resolved: string | null;
+  /** e.g. "Opus 5.5" */
+  label: string;
+  description: string;
+}
+
+let claudeModelsCache: { at: number; models: Promise<ClaudeModel[]> } | null = null;
+
+/** Models your Claude Code login offers, with the exact version each alias points to (cached for an hour). */
+export function claudeModels(): Promise<ClaudeModel[]> {
+  if (claudeModelsCache && Date.now() - claudeModelsCache.at < 3_600_000) return claudeModelsCache.models;
+  const models = (async () => {
+    const abort = new AbortController();
+    // Streaming input that never sends anything: we only ask the session for its model list.
+    async function* idle(): AsyncGenerator<never> {
+      await new Promise((r) => abort.signal.addEventListener("abort", r));
+    }
+    const q = query({ prompt: idle(), options: { abortController: abort, cwd: process.cwd() } });
+    try {
+      const list = await q.supportedModels();
+      return list.map((m) => ({ value: m.value, resolved: m.resolvedModel ?? null, label: m.displayName, description: m.description }));
+    } finally {
+      abort.abort();
+    }
+  })();
+  models.catch(() => (claudeModelsCache = null));
+  claudeModelsCache = { at: Date.now(), models };
+  return models;
+}
+
+/** The model `codex exec` uses when none is given (from ~/.codex/config.toml). */
+export function codexDefaultModel(): string | null {
+  try {
+    const toml = readFileSync(join(process.env.CODEX_HOME || join(homedir(), ".codex"), "config.toml"), "utf8");
+    // top-level key only: stop at the first [table]
+    return toml.split(/^\s*\[/m)[0].match(/^\s*model\s*=\s*"([^"]+)"/m)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Session ids are stored with the engine as prefix ("codex:<id>"); Claude ids are stored bare. */
@@ -67,6 +114,8 @@ export interface EngineRun {
   signal: AbortSignal;
   onText: (text: string) => void;
   onTool: (summary: string) => void;
+  /** The exact model this run uses, e.g. "claude-opus-5-5" or "codex:gpt-5-codex". */
+  onModel?: (model: string) => void;
 }
 
 export interface EngineResult {
@@ -133,7 +182,8 @@ async function runClaude(r: EngineRun, model: string | undefined, resume: string
     });
     for await (const m of q as AsyncIterable<SDKMessage>) {
       if ("session_id" in m && m.session_id) sessionId = m.session_id;
-      if (m.type === "assistant" && !m.parent_tool_use_id) {
+      if (m.type === "system" && m.subtype === "init") r.onModel?.(m.model);
+      else if (m.type === "assistant" && !m.parent_tool_use_id) {
         for (const block of m.message.content) {
           if (block.type === "text" && block.text.trim()) r.onText(block.text.trim());
           if (block.type === "tool_use" && !block.name.startsWith("mcp__trellai__"))
@@ -226,6 +276,7 @@ async function runCodex(r: EngineRun, model: string | undefined, resume: string 
   let sessionId: string | null = resume ? `codex:${resume}` : null;
   let error: string | undefined;
   const stderr: string[] = [];
+  r.onModel?.(`codex:${model ?? codexDefaultModel() ?? "default"}`);
 
   try {
     await new Promise<void>((resolve) => {

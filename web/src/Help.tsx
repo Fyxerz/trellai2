@@ -1,9 +1,10 @@
-const GROUPS: { title: string; keys: [string, string][] }[] = [
+import { MOD, readPreference, useDialogFocus } from "./preferences";
+const groups = (): { title: string; keys: [string, string][] }[] => [
   {
     title: "General",
     keys: [
       ["p", "Todos los proyectos (y volver)"],
-      ["⌘B", "Abrir / cerrar la barra de proyectos"],
+      [`${MOD}+B`, "Abrir / cerrar la barra de proyectos"],
       ["[  ]", "Proyecto anterior / siguiente"],
       ["t", "Asistente: ideas → tarjetas"],
       ["d", "Directo: cambios pequeños sin tarjeta"],
@@ -43,22 +44,24 @@ const GROUPS: { title: string; keys: [string, string][] }[] = [
       ["e", "Editar spec"],
       ["c", "Añadir checkpoint"],
       ["i", "Escribir al agente"],
-      ["Enter", "Enviar mensaje / pedir cambios"],
-      ["⌘Enter", "Nueva línea en el mensaje"],
+      [readPreference("send", "enter") === "mod" ? `${MOD}+Enter` : "Enter", "Enviar mensaje / pedir cambios"],
+      ["Shift+Enter", "Nueva línea en el mensaje"],
+      [`${MOD}+Enter`, "Guardar spec inmediatamente"],
     ],
   },
 ];
 
 export function Help({ onClose }: { onClose: () => void }) {
+  const ref = useDialogFocus();
   return (
     <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-zinc-900 p-5 ring-1 ring-white/[0.08] shadow-[var(--shadow-pop)]">
+      <div ref={ref} role="dialog" aria-modal="true" aria-label="Atajos de teclado" onClick={(e) => e.stopPropagation()} className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]">
         <div className="mb-4 flex items-center">
           <h2 className="text-base font-semibold text-zinc-100">Atajos de teclado</h2>
           <button onClick={onClose} className="ml-auto text-zinc-500 hover:text-zinc-200">✕</button>
         </div>
         <div className="grid gap-5 sm:grid-cols-2">
-          {GROUPS.map((g) => (
+          {groups().map((g) => (
             <div key={g.title}>
               <h3 className="mb-2 text-xs font-semibold tracking-wide text-zinc-500 uppercase">{g.title}</h3>
               <ul className="space-y-1.5">

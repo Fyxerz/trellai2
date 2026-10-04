@@ -6,13 +6,13 @@ import { streamSSE } from "hono/streaming";
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { COLUMNS, isColumn, type ServerEvent } from "../shared/types.js";
+import { basename, dirname, join, parse, resolve } from "node:path";
+import { COLUMNS, isColumn, TAG_COLORS, type ServerEvent } from "../shared/types.js";
 import * as db from "./db.js";
-import { emitCard, emitCardDeleted, emitCheckpoints, emitNote, subscribe } from "./events.js";
+import { emitCard, emitCardDeleted, emitCheckpoints, emitMessage, emitNote, emitTags, subscribe } from "./events.js";
 import * as git from "./git.js";
 import * as wf from "./workflow.js";
-import { codexStatus, mcpCallTool, mcpListTools } from "./engine.js";
+import { claudeModels, codexDefaultModel, codexStatus, mcpCallTool, mcpListTools } from "./engine.js";
 import { startPreview, stopPreview } from "./preview.js";
 import { MACHINE } from "./machine.js";
 import * as remote from "./remote.js";
@@ -26,7 +26,7 @@ app.onError((err, c) => {
   return c.json({ error: err.message }, 400);
 });
 
-const expandHome = (p: string) => resolve(p.replace(/^~(?=$|\/)/, homedir()));
+const expandHome = (p: string) => resolve(p.replace(/^~(?=$|[\\/])/, homedir()));
 
 // ---------- folder browser ----------
 
@@ -46,7 +46,7 @@ app.get("/api/fs", (c) => {
           return false;
         }
       })
-      .map((p) => ({ name: p.split("/").pop()!, path: p, isRepo: existsSync(join(p, ".git")) }))
+      .map((p) => ({ name: basename(p), path: p, isRepo: existsSync(join(p, ".git")) }))
       .sort((a, b) => a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
   } catch (err) {
     return c.json({ error: `Sin permiso para leer ${path}` }, 400);
@@ -54,7 +54,7 @@ app.get("/api/fs", (c) => {
   const isRepo = existsSync(join(path, ".git"));
   return c.json({
     path,
-    parent: path === "/" ? null : dirname(path),
+    parent: path === parse(path).root ? null : dirname(path),
     home: homedir(),
     isRepo,
     branch: isRepo ? safe(() => git.currentBranch(path)) : null,
@@ -104,7 +104,7 @@ app.post("/api/projects", async (c) => {
   const twin = db.listProjects().find((p) => !p.repo_path && git.sameRemoteSync(p.remote_url, remoteUrl));
   if (twin) return c.json(db.updateProject(twin.id, { repo_path: repo }));
   const base = body.base_branch?.trim() || git.currentBranch(repo);
-  const name = body.name?.trim() || repo.split("/").pop()!;
+  const name = basename(body.name?.trim() || repo);
   return c.json(db.createProject({ name, repo_path: repo, base_branch: base, remote_url: remoteUrl }));
 });
 
@@ -173,7 +173,10 @@ app.patch("/api/projects/:id", async (c) => {
 
 // ---------- engines / models ----------
 
-app.get("/api/engines", async (c) => c.json({ claude: { installed: true }, codex: await codexStatus() }));
+app.get("/api/engines", async (c) => {
+  const [models, codex] = await Promise.all([claudeModels().catch(() => []), codexStatus()]);
+  return c.json({ claude: { installed: true, models }, codex: { ...codex, defaultModel: codexDefaultModel() } });
+});
 
 // Codex reaches Trellai's tools through server/mcp-bridge.mjs, which calls these.
 app.get("/api/internal/mcp/:token/tools", (c) => {
@@ -305,6 +308,51 @@ app.get("/api/projects/:id/events", (c) => {
   });
 });
 
+// ---------- tags ----------
+
+const tagBody = (b: { name?: string; color?: string }) => ({
+  name: b.name?.trim().slice(0, 40) || undefined,
+  color: b.color && /^#[0-9a-f]{6}$/i.test(b.color) ? b.color : undefined,
+});
+
+app.get("/api/projects/:id/tags", (c) => c.json(db.getProject(c.req.param("id"))?.tags ?? []));
+
+app.post("/api/projects/:id/tags", async (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project) return c.json({ error: "Proyecto no encontrado" }, 404);
+  const { name, color } = tagBody(await c.req.json());
+  if (!name) return c.json({ error: "Falta el nombre de la etiqueta" }, 400);
+  if (project.tags.some((t) => t.name.toLowerCase() === name.toLowerCase())) return c.json({ error: `Ya existe la etiqueta "${name}"` }, 400);
+  const tag = db.ensureTag(project.id, name, color ?? TAG_COLORS[project.tags.length % TAG_COLORS.length]);
+  emitTags(project.id, db.getProject(project.id)!.tags);
+  return c.json(tag);
+});
+
+app.patch("/api/projects/:id/tags/:tagId", async (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project) return c.json({ error: "Proyecto no encontrado" }, 404);
+  const patch = tagBody(await c.req.json());
+  const id = c.req.param("tagId");
+  if (patch.name && project.tags.some((t) => t.id !== id && t.name.toLowerCase() === patch.name!.toLowerCase())) {
+    return c.json({ error: `Ya existe la etiqueta "${patch.name}"` }, 400);
+  }
+  const tags = db.setProjectTags(project.id, project.tags.map((t) => (t.id === id ? { ...t, name: patch.name ?? t.name, color: patch.color ?? t.color } : t)));
+  emitTags(project.id, tags);
+  return c.json(tags.find((t) => t.id === id) ?? null);
+});
+
+/** Delete a tag from the project and take it off every card. */
+app.delete("/api/projects/:id/tags/:tagId", (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project) return c.json({ error: "Proyecto no encontrado" }, 404);
+  const id = c.req.param("tagId");
+  for (const card of db.listCards(project.id).filter((k) => k.tags.includes(id))) {
+    emitCard(db.updateCard(card.id, { tags: card.tags.filter((t) => t !== id) }));
+  }
+  emitTags(project.id, db.setProjectTags(project.id, project.tags.filter((t) => t.id !== id)));
+  return c.json({ ok: true });
+});
+
 // ---------- cards ----------
 
 app.post("/api/cards", async (c) => {
@@ -317,13 +365,41 @@ app.post("/api/cards", async (c) => {
   return c.json(card);
 });
 
+/** Copy a card (title, spec, checkpoints and tags) into another project's backlog. */
+app.post("/api/cards/:id/copy", async (c) => {
+  const source = db.getCard(c.req.param("id"));
+  if (!source) return c.json({ error: "Tarjeta no encontrada" }, 404);
+  const { project_id } = await c.req.json<{ project_id: string }>();
+  if (!db.getProject(project_id)) return c.json({ error: "Proyecto no encontrado" }, 404);
+  let card = db.createCard({ project_id, title: source.title, spec: source.spec, column: "backlog" });
+  for (const cp of db.listCheckpoints(source.id)) db.addCheckpoint(card.id, cp.text, cp.source);
+  // Tags belong to a project: reuse the target's tag with the same name, or create it.
+  const sourceTags = db.getProject(source.project_id)?.tags ?? [];
+  const tags = source.tags.map((id) => sourceTags.find((t) => t.id === id)).filter((t) => !!t);
+  if (tags.length) {
+    card = db.updateCard(card.id, { tags: tags.map((t) => db.ensureTag(project_id, t.name, t.color).id) });
+    emitTags(project_id, db.getProject(project_id)!.tags);
+  }
+  const from = db.getProject(source.project_id)!;
+  const to = db.getProject(project_id)!;
+  emitMessage(source.project_id, db.addMessage(source.id, "system", `📋 Copiada al proyecto ${basename(to.name)} (Backlog)`));
+  emitMessage(project_id, db.addMessage(card.id, "system", `📋 Copia de "${source.title}" del proyecto ${basename(from.name)}`));
+  emitCard(card);
+  emitCheckpoints(card.project_id, card.id);
+  return c.json(card);
+});
+
 app.patch("/api/cards/:id", async (c) => {
-  const body = await c.req.json<{ title?: string; spec?: string; plan?: string; model?: string | null }>();
-  const card = db.updateCard(c.req.param("id"), {
+  const body = await c.req.json<{ title?: string; spec?: string; plan?: string; model?: string | null; tags?: string[] }>();
+  const before = db.getCard(c.req.param("id"));
+  if (!before) return c.json({ error: "Tarjeta no encontrada" }, 404);
+  const known = new Set(db.getProject(before.project_id)?.tags.map((t) => t.id));
+  const card = db.updateCard(before.id, {
     title: body.title?.trim() || undefined,
     spec: body.spec,
     plan: body.plan,
     model: body.model === undefined ? undefined : body.model || null,
+    tags: Array.isArray(body.tags) ? [...new Set(body.tags)].filter((id) => known.has(id)) : undefined,
   });
   emitCard(card);
   return c.json(card);
@@ -390,8 +466,7 @@ app.post("/api/cards/:id/preview", async (c) => {
     const f = await remote.fetchCardBranch(project.repo_path, card.branch);
     if (!f.ok) return c.json({ error: f.message }, 400);
   }
-  startPreview(card);
-  return c.json({ ok: true });
+  return c.json(startPreview(card));
 });
 
 app.post("/api/projects/:id/preview/stop", (c) => c.json(stopPreview(c.req.param("id"))));
@@ -460,4 +535,5 @@ const hostname = process.env.HOST ?? "127.0.0.1";
 serve({ fetch: app.fetch, port, hostname }, () => {
   console.log(`Trellai → http://${hostname === "0.0.0.0" ? "localhost" : hostname}:${port}`);
   if (process.env.TRELLAI_FAKE_AGENT) console.log("(modo agente simulado)");
+  else claudeModels().catch(() => {}); // exact versions for the model pickers
 });

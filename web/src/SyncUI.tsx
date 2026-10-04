@@ -64,8 +64,8 @@ export function BranchStatus({ project, board }: { project: Project; board: Boar
     <button
       onClick={out ? sync : undefined}
       title={title}
-      className={`ml-1 hidden items-center gap-1 rounded-md bg-white/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-zinc-500 lg:flex ${
-        out ? "cursor-pointer hover:bg-white/[0.08] hover:text-zinc-300" : "cursor-default"
+      className={`ml-1 hidden items-center gap-1 rounded-md bg-ui-ink/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-zinc-500 lg:flex ${
+        out ? "cursor-pointer hover:bg-ui-ink/[0.08] hover:text-zinc-300" : "cursor-default"
       }`}
     >
       <GitBranch className="h-3 w-3" />

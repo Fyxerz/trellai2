@@ -36,6 +36,7 @@ const LOCAL: Record<string, string[]> = {
     "preview_card_id",
     "preview_prev",
     "preview_sha",
+    "preview_stash",
     "assistant_session_id",
     "assistant_pending",
     "direct_session_id",

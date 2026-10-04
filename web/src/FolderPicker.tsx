@@ -75,24 +75,22 @@ export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRe
   return (
     <div className="overflow-hidden rounded-lg ring-1 ring-zinc-700">
       {/* path bar */}
-      <form
+      <div
         className="flex items-center gap-1 border-b border-zinc-800 bg-zinc-950 px-2 py-1.5"
-        onSubmit={(e) => {
-          e.preventDefault();
-          go(typed);
-        }}
       >
         <button type="button" disabled={!listing?.parent} onClick={() => listing?.parent && go(listing.parent)} className="rounded px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-800 disabled:opacity-30" title="Subir">
           ↑
         </button>
         <input
+          aria-label="Ruta de carpeta"
+          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); if (!e.nativeEvent.isComposing) go(typed); } }}
           value={typed}
           onChange={(e) => setTyped(e.target.value)}
           className="min-w-0 flex-1 bg-transparent px-1 font-mono text-xs text-zinc-300 outline-none"
           spellCheck={false}
         />
         {loading && <Spinner className="h-3 w-3 text-zinc-500" />}
-      </form>
+      </div>
 
       {/* breadcrumbs + shortcuts */}
       <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 border-b border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs">
@@ -116,6 +114,7 @@ export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRe
       {/* filter */}
       {(listing?.entries.length ?? 0) > 8 && (
         <input
+          onKeyDown={e => { if (e.key === "Enter") e.preventDefault(); }}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filtrar…"
@@ -169,14 +168,18 @@ export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRe
 
 function breadcrumbs(path: string, home: string) {
   const out: { label: string; path: string }[] = [];
+  path = path.replace(/\\/g, "/");
+  home = home.replace(/\\/g, "/");
   let rest = path;
   if (path === home || path.startsWith(home + "/")) {
     out.push({ label: "~", path: home });
     rest = path.slice(home.length);
   } else {
-    out.push({ label: "/", path: "/" });
+    const drive = path.match(/^[A-Za-z]:/);
+    out.push({ label: drive ? drive[0] : "/", path: drive ? drive[0] + "/" : "/" });
+    if (drive) rest = path.slice(3);
   }
-  let acc = out[0].path === "/" ? "" : home;
+  let acc = out[0].path.replace(/\/$/, "");
   for (const part of rest.split("/").filter(Boolean)) {
     acc += "/" + part;
     out.push({ label: part, path: acc });
