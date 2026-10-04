@@ -313,7 +313,11 @@ function CardItem({
     <div
       ref={ref}
       onClick={onClick}
-      style={{ boxShadow: dragging ? "var(--shadow-pop)" : "var(--shadow-card)" }}
+      style={{
+        boxShadow: dragging ? "var(--shadow-pop)" : "var(--shadow-card)",
+        // Teal wash over the card's own background (both themes) so the previewed card stands out.
+        backgroundImage: previewing ? "linear-gradient(rgb(45 212 191 / 0.16), rgb(45 212 191 / 0.16))" : undefined,
+      }}
       className={[
         "board-card group/card relative overflow-hidden rounded-[var(--radius-card)] border bg-zinc-900 px-3 py-2.5 transition-all duration-150",
         card.status === "running" ? "working" : "",
@@ -321,7 +325,9 @@ function CardItem({
           ? "border-indigo-400/70 ring-2 ring-indigo-400/25"
           : selected
             ? "border-indigo-400/40"
-            : "border-ui-ink/[0.06] hover:-translate-y-px hover:border-ui-ink/[0.12] hover:bg-zinc-800",
+            : previewing
+              ? "border-teal-400/50 hover:-translate-y-px hover:border-teal-400/70"
+              : "border-ui-ink/[0.06] hover:-translate-y-px hover:border-ui-ink/[0.12] hover:bg-zinc-800",
         dragging ? "rotate-[1.5deg]" : "",
         merged ? "opacity-55 hover:opacity-90" : "",
       ].join(" ")}
