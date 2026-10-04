@@ -223,6 +223,8 @@ export function Board({
                               dragging={ds.isDragging}
                               selected={card.id === selectedId}
                               cursor={focused && cursor.id === card.id}
+                              follow={card.id === (focused && cursor.id ? cursor.id : selectedId)}
+                              index={i}
                               previewing={previewCardId === card.id}
                               tags={cardTags(card, tags)}
                               onAdvance={(to) => {
@@ -276,6 +278,8 @@ function CardItem({
   dragging,
   selected,
   cursor,
+  follow,
+  index,
   previewing,
   tags,
   onAdvance,
@@ -285,6 +289,9 @@ function CardItem({
   dragging: boolean;
   selected: boolean;
   cursor: boolean;
+  /** the card the view should keep in sight: the keyboard cursor, or else the open one */
+  follow: boolean;
+  index: number;
   previewing: boolean;
   tags: Tag[];
   onAdvance: (to: Column) => void;
@@ -299,9 +306,13 @@ function CardItem({
       ? { label: modelLabel(card.model, true), title: `Modelo elegido: ${modelLabel(card.model)}`, codex: card.model.startsWith("codex") }
       : null;
   const ref = useRef<HTMLDivElement>(null);
+  // Keep it in sight when it gets the focus and whenever it moves (keyboard, advance button, an agent).
+  // Next frame, so the board has laid out its new spot.
   useEffect(() => {
-    if (cursor) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [cursor]);
+    if (!follow || dragging) return;
+    const raf = requestAnimationFrame(() => ref.current?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+    return () => cancelAnimationFrame(raf);
+  }, [follow, dragging, card.column, index]);
   const merged = card.column === "merged";
   const accent = card.status === "waiting" ? "#a78bfa" : card.status === "error" ? "#f87171" : null;
   const done = card.checkpoints_total > 0 && card.checkpoints_done === card.checkpoints_total;
