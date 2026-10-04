@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
-import { GripVertical, Plus, Trash2, X } from "lucide-react";
+import { Check, GripVertical, Pencil, Plus, Trash2, X } from "lucide-react";
 import { TAG_COLORS, TAG_PALETTE, type Tag } from "../../shared/types";
 import { api } from "./api";
 import { confirmDialog } from "./Confirm";
-import { ModelPicker } from "./models";
+import { ModelPicker, modelLabel } from "./models";
 import { reportError } from "./notifications";
 import { setTagHover, tagLanded } from "./tagDrag";
 
@@ -32,6 +32,14 @@ export function TagManager({
   const [picking, setPicking] = useState<string | null>(null);
   const [addingModel, setAddingModel] = useState<string | null>(null);
   const [name, setName] = useState("");
+  /** on the board the tags show as compact chips (easy to drag) until "Editar" reveals the fields; in a card's detail they're always editable */
+  const [editingState, setEditing] = useState(false);
+  const editing = !draggable || editingState;
+  const toggleEditing = () => {
+    setPicking(null);
+    setAddingModel(null);
+    setEditing(!editingState);
+  };
   /** the tag being dragged onto a card, and where the pointer is */
   const [drag, setDrag] = useState<{ tag: Tag; x: number; y: number; over: boolean } | null>(null);
   const dragging = useRef(false);
@@ -135,110 +143,141 @@ export function TagManager({
         }
       }}
     >
-      <p className="text-xs text-zinc-500">
-        {draggable && "Arrastra una etiqueta sobre una tarjeta para ponérsela. "}
-        Una tarjeta usa el modelo de la primera etiqueta que se le puso con modelo; si ninguna tiene, el del proyecto (salvo que la tarjeta elija el suyo).
-      </p>
-      <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(19rem,100%),1fr))] gap-1.5">
-        {tags.map((t) => (
-          <li
-            key={t.id}
-            onPointerDown={draggable ? (e) => startDrag(e, t) : undefined}
-            className={`rounded-xl bg-zinc-950/60 p-1.5 ring-1 ring-ui-ink/[0.05] transition ${draggable ? "cursor-grab" : ""} ${drag?.tag.id === t.id ? "opacity-40" : ""}`}
-            title={draggable ? "Arrastra a una tarjeta para ponerle la etiqueta" : undefined}
+      <div className="flex items-start gap-2">
+        <p className="flex-1 text-xs text-zinc-500">
+          {draggable && "Arrastra una etiqueta sobre una tarjeta para ponérsela. "}
+          Una tarjeta usa el modelo de la primera etiqueta que se le puso con modelo; si ninguna tiene, el del proyecto (salvo que la tarjeta elija el suyo).
+        </p>
+        {draggable && tags.length > 0 && (
+          <button
+            onClick={toggleEditing}
+            className={`flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-xs ring-1 transition ${editing ? "text-accent ring-indigo-500/30 hover:bg-indigo-500/10" : "text-zinc-400 ring-ui-ink/[0.08] hover:bg-ui-ink/5 hover:text-zinc-200"}`}
+            title={editing ? "Volver a la vista compacta" : "Renombrar, cambiar color o modelo, o borrar etiquetas"}
+            aria-pressed={editing}
           >
-            <div className="tag-editor-row flex items-center gap-1.5">
-              {draggable && (
-                <GripVertical className="-mr-0.5 h-3.5 w-3.5 shrink-0 text-zinc-600" aria-hidden />
-              )}
-              <button
-                onClick={() => setPicking(picking === t.id ? null : t.id)}
-                className="h-5 w-5 shrink-0 rounded-md ring-1 ring-black/20 transition hover:scale-105"
-                style={{ background: t.color }}
-                title="Cambiar color"
-                aria-label={`Cambiar color de ${t.name}`}
-                aria-expanded={picking === t.id}
-              />
-              <input
-                key={t.name}
-                defaultValue={t.name}
-                maxLength={40}
-                onBlur={(e) => rename(t, e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                  else if (e.key === "Escape") {
-                    e.stopPropagation();
-                    (e.target as HTMLInputElement).value = t.name;
-                    (e.target as HTMLInputElement).blur();
-                  }
-                }}
-                aria-label={`Nombre de ${t.name}`}
-                className="ui-field ui-control min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-0.5 text-sm text-zinc-100 outline-none ring-ui-ink/[0.08] hover:ring-1 focus:ring-1 focus:ring-indigo-500/60"
-              />
-              {t.model || addingModel === t.id ? (
-                <>
-                  <ModelPicker
-                    value={t.model ?? null}
-                    inheritLabel="Sin modelo"
-                    title="Modelo con el que se desarrollan las tarjetas con esta etiqueta"
-                    onChange={(model) => {
-                      setAddingModel(null);
-                      void patch(t, { model });
-                    }}
-                    className="model-picker w-40 shrink-0 max-w-full"
-                  />
-                  <button
-                    onClick={() => {
-                      setAddingModel(null);
-                      if (t.model) void patch(t, { model: null });
-                    }}
-                    className="rounded p-1 text-zinc-600 transition hover:bg-ui-ink/5 hover:text-zinc-200"
-                    title="Quitar el modelo de esta etiqueta"
-                    aria-label={`Quitar modelo de ${t.name}`}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </>
-              ) : (
+            {editing ? <Check className="h-3.5 w-3.5" /> : <Pencil className="h-3 w-3" />}
+            {editing ? "Hecho" : "Editar"}
+          </button>
+        )}
+      </div>
+      {!editing ? (
+        <ul className="flex flex-wrap gap-1.5">
+          {tags.map((t) => (
+            <li
+              key={t.id}
+              onPointerDown={(e) => startDrag(e, t)}
+              className={`flex max-w-full cursor-grab select-none items-center gap-1.5 rounded-lg bg-zinc-950/60 px-2 py-1 text-sm text-zinc-100 ring-1 ring-ui-ink/[0.05] transition hover:ring-ui-ink/[0.15] ${drag?.tag.id === t.id ? "opacity-40" : ""}`}
+              title="Arrastra a una tarjeta para ponerle la etiqueta"
+            >
+              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: t.color }} aria-hidden />
+              <span className="truncate">{t.name}</span>
+              {t.model && <span className="shrink-0 rounded bg-ui-ink/5 px-1 text-[10px] text-zinc-400">{modelLabel(t.model, true)}</span>}
+            </li>
+          ))}
+          {!tags.length && <li className="px-2 py-1 text-sm text-zinc-500">Aún no hay etiquetas.</li>}
+        </ul>
+      ) : (
+        <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(19rem,100%),1fr))] gap-1.5">
+          {tags.map((t) => (
+            <li
+              key={t.id}
+              onPointerDown={draggable ? (e) => startDrag(e, t) : undefined}
+              className={`rounded-xl bg-zinc-950/60 p-1.5 ring-1 ring-ui-ink/[0.05] transition ${draggable ? "cursor-grab" : ""} ${drag?.tag.id === t.id ? "opacity-40" : ""}`}
+              title={draggable ? "Arrastra a una tarjeta para ponerle la etiqueta" : undefined}
+            >
+              <div className="tag-editor-row flex items-center gap-1.5">
+                {draggable && (
+                  <GripVertical className="-mr-0.5 h-3.5 w-3.5 shrink-0 text-zinc-600" aria-hidden />
+                )}
                 <button
-                  onClick={() => setAddingModel(t.id)}
-                  className="flex shrink-0 items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px] text-zinc-500 ring-1 ring-ui-ink/[0.08] transition hover:bg-ui-ink/5 hover:text-zinc-200"
-                  title="Asignar un modelo a esta etiqueta"
-                >
-                  <Plus className="h-3 w-3" /> Modelo
-                </button>
-              )}
-              <button
-                onClick={() => remove(t)}
-                className="rounded p-1 text-zinc-600 transition hover:bg-red-500/10 hover:text-danger"
-                title="Borrar etiqueta"
-                aria-label={`Borrar etiqueta ${t.name}`}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </div>
-            {picking === t.id && (
-              <div className="mt-2 grid grid-cols-12 gap-1.5 px-1 pb-1" role="radiogroup" aria-label={`Color de ${t.name}`}>
-                {TAG_PALETTE.map((c) => (
+                  onClick={() => setPicking(picking === t.id ? null : t.id)}
+                  className="h-5 w-5 shrink-0 rounded-md ring-1 ring-black/20 transition hover:scale-105"
+                  style={{ background: t.color }}
+                  title="Cambiar color"
+                  aria-label={`Cambiar color de ${t.name}`}
+                  aria-expanded={picking === t.id}
+                />
+                <input
+                  key={t.name}
+                  defaultValue={t.name}
+                  maxLength={40}
+                  onBlur={(e) => rename(t, e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                    else if (e.key === "Escape") {
+                      e.stopPropagation();
+                      (e.target as HTMLInputElement).value = t.name;
+                      (e.target as HTMLInputElement).blur();
+                    }
+                  }}
+                  aria-label={`Nombre de ${t.name}`}
+                  className="ui-field ui-control min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-0.5 text-sm text-zinc-100 outline-none ring-ui-ink/[0.08] hover:ring-1 focus:ring-1 focus:ring-indigo-500/60"
+                />
+                {t.model || addingModel === t.id ? (
+                  <>
+                    <ModelPicker
+                      value={t.model ?? null}
+                      inheritLabel="Sin modelo"
+                      title="Modelo con el que se desarrollan las tarjetas con esta etiqueta"
+                      onChange={(model) => {
+                        setAddingModel(null);
+                        void patch(t, { model });
+                      }}
+                      className="model-picker w-40 shrink-0 max-w-full"
+                    />
+                    <button
+                      onClick={() => {
+                        setAddingModel(null);
+                        if (t.model) void patch(t, { model: null });
+                      }}
+                      className="rounded p-1 text-zinc-600 transition hover:bg-ui-ink/5 hover:text-zinc-200"
+                      title="Quitar el modelo de esta etiqueta"
+                      aria-label={`Quitar modelo de ${t.name}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </>
+                ) : (
                   <button
-                    key={c}
-                    role="radio"
-                    aria-checked={t.color.toLowerCase() === c}
-                    aria-label={c}
-                    onClick={() => {
-                      setPicking(null);
-                      if (t.color.toLowerCase() !== c) void patch(t, { color: c });
-                    }}
-                    className={`aspect-square rounded-md transition hover:scale-110 ${t.color.toLowerCase() === c ? "ring-2 ring-zinc-100 ring-offset-2 ring-offset-zinc-950" : "ring-1 ring-black/20"}`}
-                    style={{ background: c }}
-                  />
-                ))}
+                    onClick={() => setAddingModel(t.id)}
+                    className="flex shrink-0 items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px] text-zinc-500 ring-1 ring-ui-ink/[0.08] transition hover:bg-ui-ink/5 hover:text-zinc-200"
+                    title="Asignar un modelo a esta etiqueta"
+                  >
+                    <Plus className="h-3 w-3" /> Modelo
+                  </button>
+                )}
+                <button
+                  onClick={() => remove(t)}
+                  className="rounded p-1 text-zinc-600 transition hover:bg-red-500/10 hover:text-danger"
+                  title="Borrar etiqueta"
+                  aria-label={`Borrar etiqueta ${t.name}`}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
               </div>
-            )}
-          </li>
-        ))}
-        {!tags.length && <li className="px-2 py-1 text-sm text-zinc-500">Aún no hay etiquetas.</li>}
-      </ul>
+              {picking === t.id && (
+                <div className="mt-2 grid grid-cols-12 gap-1.5 px-1 pb-1" role="radiogroup" aria-label={`Color de ${t.name}`}>
+                  {TAG_PALETTE.map((c) => (
+                    <button
+                      key={c}
+                      role="radio"
+                      aria-checked={t.color.toLowerCase() === c}
+                      aria-label={c}
+                      onClick={() => {
+                        setPicking(null);
+                        if (t.color.toLowerCase() !== c) void patch(t, { color: c });
+                      }}
+                      className={`aspect-square rounded-md transition hover:scale-110 ${t.color.toLowerCase() === c ? "ring-2 ring-zinc-100 ring-offset-2 ring-offset-zinc-950" : "ring-1 ring-black/20"}`}
+                      style={{ background: c }}
+                    />
+                  ))}
+                </div>
+              )}
+            </li>
+          ))}
+          {!tags.length && <li className="px-2 py-1 text-sm text-zinc-500">Aún no hay etiquetas.</li>}
+        </ul>
+      )}
 
       <form
         onSubmit={(e) => {
