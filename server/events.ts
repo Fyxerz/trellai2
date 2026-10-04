@@ -46,6 +46,10 @@ export function emitCheckpoints(projectId: string, cardId: string) {
   emitCard(cardId); // counters on the card
 }
 
+export function emitAttachments(projectId: string, cardId: string) {
+  emit(projectId, { type: "attachments", cardId });
+}
+
 export function emitAssistantMessage(message: AssistantMessage) {
   emit(message.project_id, { type: "assistant_message", message });
 }

@@ -165,12 +165,35 @@ export interface AssistantMessage {
   created_at: string;
 }
 
+/** A rectangle on an image, in relative coordinates (0–1), with Pedro's comment. */
+export interface Annotation {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  comment: string;
+}
+
+/** An image attached to a card (the bytes are served by /api/attachments/:id/image). */
+export interface Attachment {
+  id: number;
+  uid: string;
+  card_id: string;
+  name: string;
+  mime: string;
+  annotations: Annotation[];
+  /** there is a copy with the numbered boxes drawn on it (?annotated=1) */
+  has_annotated: boolean;
+  created_at: string;
+}
+
 export type ServerEvent =
   | { type: "card"; card: Card }
   | { type: "card_deleted"; id: string }
   | { type: "message"; message: Message }
   | { type: "questions"; cardId: string }
   | { type: "checkpoints"; cardId: string }
+  | { type: "attachments"; cardId: string }
   | { type: "note"; note: Note }
   | { type: "assistant_message"; message: AssistantMessage }
   | { type: "assistant_status"; mode: "plan" | "do"; running: boolean }

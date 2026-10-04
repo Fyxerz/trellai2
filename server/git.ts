@@ -51,7 +51,7 @@ export function slugify(s: string): string {
 }
 
 /** Keep `.trellai/` out of the user's repo without touching tracked files. */
-function ensureExcluded(repo: string) {
+export function ensureExcluded(repo: string) {
   const gitDir = resolve(repo, git(repo, ["rev-parse", "--git-common-dir"]));
   const exclude = join(gitDir, "info", "exclude");
   mkdirSync(join(gitDir, "info"), { recursive: true });

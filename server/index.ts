@@ -10,7 +10,8 @@ import { basename, dirname, join, parse, resolve } from "node:path";
 import { COLUMNS, isColumn, TAG_COLORS, type ServerEvent } from "../shared/types.js";
 import { sweepAll } from "./claims.js";
 import * as db from "./db.js";
-import { emitCard, emitCardDeleted, emitCheckpoints, emitMessage, emitNote, emitTags, subscribe } from "./events.js";
+import { cleanAnnotations, parseImage } from "./attachments.js";
+import { emitAttachments, emitCard, emitCardDeleted, emitCheckpoints, emitMessage, emitNote, emitTags, subscribe } from "./events.js";
 import * as git from "./git.js";
 import * as wf from "./workflow.js";
 import { claudeModels, codexDefaultModel, codexStatus, mcpCallTool, mcpListTools } from "./engine.js";
@@ -404,6 +405,7 @@ app.post("/api/cards/:id/copy", async (c) => {
   if (!db.getProject(project_id)) return c.json({ error: "Proyecto no encontrado" }, 404);
   let card = db.createCard({ project_id, title: source.title, spec: source.spec, column: "backlog" });
   for (const cp of db.listCheckpoints(source.id)) db.addCheckpoint(card.id, cp.text, cp.source);
+  db.copyAttachments(source.id, card.id);
   // Tags belong to a project: reuse the target's tag with the same name, or create it.
   const sourceTags = db.getProject(source.project_id)?.tags ?? [];
   const tags = source.tags.map((id) => sourceTags.find((t) => t.id === id)).filter((t) => !!t);
@@ -482,6 +484,60 @@ app.delete("/api/checkpoints/:id", (c) => {
     db.deleteCheckpoint(cp.id);
     const card = db.getCard(cp.card_id)!;
     emitCheckpoints(card.project_id, card.id);
+  }
+  return c.json({ ok: true });
+});
+
+// ---------- images on a card ----------
+
+app.get("/api/cards/:id/attachments", (c) => c.json(db.listAttachments(c.req.param("id"))));
+
+/** Body: { name, data: base64 or data URL, mime?, annotations?, annotated? } */
+app.post("/api/cards/:id/attachments", async (c) => {
+  const card = db.getCard(c.req.param("id"));
+  if (!card) return c.json({ error: "Tarjeta no encontrada" }, 404);
+  const body = await c.req.json<{ name?: string; data?: string; mime?: string; annotations?: unknown; annotated?: string }>();
+  const img = parseImage(body.data, body.mime);
+  const annotated = body.annotated ? parseImage(body.annotated, img.mime).data : null;
+  const name = body.name?.trim().slice(0, 120) || "imagen";
+  const att = db.addAttachment(card.id, { name, ...img, annotated, annotations: cleanAnnotations(body.annotations) });
+  emitAttachments(card.project_id, card.id);
+  return c.json(att);
+});
+
+app.get("/api/attachments/:id/image", (c) => {
+  const id = Number(c.req.param("id"));
+  const att = db.getAttachment(id);
+  const annotated = c.req.query("annotated") === "1";
+  const data = att && db.attachmentData(id, annotated);
+  if (!att || !data) return c.json({ error: "Imagen no encontrada" }, 404);
+  // The original never changes; the drawn copy is redone whenever the boxes change.
+  const cache = annotated ? "no-store" : "private, max-age=31536000, immutable";
+  return c.body(Buffer.from(data, "base64"), 200, { "content-type": att.mime, "cache-control": cache });
+});
+
+/** Body: { annotations?, annotated?: base64 | null (copy with the boxes drawn), name? } */
+app.patch("/api/attachments/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const before = db.getAttachment(id);
+  if (!before) return c.json({ error: "Imagen no encontrada" }, 404);
+  const body = await c.req.json<{ annotations?: unknown; annotated?: string | null; name?: string }>();
+  const att = db.updateAttachment(id, {
+    annotations: body.annotations === undefined ? undefined : cleanAnnotations(body.annotations),
+    annotated: body.annotated === undefined ? undefined : body.annotated ? parseImage(body.annotated, before.mime).data : null,
+    name: body.name?.trim().slice(0, 120) || undefined,
+  });
+  const card = db.getCard(before.card_id);
+  if (card) emitAttachments(card.project_id, card.id);
+  return c.json(att);
+});
+
+app.delete("/api/attachments/:id", (c) => {
+  const att = db.getAttachment(Number(c.req.param("id")));
+  if (att) {
+    db.deleteAttachment(att.id);
+    const card = db.getCard(att.card_id);
+    if (card) emitAttachments(card.project_id, card.id);
   }
   return c.json({ ok: true });
 });
