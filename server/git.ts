@@ -281,6 +281,62 @@ export function sameRemoteSync(a: string | null, b: string | null): boolean {
   return !!a && !!b && norm(a) === norm(b);
 }
 
+export interface BranchInfo {
+  name: string;
+  /** exists in this computer (refs/heads) */
+  local: boolean;
+  /** exists on the remote (refs/remotes/<remote>) */
+  remote: boolean;
+  /** local vs its copy on the remote */
+  ahead: number;
+  behind: number;
+  /** all its commits are already in the base branch */
+  merged: boolean;
+  /** the main checkout is on it */
+  current: boolean;
+  /** checked out in a worktree (a card's agent) */
+  worktree: string | null;
+  sha: string;
+  subject: string;
+  date: string;
+}
+
+/** Every branch, local and on the remote, merged by name. Nothing is fetched here. */
+export function listBranches(repo: string, base: string): { head: string; detached: boolean; remote: string | null; branches: BranchInfo[] } {
+  const remotes = git(repo, ["remote"], { allowFail: true }).split("\n").filter(Boolean);
+  const remote = remotes.includes("origin") ? "origin" : (remotes[0] ?? null);
+  const head = git(repo, ["rev-parse", "--abbrev-ref", "HEAD"], { allowFail: true });
+  const detached = head === "HEAD";
+  const worktrees = new Map<string, string>();
+  let wtPath = "";
+  for (const l of git(repo, ["worktree", "list", "--porcelain"], { allowFail: true }).split("\n")) {
+    if (l.startsWith("worktree ")) wtPath = l.slice(9);
+    else if (l.startsWith("branch refs/heads/") && resolve(wtPath) !== resolve(repo)) worktrees.set(l.slice(18), wtPath);
+  }
+  const merged = new Set(git(repo, ["for-each-ref", "--merged", base, "--format=%(refname)", "refs/heads", "refs/remotes"], { allowFail: true }).split("\n"));
+
+  const byName = new Map<string, BranchInfo>();
+  const refs = git(repo, ["for-each-ref", "--sort=-committerdate", "--format=%(refname)%00%(objectname:short)%00%(committerdate:iso-strict)%00%(subject)", "refs/heads", ...(remote ? [`refs/remotes/${remote}`] : [])], { allowFail: true });
+  for (const line of refs.split("\n").filter(Boolean)) {
+    const [ref, sha, date, subject] = line.split("\0");
+    const isLocal = ref.startsWith("refs/heads/");
+    const name = isLocal ? ref.slice(11) : ref.slice(`refs/remotes/${remote}/`.length);
+    if (!isLocal && name === "HEAD") continue;
+    const b = byName.get(name) ?? { name, local: false, remote: false, ahead: 0, behind: 0, merged: true, current: false, worktree: worktrees.get(name) ?? null, sha, subject, date };
+    if (isLocal) Object.assign(b, { local: true, sha, subject, date, current: !detached && name === head });
+    else b.remote = true;
+    b.merged &&= merged.has(ref);
+    byName.set(name, b);
+  }
+  for (const b of byName.values()) {
+    if (!b.local || !b.remote) continue;
+    const [ahead, behind] = git(repo, ["rev-list", "--left-right", "--count", `refs/heads/${b.name}...refs/remotes/${remote}/${b.name}`], { allowFail: true }).split(/\s+/).map(Number);
+    b.ahead = ahead || 0;
+    b.behind = behind || 0;
+  }
+  return { head: detached ? git(repo, ["rev-parse", "--short", "HEAD"], { allowFail: true }) : head, detached, remote, branches: [...byName.values()] };
+}
+
 /** Diff of a branch vs base without a worktree (a card running on another computer). */
 export function diffBranch(repo: string, base: string, branch: string): { diff: string; files: string[] } {
   if (!shaOf(repo, `refs/heads/${branch}`)) return { diff: "", files: [] };

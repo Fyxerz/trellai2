@@ -195,4 +195,20 @@ describe("board flow", () => {
     expect(sh("git rev-parse --abbrev-ref HEAD")).toBe(before);
     expect((await api<any[]>("/api/projects")).find((p) => p.id === projectId).preview_card_id).toBeNull();
   });
+
+  it("lists every branch with its card, the current one and what's merged", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Rama listada", spec: "x", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    const done = await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    sh("git branch suelta-vieja main~1");
+    const r = await api<any>(`/api/projects/${projectId}/branches`);
+    const by = (n: string) => r.branches.find((b: any) => b.name === n);
+    expect(r.base).toBe("main");
+    expect(r.remote).toBeNull();
+    expect(by("main")).toMatchObject({ local: true, current: true });
+    expect(by(done.branch!)).toMatchObject({ local: true, current: false, merged: false, card: { id: c.id, title: "Rama listada", column: "review" } });
+    expect(by(done.branch!).worktree).toBeTruthy();
+    expect(by("suelta-vieja")).toMatchObject({ merged: true, card: null });
+    sh("git branch -D suelta-vieja");
+  });
 });

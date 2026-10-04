@@ -1,13 +1,14 @@
 import { projectName, useDialogFocus } from "./preferences";
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import { prettyModel } from "../../shared/models";
+import { CODEX_EFFORTS, EFFORT_LABELS, EFFORTS, prettyModel, splitEffort, withEffort, type Effort } from "../../shared/models";
 
 /**
  * Models are written "engine" or "engine:model":
  *   claude, claude:opus, claude:sonnet, claude:claude-opus-4-8…  → Claude (your Claude Code login)
  *   codex, codex:<model>                                          → GPT via OpenAI Codex CLI (your ChatGPT login)
  * Aliases (opus, sonnet…) always run the latest version; the pickers show which one that is today.
+ * An effort can follow: "claude:opus@high" (no "@" = the model's default effort).
  */
 export const PRESETS: { value: string; label: string; group: "Claude" | "GPT (Codex)" }[] = [
   { value: "claude", label: "Claude (por defecto)", group: "Claude" },
@@ -22,6 +23,7 @@ interface ClaudeModel {
   resolved: string | null;
   label: string;
   description: string;
+  efforts?: Effort[];
 }
 interface Engines {
   claude: { models: ClaudeModel[] };
@@ -41,7 +43,13 @@ const loadEngines = () =>
     return e;
   }));
 
-export function modelLabel(spec: string | null | undefined, short = false): string {
+export function modelLabel(full: string | null | undefined, short = false): string {
+  const { spec, effort } = splitEffort(full);
+  const name = baseLabel(spec, short);
+  return effort ? `${name} · ${EFFORT_LABELS[effort]}` : name;
+}
+
+function baseLabel(spec: string, short: boolean): string {
   const s = spec || "claude";
   const [engine, ...rest] = s.split(":");
   const model = rest.join(":");
@@ -92,55 +100,86 @@ export function ModelPicker({
         pinned: m.value.startsWith("claude-"),
       }))
     : PRESETS.filter((p) => p.group === "Claude").map((p) => ({ ...p, title: "", pinned: false }));
+  const { spec, effort } = splitEffort(value);
   const known = [...claudeOptions.map((o) => o.value), "codex"];
-  const custom = value && !known.includes(value) ? value : null;
+  const custom = spec && !known.includes(spec) ? spec : null;
+  const efforts = (s: string): Effort[] => {
+    if (s.startsWith("codex")) return CODEX_EFFORTS;
+    const m = claude?.find((x) => (x.value === "default" ? "claude" : `claude:${x.value}`) === s);
+    // not listed (yet): offer them all, the SDK lowers what the model can't do
+    return m?.efforts ?? [...EFFORTS];
+  };
+  const choose = (s: string | null, e: Effort | null) => {
+    if (!s) return onChange(null);
+    onChange(withEffort(s, e && efforts(s).includes(e) ? e : null));
+  };
+  const select = "rounded-md bg-zinc-900 px-2 py-1 text-xs text-zinc-200 ring-1 ring-zinc-700 outline-none focus:ring-indigo-600";
+  const levels = value ? efforts(spec) : [];
 
   return (
-    <select
-      value={value ?? ""}
-      title={title ?? (noCodex ? "Para usar GPT instala Codex: npm i -g @openai/codex y luego codex login" : undefined)}
-      onChange={(e) => {
-        const v = e.target.value;
-        if (v === "__other") {
-          const name = prompt("Nombre del modelo de OpenAI (tal cual lo acepta `codex -m`):", "")?.trim();
-          if (name) onChange(`codex:${name}`);
-          return;
-        }
-        onChange(v === "" ? null : v);
-      }}
-      className={`rounded-md bg-zinc-900 px-2 py-1 text-xs text-zinc-200 ring-1 ring-zinc-700 outline-none focus:ring-indigo-600 ${className}`}
-    >
-      {inheritLabel && <option value="">{inheritLabel}</option>}
-      <optgroup label="Claude">
-        {claudeOptions
-          .filter((o) => !o.pinned)
-          .map((o) => (
-            <option key={o.value} value={o.value} title={o.title}>
-              {o.label}
-            </option>
-          ))}
-      </optgroup>
-      {claudeOptions.some((o) => o.pinned) && (
-        <optgroup label="Claude · versiones fijas">
+    <span className={`flex items-center gap-1 ${className}`}>
+      <select
+        value={value ? spec : ""}
+        title={title ?? (noCodex ? "Para usar GPT instala Codex: npm i -g @openai/codex y luego codex login" : undefined)}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === "__other") {
+            const name = prompt("Nombre del modelo de OpenAI (tal cual lo acepta `codex -m`):", "")?.trim();
+            if (name) choose(`codex:${name}`, effort);
+            return;
+          }
+          choose(v === "" ? null : v, effort);
+        }}
+        className={`${select} min-w-0 flex-1`}
+      >
+        {inheritLabel && <option value="">{inheritLabel}</option>}
+        <optgroup label="Claude">
           {claudeOptions
-            .filter((o) => o.pinned)
+            .filter((o) => !o.pinned)
             .map((o) => (
               <option key={o.value} value={o.value} title={o.title}>
                 {o.label}
               </option>
             ))}
         </optgroup>
+        {claudeOptions.some((o) => o.pinned) && (
+          <optgroup label="Claude · versiones fijas">
+            {claudeOptions
+              .filter((o) => o.pinned)
+              .map((o) => (
+                <option key={o.value} value={o.value} title={o.title}>
+                  {o.label}
+                </option>
+              ))}
+          </optgroup>
+        )}
+        <optgroup label={noCodex ? "GPT (Codex no instalado)" : "GPT (Codex)"}>
+          <option value="codex" disabled={!!noCodex}>
+            {modelLabel("codex")}
+          </option>
+          {custom && <option value={custom}>{modelLabel(custom)}</option>}
+          <option value="__other" disabled={!!noCodex}>
+            Otro modelo GPT…
+          </option>
+        </optgroup>
+      </select>
+      {levels.length > 0 && (
+        <select
+          value={effort ?? ""}
+          title="Esfuerzo: cuánto piensa el modelo antes de responder. Más esfuerzo = mejor en tareas difíciles, pero más lento y gasta más."
+          aria-label="Esfuerzo del modelo"
+          onChange={(e) => choose(spec, (e.target.value || null) as Effort | null)}
+          className={`${select} w-[7.5rem] shrink-0`}
+        >
+          <option value="">Esfuerzo por defecto</option>
+          {levels.map((l) => (
+            <option key={l} value={l}>
+              Esfuerzo {EFFORT_LABELS[l].toLowerCase()}
+            </option>
+          ))}
+        </select>
       )}
-      <optgroup label={noCodex ? "GPT (Codex no instalado)" : "GPT (Codex)"}>
-        <option value="codex" disabled={!!noCodex}>
-          {modelLabel("codex")}
-        </option>
-        {custom && <option value={custom}>{modelLabel(custom)}</option>}
-        <option value="__other" disabled={!!noCodex}>
-          Otro modelo GPT…
-        </option>
-      </optgroup>
-    </select>
+    </span>
   );
 }
 
@@ -188,7 +227,7 @@ export function ProjectSettings({
                 value={(project[r.key] as string | null) ?? null}
                 inheritLabel={r.key === "model_ui" ? "Igual que desarrollo" : undefined}
                 onChange={(v) => save(r.key, v ?? (r.key === "model_ui" ? null : "claude"))}
-                className="w-52"
+                className="w-72"
               />
             </div>
           ))}

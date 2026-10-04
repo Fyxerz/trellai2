@@ -388,7 +388,7 @@ export default function App() {
             <ChevronRight className="h-3.5 w-3.5 text-zinc-600" />
             <ProjectAvatar id={project!.id} name={projectName(project!.name)} size={30} />
             <span title={project!.repo_path || project!.name} className="max-w-[28rem] truncate text-2xl font-bold tracking-tight text-zinc-50">{projectName(project!.name)}</span>
-            <BranchStatus project={project!} board={board} />
+            <BranchStatus project={project!} board={board} onOpenCard={setSelected} />
           </>
         )}
         {view === "home" && (
