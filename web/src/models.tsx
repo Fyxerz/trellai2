@@ -25,16 +25,23 @@ interface ClaudeModel {
   description: string;
   efforts?: Effort[];
 }
+interface LoginState {
+  running: boolean;
+  error?: string;
+}
 interface Engines {
-  claude: { models: ClaudeModel[] };
-  codex: { installed: boolean; version?: string; defaultModel?: string | null };
+  claude: { models: ClaudeModel[]; loggedIn?: boolean; login?: LoginState };
+  codex: { installed: boolean; loggedIn?: boolean; version?: string; defaultModel?: string | null; login?: LoginState };
 }
 
 /** spec ("claude", "claude:opus", "codex") → exact version name ("Opus 5.5"), once /api/engines answers. */
 const versions = new Map<string, string>();
 let enginesCache: Promise<Engines> | null = null;
+/** Every mounted useEngines(), so a fresh /api/engines (after a login) reaches all pickers. */
+const engineListeners = new Set<(e: Engines) => void>();
 const loadEngines = () =>
   (enginesCache ??= api<Engines>("/api/engines").then((e) => {
+    versions.clear();
     for (const m of e.claude?.models ?? []) {
       const name = m.resolved ? prettyModel(m.resolved) : m.label;
       versions.set(m.value === "default" ? "claude" : `claude:${m.value}`, name);
@@ -42,6 +49,14 @@ const loadEngines = () =>
     if (e.codex?.defaultModel) versions.set("codex", prettyModel(`codex:${e.codex.defaultModel}`));
     return e;
   }));
+
+/** Asks the server again (e.g. while waiting for a login) and updates every useEngines(). */
+async function refreshEngines(): Promise<Engines> {
+  enginesCache = null;
+  const e = await loadEngines();
+  engineListeners.forEach((l) => l(e));
+  return e;
+}
 
 export function modelLabel(full: string | null | undefined, short = false): string {
   const { spec, effort } = splitEffort(full);
@@ -68,11 +83,20 @@ function baseLabel(spec: string, short: boolean): string {
 export function useEngines() {
   const [engines, setEngines] = useState<Engines | null>(null);
   useEffect(() => {
+    engineListeners.add(setEngines);
     loadEngines()
       .then(setEngines)
       .catch(() => setEngines({ claude: { models: [] }, codex: { installed: false } }));
+    return () => void engineListeners.delete(setEngines);
   }, []);
-  return { codex: engines?.codex ?? null, claude: engines?.claude.models ?? null };
+  return {
+    codex: engines?.codex ?? null,
+    claude: engines?.claude.models ?? null,
+    /** false = no Claude session; null while unknown */
+    claudeLoggedIn: engines ? engines.claude.loggedIn !== false : null,
+    /** the running server predates connection status (Trellai has to be restarted) */
+    staleServer: !!engines && "installed" in engines.claude && !("loggedIn" in engines.claude),
+  };
 }
 
 export function ModelPicker({
@@ -89,8 +113,9 @@ export function ModelPicker({
   className?: string;
   title?: string;
 }) {
-  const { codex, claude } = useEngines();
+  const { codex, claude, claudeLoggedIn } = useEngines();
   const noCodex = codex && !codex.installed;
+  const codexOff = codex?.installed && codex.loggedIn === false;
   // Aliases first (they follow the latest version), then pinned versions.
   const claudeOptions = claude?.length
     ? claude.map((m) => ({
@@ -120,7 +145,14 @@ export function ModelPicker({
     <span className={`flex items-center gap-1 ${className}`}>
       <select
         value={value ? spec : ""}
-        title={title ?? (noCodex ? "Para usar GPT instala Codex: npm i -g @openai/codex y luego codex login" : undefined)}
+        title={
+          title ??
+          (noCodex
+            ? "Para usar GPT instala la app de Codex de OpenAI y conéctala con tu cuenta de ChatGPT en Modelos del proyecto"
+            : claudeLoggedIn === false || codexOff
+              ? "Hay motores sin conectar: conéctalos en Modelos del proyecto"
+              : undefined)
+        }
         onChange={(e) => {
           const v = e.target.value;
           if (v === "__other") {
@@ -133,7 +165,7 @@ export function ModelPicker({
         className={`${select} min-w-0 flex-1`}
       >
         {inheritLabel && <option value="">{inheritLabel}</option>}
-        <optgroup label="Claude">
+        <optgroup label={claudeLoggedIn === false ? "Claude (no conectado)" : "Claude"}>
           {claudeOptions
             .filter((o) => !o.pinned)
             .map((o) => (
@@ -153,7 +185,7 @@ export function ModelPicker({
               ))}
           </optgroup>
         )}
-        <optgroup label={noCodex ? "GPT (Codex no instalado)" : "GPT (Codex)"}>
+        <optgroup label={noCodex ? "GPT (Codex no instalado)" : codexOff ? "GPT (Codex no conectado)" : "GPT (Codex)"}>
           <option value="codex" disabled={!!noCodex}>
             {modelLabel("codex")}
           </option>
@@ -200,7 +232,6 @@ export function ProjectSettings({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const { codex } = useEngines();
   const save = async (key: string, value: string | null) => {
     await api(`/api/projects/${project.id}`, { [key]: value }, "PATCH");
     onSaved();
@@ -232,16 +263,95 @@ export function ProjectSettings({
             </div>
           ))}
         </div>
-        <div className="rounded-lg bg-zinc-950 p-3 text-xs text-zinc-400 ring-1 ring-zinc-800">
-          {codex?.installed ? (
-            <>GPT disponible vía Codex ({codex.version}). Usa tu sesión de <code className="text-zinc-300">codex login</code>.</>
-          ) : (
-            <>
-              Para usar GPT instala Codex en tu Mac: <code className="text-zinc-300">npm i -g @openai/codex</code> y después{" "}
-              <code className="text-zinc-300">codex login</code> (con tu cuenta de ChatGPT). Luego reinicia Trellai.
-            </>
-          )}
+        <EngineStatus />
+      </div>
+    </div>
+  );
+}
+
+/** Is each engine connected? Offers a button that opens its login page in the browser. */
+function EngineStatus() {
+  const { codex, claudeLoggedIn, staleServer } = useEngines();
+  const [waiting, setWaiting] = useState<Record<"claude" | "codex", boolean>>({ claude: false, codex: false });
+  const [errors, setErrors] = useState<Record<"claude" | "codex", string | null>>({ claude: null, codex: null });
+
+  const connect = async (engine: "claude" | "codex") => {
+    setErrors((e) => ({ ...e, [engine]: null }));
+    setWaiting((w) => ({ ...w, [engine]: true }));
+    const fail = (msg: string) => {
+      setErrors((e) => ({ ...e, [engine]: msg }));
+      setWaiting((w) => ({ ...w, [engine]: false }));
+    };
+    try {
+      await api(`/api/engines/${engine}/login`, {}, "POST");
+    } catch (err) {
+      return fail((err as Error).message || "No se pudo abrir el login.");
+    }
+    const until = Date.now() + 5 * 60_000;
+    while (Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 2500));
+      let e: Engines;
+      try {
+        e = await refreshEngines();
+      } catch {
+        continue;
+      }
+      const state = engine === "claude" ? e.claude : e.codex;
+      if (state.loggedIn) return setWaiting((w) => ({ ...w, [engine]: false }));
+      if (!state.login?.running) return fail(state.login?.error || "El login no se completó. Vuelve a intentarlo.");
+    }
+    fail("Se agotó el tiempo esperando el login. Vuelve a intentarlo.");
+  };
+
+  const button = (engine: "claude" | "codex", label: string) => (
+    <button
+      onClick={() => connect(engine)}
+      disabled={waiting[engine]}
+      className="ml-auto shrink-0 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
+    >
+      {waiting[engine] ? "Esperando…" : label}
+    </button>
+  );
+  const dot = (on: boolean | null) => <span className={`h-2 w-2 shrink-0 rounded-full ${on === null ? "bg-zinc-600" : on ? "bg-emerald-500" : "bg-amber-500"}`} />;
+  const waitingHint = <div className="text-[11px] text-zinc-500">Se ha abierto el navegador: inicia sesión allí y vuelve aquí.</div>;
+  const error = (engine: "claude" | "codex") => errors[engine] && <div className="text-[11px] text-red-400">{errors[engine]}</div>;
+  const codexOn = codex ? codex.installed && codex.loggedIn !== false : null;
+  if (staleServer)
+    return (
+      <div className="rounded-lg bg-zinc-950 p-3 text-xs text-amber-300 ring-1 ring-zinc-800">
+        Trellai se ha actualizado pero el servidor sigue con la versión anterior. Reinicia Trellai para ver si Claude y GPT están conectados.
+      </div>
+    );
+
+  return (
+    <div className="space-y-3 rounded-lg bg-zinc-950 p-3 text-xs text-zinc-400 ring-1 ring-zinc-800">
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          {dot(claudeLoggedIn)}
+          <span className="text-zinc-200">Claude</span>
+          <span>{claudeLoggedIn === null ? "Comprobando…" : claudeLoggedIn ? "Conectado" : "No conectado"}</span>
+          {claudeLoggedIn === false && button("claude", "Conectar Claude")}
         </div>
+        {waiting.claude && waitingHint}
+        {error("claude")}
+      </div>
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          {dot(codexOn)}
+          <span className="text-zinc-200">GPT · cuenta de ChatGPT</span>
+          <span>
+            {!codex ? "Comprobando…" : !codex.installed ? "No instalado" : codex.loggedIn === false ? "No conectado" : `Conectado · ${codex.version}`}
+          </span>
+          {codex?.installed && codex.loggedIn === false && button("codex", "Conectar GPT")}
+        </div>
+        {codex && !codex.installed && (
+          <div className="text-[11px] text-zinc-500">
+            Para usar GPT hace falta la app de Codex de OpenAI (o <code className="text-zinc-300">npm i -g @openai/codex</code>). Después
+            podrás conectarla aquí con tu cuenta de ChatGPT.
+          </div>
+        )}
+        {waiting.codex && waitingHint}
+        {error("codex")}
       </div>
     </div>
   );

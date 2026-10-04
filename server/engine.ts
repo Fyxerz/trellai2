@@ -10,9 +10,10 @@
  * reach Codex through a tiny stdio MCP bridge that calls back into this server.
  */
 import { createSdkMcpServer, query, tool, type HookCallback, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -216,7 +217,45 @@ async function runClaude(r: EngineRun, model: string | undefined, resume: string
 // ---------------------------------------------------------------------------
 
 const BRIDGE = join(dirname(fileURLToPath(import.meta.url)), "mcp-bridge.mjs");
-const codexBin = () => process.env.TRELLAI_CODEX_BIN || "codex";
+let codexBinCache: string | null = null;
+
+/**
+ * The Codex CLI: TRELLAI_CODEX_BIN, `codex` from the PATH (npm i -g @openai/codex), or the one bundled
+ * with OpenAI's Codex desktop app, which shares its ChatGPT login (~/.codex).
+ */
+function codexBin(): string {
+  if (process.env.TRELLAI_CODEX_BIN) return process.env.TRELLAI_CODEX_BIN;
+  if (codexBinCache) return codexBinCache;
+  return (codexBinCache = findCodexBin());
+}
+
+function findCodexBin(): string {
+  const works = (bin: string) => {
+    try {
+      execFileSync(bin, ["--version"], { timeout: 10_000, stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (works("codex")) return "codex";
+  const candidates: string[] = [];
+  if (process.platform === "win32") {
+    // Microsoft Store app: its folder can't be listed, so ask Windows where it lives
+    try {
+      const dir = execFileSync("powershell.exe", ["-NoProfile", "-Command", "(Get-AppxPackage OpenAI.Codex).InstallLocation"], {
+        timeout: 15_000,
+        encoding: "utf8",
+      }).trim();
+      if (dir) candidates.push(join(dir.split(/\r?\n/)[0], "app", "resources", "codex.exe"));
+    } catch {
+      // no PowerShell / no app
+    }
+  } else if (process.platform === "darwin") {
+    candidates.push("/Applications/Codex.app/Contents/Resources/codex", join(homedir(), "Applications/Codex.app/Contents/Resources/codex"));
+  }
+  return candidates.find((c) => existsSync(c) && works(c)) ?? "codex";
+}
 
 /** Live tool sets for running Codex agents, keyed by a per-run token. */
 const toolRuns = new Map<string, ToolSpec[]>();
@@ -237,16 +276,143 @@ export function mcpCallTool(token: string, name: string, args: unknown): string 
   return t.run(parsed);
 }
 
-let codexInfo: { at: number; installed: boolean; version?: string } | null = null;
+let codexInfo: { at: number; installed: boolean; version?: string; loggedIn: boolean } | null = null;
 
-export function codexStatus(): Promise<{ installed: boolean; version?: string }> {
-  if (codexInfo && Date.now() - codexInfo.at < 60_000) return Promise.resolve(codexInfo);
+/** Is Codex installed, and is there a ChatGPT/OpenAI session (`codex login status`)? Cached 10 s. */
+export function codexStatus(): Promise<{ installed: boolean; version?: string; loggedIn: boolean }> {
+  if (codexInfo && Date.now() - codexInfo.at < 10_000) return Promise.resolve(codexInfo);
   return new Promise((res) =>
     execFile(codexBin(), ["--version"], { timeout: 10_000 }, (err, out) => {
-      codexInfo = err ? { at: Date.now(), installed: false } : { at: Date.now(), installed: true, version: out.trim() };
-      res(codexInfo);
+      codexInfo = { at: Date.now(), installed: false, loggedIn: false };
+      if (err) return res(codexInfo);
+      const version = out.trim();
+      execFile(codexBin(), ["login", "status"], { timeout: 10_000 }, (err2, out2, errOut2) => {
+        const text = `${out2}
+${errOut2}`;
+        const loggedIn = !err2 && !/not logged in/i.test(text);
+        codexInfo = { at: Date.now(), installed: true, version, loggedIn };
+        res(codexInfo);
+      });
     }),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Login (Claude / Codex): runs the CLI's own login, which opens the browser and waits for its callback
+// ---------------------------------------------------------------------------
+
+/** The Claude Code CLI bundled with the Agent SDK, or `claude` from the PATH. */
+function claudeBin(): string {
+  if (process.env.TRELLAI_CLAUDE_BIN) return process.env.TRELLAI_CLAUDE_BIN;
+  try {
+    const req = createRequire(import.meta.url);
+    const pkg = req.resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/package.json`);
+    const bin = join(dirname(pkg), process.platform === "win32" ? "claude.exe" : "claude");
+    if (existsSync(bin)) return bin;
+  } catch {
+    // not installed for this platform
+  }
+  return "claude";
+}
+
+let claudeAuthCache: { at: number; loggedIn: Promise<boolean> } | null = null;
+
+/** `claude auth status` → is there a Claude session? Cached 10 s. */
+export function claudeLoggedIn(): Promise<boolean> {
+  if (claudeAuthCache && Date.now() - claudeAuthCache.at < 10_000) return claudeAuthCache.loggedIn;
+  const loggedIn = new Promise<boolean>((res) =>
+    execFile(claudeBin(), ["auth", "status"], { timeout: 15_000, shell: process.platform === "win32" && !/\.exe$/i.test(claudeBin()) }, (err, out) => {
+      try {
+        res(!!JSON.parse(out).loggedIn);
+      } catch {
+        res(!err);
+      }
+    }),
+  );
+  claudeAuthCache = { at: Date.now(), loggedIn };
+  return loggedIn;
+}
+
+export interface LoginState {
+  /** a login is waiting for the browser */
+  running: boolean;
+  /** why the last login failed (cleared when a new one starts) */
+  error?: string;
+}
+
+const logins: Record<Engine, { child: ReturnType<typeof spawn> | null; error?: string; timer?: NodeJS.Timeout }> = {
+  claude: { child: null },
+  codex: { child: null },
+};
+
+export function loginState(engine: Engine): LoginState {
+  const l = logins[engine];
+  return { running: !!l.child, error: l.error };
+}
+
+/** Forget cached sessions / model lists so the next /api/engines sees the new login. */
+function resetEngineCaches() {
+  codexBinCache = null;
+  claudeAuthCache = null;
+  claudeModelsCache = null;
+  codexInfo = null;
+}
+
+/** Starts `claude auth login` / `codex login` (kills a previous one). Returns at once; poll loginState(). */
+export function startLogin(engine: Engine): LoginState {
+  const l = logins[engine];
+  cancelLogin(engine);
+  l.error = undefined;
+  resetEngineCaches();
+  const bin = engine === "claude" ? claudeBin() : codexBin();
+  const args = engine === "claude" ? ["auth", "login"] : ["login"];
+  const output: string[] = [];
+  const child = spawn(bin, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: engine === "claude" && process.platform === "win32" && !/\.exe$/i.test(bin),
+    env: { ...process.env, NO_PROXY: [process.env.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") },
+  });
+  l.child = child;
+  child.stdout?.on("data", (d) => output.push(String(d)));
+  child.stderr?.on("data", (d) => output.push(String(d)));
+  const name = engine === "claude" ? "Claude" : "Codex";
+  child.on("error", (err) => {
+    if (l.child !== child) return;
+    l.error =
+      (err as NodeJS.ErrnoException).code === "ENOENT"
+        ? engine === "claude"
+          ? "No encuentro el comando `claude`. Instala Claude Code y vuelve a intentarlo."
+          : "No encuentro Codex. Instala la app de Codex de OpenAI (o `npm i -g @openai/codex`)."
+        : `No se pudo lanzar el login de ${name}: ${err.message}`;
+  });
+  child.on("close", (code, signal) => {
+    if (l.child !== child) return; // replaced or cancelled
+    clearTimeout(l.timer);
+    l.child = null;
+    resetEngineCaches();
+    if (code !== 0 && !l.error) {
+      const tail = output.join("").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim().split("\n").slice(-2).join(" ").trim();
+      l.error = signal
+        ? `Se canceló el login de ${name}.`
+        : `El login de ${name} no se completó${tail ? `: ${tail}` : "."}`;
+    }
+  });
+  // nobody finished in the browser: give up so the port and process don't linger
+  l.timer = setTimeout(() => {
+    if (l.child !== child) return;
+    l.child = null;
+    child.kill();
+    l.error = `Se agotó el tiempo esperando el login de ${name} en el navegador. Vuelve a intentarlo.`;
+  }, 5 * 60_000);
+  return loginState(engine);
+}
+
+export function cancelLogin(engine: Engine) {
+  const l = logins[engine];
+  clearTimeout(l.timer);
+  const child = l.child;
+  l.child = null;
+  child?.kill();
 }
 
 function toml(s: string) {
@@ -302,7 +468,7 @@ async function runCodex(r: EngineRun, model: string | undefined, resume: string 
       child.on("error", (err) => {
         error =
           (err as NodeJS.ErrnoException).code === "ENOENT"
-            ? "No encuentro el comando `codex`. Instálalo con `npm i -g @openai/codex` y haz `codex login`."
+            ? "No encuentro Codex. Instala la app de Codex de OpenAI (o `npm i -g @openai/codex`) y conéctalo con tu cuenta de ChatGPT en Modelos del proyecto."
             : err.message;
       });
       child.stderr.on("data", (d) => stderr.push(String(d)));
