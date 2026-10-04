@@ -121,6 +121,13 @@ export interface Message {
   role: MessageRole;
   content: string;
   created_at: string;
+  /** your requests on a card with a branch: its HEAD (and commits ahead of base) when you sent it */
+  head_sha: string | null;
+  head_ahead: number | null;
+  /** column the card was in when you sent it (where ↶ takes it back) */
+  column_before: Column | null;
+  /** undone by a rewind (↶) */
+  undone: boolean;
 }
 
 export interface Question {

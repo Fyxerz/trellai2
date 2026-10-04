@@ -146,6 +146,12 @@ addColumn("cards", "claims", "claims TEXT NOT NULL DEFAULT '[]'");
 addColumn("notes", "files", "files TEXT NOT NULL DEFAULT '[]'");
 addColumn("notes", "targets", "targets TEXT NOT NULL DEFAULT '[]'");
 addColumn("notes", "archived", "archived INTEGER NOT NULL DEFAULT 0");
+/** Your requests on a card: where its branch was when you sent them, to rewind there (↶). */
+addColumn("messages", "head_sha", "head_sha TEXT");
+addColumn("messages", "head_ahead", "head_ahead INTEGER");
+addColumn("messages", "column_before", "column_before TEXT");
+/** 1 = undone by a rewind. */
+addColumn("messages", "undone", "undone INTEGER NOT NULL DEFAULT 0");
 
 /** Tables whose rows use a local INTEGER id; `uid` identifies them across computers. */
 export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages", "attachments"] as const;
@@ -326,6 +332,10 @@ export function pushPendingInput(id: string, text: string) {
   db.prepare("UPDATE cards SET pending_input = ? WHERE id = ?").run(JSON.stringify(list), id);
 }
 
+export function clearPendingInput(id: string) {
+  db.prepare("UPDATE cards SET pending_input = '[]' WHERE id = ?").run(id);
+}
+
 export function takePendingInput(id: string): string[] {
   const row = db.prepare("SELECT pending_input FROM cards WHERE id = ?").get(id) as
     | { pending_input: string }
@@ -342,11 +352,37 @@ export function addMessage(cardId: string, role: MessageRole, content: string): 
   const r = db
     .prepare("INSERT INTO messages (uid, card_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)")
     .run(uid(), cardId, role, content, created_at);
-  return { id: Number(r.lastInsertRowid), card_id: cardId, role, content, created_at };
+  return { id: Number(r.lastInsertRowid), card_id: cardId, role, content, created_at, head_sha: null, head_ahead: null, column_before: null, undone: false };
 }
 
+type MessageRow = Omit<Message, "undone"> & { undone: number; uid: string };
+const toMessage = ({ uid: _u, ...r }: MessageRow): Message => ({ ...r, undone: !!r.undone });
+
 export function listMessages(cardId: string): Message[] {
-  return db.prepare("SELECT * FROM messages WHERE card_id = ? ORDER BY created_at, id").all(cardId) as Message[];
+  return (db.prepare("SELECT * FROM messages WHERE card_id = ? ORDER BY created_at, id").all(cardId) as MessageRow[]).map(toMessage);
+}
+
+export function getMessage(id: number): Message | undefined {
+  const r = db.prepare("SELECT * FROM messages WHERE id = ?").get(id) as MessageRow | undefined;
+  return r && toMessage(r);
+}
+
+/** Where the card's branch was when this message was sent (see `rewindTo`). */
+export function setMessageHead(id: number, head: { sha: string; ahead: number; column: Column }): Message {
+  db.prepare("UPDATE messages SET head_sha = ?, head_ahead = ?, column_before = ? WHERE id = ?").run(head.sha, head.ahead, head.column, id);
+  return getMessage(id)!;
+}
+
+/** Mark this message and everything after it on the card as undone; returns the ones that changed. */
+export function markUndoneFrom(cardId: string, from: Message): Message[] {
+  const ids = (
+    db
+      .prepare("SELECT id FROM messages WHERE card_id = ? AND undone = 0 AND (created_at > ? OR (created_at = ? AND id >= ?))")
+      .all(cardId, from.created_at, from.created_at, from.id) as { id: number }[]
+  ).map((r) => r.id);
+  const stmt = db.prepare("UPDATE messages SET undone = 1 WHERE id = ?");
+  db.transaction(() => ids.forEach((id) => stmt.run(id)))();
+  return ids.map((id) => getMessage(id)!);
 }
 
 // ---------- questions ----------
