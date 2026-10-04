@@ -133,6 +133,8 @@ El botón **Apariencia y teclado** de la cabecera permite elegir tema **Claro**,
 
 El tablero tiene búsqueda por título y spec y filtros para tarjetas que te necesitan, pendientes de revisión o con errores. Puedes redimensionar el panel de tarjeta arrastrando su borde izquierdo (o enfocarlo con Tab y usar las flechas) y ampliarlo para leer. Las tarjetas en revisión abren el diff directamente.
 
+**Fondo del tablero** (en los ajustes del proyecto, el botón de deslizadores): ninguno, un **color** (tinte suave) o una **imagen**. Con «Generar imagen», Codex (`codex exec` con tu login de ChatGPT) explora el repo, deduce de qué va el proyecto y dibuja un fondo apaisado y sin texto con su herramienta de imágenes; se guarda en `<repo>/.trellai/background.png`, solo en ese ordenador (en los demás se usa el color, si hay). Se puede cancelar y regenerar; si tu versión de Codex no genera imágenes, lo dice.
+
 Los mensajes sin enviar y las specs pendientes de guardar conservan un borrador local. Al leer mensajes antiguos, los nuevos no desplazan la conversación; aparece un botón para volver al final. Crear una tarjeta requiere Enter o **Añadir**; salir del campo no la crea.
 
 ## Requisitos para Merged
@@ -150,7 +152,7 @@ Puedes ponerlas en un fichero `.env` en la carpeta de Trellai.
 | `PORT` | `4317` | |
 | `HOST` | `127.0.0.1` | Ponlo a `0.0.0.0` para abrirlo desde el móvil en tu red. **Ojo:** los agentes tienen permisos completos. |
 | `TRELLAI_MODEL` | el de tu Claude Code | modelo de Claude cuando el selector dice "Claude (por defecto)" |
-| `TRELLAI_CODEX_BIN` | `codex` | ruta al CLI de Codex si no está en el PATH |
+| `TRELLAI_CODEX_BIN` | `codex` | ruta al CLI de Codex si no está en el PATH (un `.mjs` se ejecuta con node: Codex simulado en tests) |
 | `TRELLAI_DB` | `data/trellai.db` | |
 | `TRELLAI_DATABASE_URL` | — | Postgres (Supabase) para compartir el tablero entre ordenadores |
 | `TRELLAI_MACHINE` | el hostname | nombre de este ordenador en el tablero |
