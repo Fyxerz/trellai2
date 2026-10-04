@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { COLUMNS, describeClaim, type Column, type Project } from "../../shared/types";
 import { api, useBoard, useProjects, type Board as BoardState } from "./api";
 import { AssistantPanel, type AssistantMode } from "./Assistant";
-import { Board, BoardBackground, boardBackground, CAN_ADD, columnCards, moveCard } from "./Board";
+import { Board, BoardBackground, boardBackground, CAN_ADD, columnCards, moveCard, storedIndex } from "./Board";
 import { CardPanel } from "./CardPanel";
 import { FolderPicker } from "./FolderPicker";
 import { CloneRepo } from "./CloneRepo";
@@ -261,7 +261,8 @@ export default function App() {
       // ---------------- board
       const cur = resolveCursor();
       const colIdx = COLUMNS.indexOf(cur.col);
-      const list = columnCards(s.board.cards, cur.col);
+      const pinned = s.projects?.find((p) => p.id === s.projectId)?.preview_card_id;
+      const list = columnCards(s.board.cards, cur.col, pinned);
       const follow = (id: string | null) => {
         if (s.selected && id) setSelected(id);
       };
@@ -287,14 +288,16 @@ export default function App() {
         const i = list.findIndex((c) => c.id === cur.id);
         const j = i + (key === "J" ? 1 : -1);
         if (j < 0 || j >= list.length) return;
-        moveCard(s.board, cur.id, cur.col, j);
+        // The previewed card stays on top: it can't move, nor be passed.
+        if (cur.id === pinned || list[j].id === pinned) return;
+        moveCard(s.board, cur.id, cur.col, storedIndex(s.board.cards, cur.col, pinned, cur.id, j));
         return;
       }
       if (key === "h" || key === "l" || key === "ArrowLeft" || key === "ArrowRight") {
         e.preventDefault();
         const dir = key === "l" || key === "ArrowRight" ? 1 : -1;
         const col = COLUMNS[Math.max(0, Math.min(COLUMNS.length - 1, colIdx + dir))];
-        const target = columnCards(s.board.cards, col);
+        const target = columnCards(s.board.cards, col, pinned);
         const pos = Math.max(0, list.findIndex((c) => c.id === cur.id));
         go(col, target[Math.min(pos, target.length - 1)]?.id ?? null);
         return;
@@ -349,7 +352,8 @@ export default function App() {
     function resolveCursor() {
       const s = st.current;
       const c = s.cursor;
-      const list = columnCards(s.board.cards, c.col);
+      const pinned = s.projects?.find((p) => p.id === s.projectId)?.preview_card_id;
+      const list = columnCards(s.board.cards, c.col, pinned);
       if (c.id && list.some((x) => x.id === c.id)) return c;
       return { col: c.col, id: list[0]?.id ?? null };
     }

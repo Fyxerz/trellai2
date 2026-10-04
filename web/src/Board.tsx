@@ -36,10 +36,26 @@ const NEXT: Partial<Record<Column, { to: Column; label: string; Icon: typeof Pla
 /** Columns where you can create cards (the rest are driven by the workflow). */
 export const CAN_ADD = new Set<Column>(["backlog", "plan"]);
 
-export function columnCards(cards: Record<string, Card>, col: Column): Card[] {
-  return Object.values(cards)
+/** A column's cards in screen order: by position, but the card being previewed (`pinnedId`) goes first. */
+export function columnCards(cards: Record<string, Card>, col: Column, pinnedId?: string | null): Card[] {
+  const list = Object.values(cards)
     .filter((c) => c.column === col)
     .sort((a, b) => a.position - b.position);
+  const i = pinnedId ? list.findIndex((c) => c.id === pinnedId) : -1;
+  if (i > 0) list.unshift(...list.splice(i, 1));
+  return list;
+}
+
+/**
+ * Turns a screen index (where card `id` is dropped among the other cards of `col`, pinned one first)
+ * into the stored index `moveCard` expects: it goes right before the same neighbour it has on screen.
+ * The pinning is only visual, so the pinned card keeps its stored position.
+ */
+export function storedIndex(cards: Record<string, Card>, col: Column, pinnedId: string | null | undefined, id: string, screenIndex: number) {
+  const screen = columnCards(cards, col, pinnedId).filter((c) => c.id !== id);
+  const stored = columnCards(cards, col).filter((c) => c.id !== id);
+  const next = screen.slice(Math.max(0, screenIndex)).find((c) => c.id !== pinnedId);
+  return next ? stored.findIndex((c) => c.id === next.id) : stored.length;
 }
 
 /** Move a card locally right away, then tell the server (which may start/stop agents). */
@@ -111,7 +127,7 @@ export function Board({
   focused: boolean;
   onCursor: (col: Column, id: string | null) => void;
 }) {
-  const byColumn = (col: Column) => columnCards(board.cards, col);
+  const byColumn = (col: Column) => columnCards(board.cards, col, previewCardId);
   const tags = useProjectTags(projectId, board);
   useEngines(); // re-render once the exact model versions are known
 
@@ -148,8 +164,10 @@ export function Board({
     const to = r.destination.droppableId as Column;
     const from = r.source.droppableId as Column;
     if (to === from && r.destination.index === r.source.index) return;
+    // The previewed card stays on top of its column anyway.
+    if (to === from && r.draggableId === previewCardId) return;
 
-    moveCard(board, r.draggableId, to, r.destination.index);
+    moveCard(board, r.draggableId, to, storedIndex(board.cards, to, previewCardId, r.draggableId, r.destination.index));
     onCursor(to, r.draggableId);
   };
 

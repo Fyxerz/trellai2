@@ -88,3 +88,25 @@ describe("preferences and project names", () => {
     expect(projectName("Mi proyecto")).toBe("Mi proyecto");
   });
 });
+
+describe("previewed card pinned on top", async () => {
+  const { columnCards, storedIndex } = await import("../web/src/Board");
+  const mk = (id: string, position: number) => ({ id, column: "doing", position }) as unknown as import("../shared/types").Card;
+  const cards = Object.fromEntries([mk("a", 0), mk("b", 1), mk("p", 2), mk("c", 3)].map((c) => [c.id, c]));
+  const ids = (l: { id: string }[]) => l.map((c) => c.id).join("");
+
+  it("shows the previewed card first and the rest in stored order", () => {
+    expect(ids(columnCards(cards, "doing", "p"))).toBe("pabc");
+    expect(ids(columnCards(cards, "doing"))).toBe("abpc");
+  });
+
+  it("maps screen indexes to stored ones around the pinned card", () => {
+    // screen without "c": p a b → drop c at screen 1 (before a) → stored before a
+    expect(storedIndex(cards, "doing", "p", "c", 1)).toBe(0);
+    expect(storedIndex(cards, "doing", "p", "c", 0)).toBe(0);
+    // screen without "a": p b c → between b and c (index 2) → before c in b p c
+    expect(storedIndex(cards, "doing", "p", "a", 2)).toBe(2);
+    // at the end (index 3) → stored at the end
+    expect(storedIndex(cards, "doing", "p", "a", 3)).toBe(3);
+  });
+});
