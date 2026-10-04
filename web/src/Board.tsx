@@ -155,7 +155,7 @@ export function Board({
 
   return (
     <DragDropContext onDragStart={onDragStart} onDragEnd={onDragEnd}>
-      <div className="flex h-full items-start gap-2.5 overflow-x-auto px-4 pt-1 pb-5">
+      <div className="flex h-full items-start gap-3 overflow-x-auto px-4 pt-1 pb-5">
         {COLUMNS.map((col) => {
           const cards = byColumn(col);
           const canAdd = CAN_ADD.has(col);
@@ -175,7 +175,7 @@ export function Board({
                 <Icon className="h-[15px] w-[15px]" style={{ color: COLUMN_HEX[col] }} strokeWidth={2.2} />
                 <h2 className={`text-sm font-semibold tracking-tight ${active ? "text-zinc-100" : "text-zinc-200"}`}>{COLUMN_LABELS[col]}</h2>
                 <span className="tabular rounded-full bg-ui-ink/[0.06] px-1.5 text-[11px] leading-[18px] text-zinc-400">{cards.length}</span>
-                <span className="ml-auto truncate text-[11px] text-zinc-500 opacity-0 transition-opacity group-hover/h:opacity-100">{HINTS[col]}</span>
+                <span className="ui-reveal ml-auto truncate text-[11px] text-zinc-500 opacity-0 transition-opacity group-hover/h:opacity-100">{HINTS[col]}</span>
                 {canAdd && (
                   <button
                     onClick={() => {
@@ -199,7 +199,7 @@ export function Board({
                     {cards.map((card, i) => (
                       <Draggable key={card.id} draggableId={card.id} index={i}>
                         {(dp, ds) => (
-                          <div ref={dp.innerRef} {...dp.draggableProps} {...dp.dragHandleProps} data-card className="cursor-pointer">
+                          <div ref={dp.innerRef} {...dp.draggableProps} {...dp.dragHandleProps} data-card className="board-card cursor-pointer" onKeyDown={e => { if (e.target === e.currentTarget && e.key === "Enter") { e.preventDefault(); e.stopPropagation(); onCursor(col, card.id); onOpen(card.id); } }}>
                             <CardItem
                               card={card}
                               dragging={ds.isDragging}
@@ -224,12 +224,12 @@ export function Board({
                     {canAdd && adding !== col && <button onClick={() => { onCursor(col, null); setAdding(col); }} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-zinc-400 hover:bg-ui-ink/5 hover:text-zinc-100"><Plus className="h-4 w-4" /> Añadir tarjeta</button>}
                     {adding === col && <NewCardInput projectId={projectId} column={col} onDone={() => setAdding(null)} />}
                     {cards.length === 0 && adding !== col && !snap.isDraggingOver && (
-                      <div className="pointer-events-none mx-1 mt-0.5 rounded-xl border border-dashed border-ui-ink/[0.06] px-3 py-4 text-center text-[11px] text-zinc-600">
+                      <div className="ui-empty pointer-events-none mx-1 mt-0.5">
                         {canAdd ? "Doble clic para añadir" : EMPTY[col]}
                       </div>
                     )}
                     {canAdd && cards.length > 0 && adding !== col && !snap.isDraggingOver && (
-                      <span className="pointer-events-none absolute bottom-3 left-3.5 text-[11px] text-zinc-600 opacity-0 transition-opacity group-hover:opacity-100">
+                      <span className="ui-reveal pointer-events-none absolute bottom-3 left-3.5 text-[11px] text-zinc-600 opacity-0 transition-opacity group-hover:opacity-100">
                         Doble clic para añadir
                       </span>
                     )}
@@ -297,7 +297,7 @@ function CardItem({
       onClick={onClick}
       style={{ boxShadow: dragging ? "var(--shadow-pop)" : "var(--shadow-card)" }}
       className={[
-        "group/card relative overflow-hidden rounded-[var(--radius-card)] border bg-zinc-900 px-3 py-2.5 transition-all duration-150",
+        "board-card group/card relative overflow-hidden rounded-[var(--radius-card)] border bg-zinc-900 px-3 py-2.5 transition-all duration-150",
         card.status === "running" ? "working" : "",
         cursor
           ? "border-indigo-400/70 ring-2 ring-indigo-400/25"
@@ -309,14 +309,14 @@ function CardItem({
       ].join(" ")}
     >
       {accent && <span className="absolute inset-y-2 left-0 w-[2px] rounded-full" style={{ background: accent }} />}
-      <div className="absolute top-1.5 right-1.5 z-10 flex items-center gap-1">
+      <div className="card-actions absolute top-1.5 right-1.5 z-10 flex items-center gap-1">
         {next && (
           <button
             onClick={(e) => {
               e.stopPropagation();
               onAdvance(next.to);
             }}
-            className="invisible flex items-center gap-1 rounded-md bg-indigo-500 px-1.5 py-1 text-[11px] leading-none font-medium text-white opacity-0 shadow-sm transition group-hover/card:visible group-hover/card:opacity-100 hover:bg-indigo-400"
+            className="ui-reveal flex items-center gap-1 rounded-md bg-indigo-600 px-1.5 py-1 text-[11px] leading-none font-medium text-white opacity-0 shadow-sm transition group-hover/card:visible group-hover/card:opacity-100 hover:bg-indigo-400"
             title={next.label}
           >
             <next.Icon className="h-3 w-3" /> {next.label}
@@ -327,7 +327,7 @@ function CardItem({
             e.stopPropagation();
             if (await confirmDeleteCard(card)) api(`/api/cards/${card.id}`, undefined, "DELETE").catch((err) => reportError(err.message));
           }}
-          className="rounded-md bg-zinc-900/90 p-1 text-zinc-500 opacity-0 ring-1 ring-ui-ink/[0.06] transition group-hover/card:opacity-100 focus-visible:opacity-100 hover:bg-red-500/15 hover:text-red-300"
+          className="ui-reveal rounded-md bg-zinc-900/90 p-1 text-zinc-500 opacity-0 ring-1 ring-ui-ink/[0.06] transition group-hover/card:opacity-100 focus-visible:opacity-100 hover:bg-red-500/15 hover:text-danger"
           title="Eliminar tarjeta (x)"
         >
           <Trash2 className="h-3.5 w-3.5" />
@@ -339,13 +339,13 @@ function CardItem({
             <TagChip key={t.id} tag={t} />
           ))}
           {previewing && (
-            <span className="flex shrink-0 items-center gap-1 rounded-md bg-teal-400/12 px-1.5 text-[10px] leading-[16px] font-semibold text-teal-200" title="Esta rama está puesta en tu repo">
+            <span className="flex shrink-0 items-center gap-1 rounded-md bg-teal-400/12 px-1.5 text-[10px] leading-[16px] font-semibold text-success" title="Esta rama está puesta en tu repo">
               <Eye className="h-3 w-3" /> en tu repo
             </span>
           )}
           {modelChip && !merged && (
             <span
-              className={`shrink-0 rounded-md px-1.5 text-[10px] leading-[16px] font-semibold ${modelChip.codex ? "bg-emerald-400/10 text-emerald-300" : "bg-orange-400/10 text-orange-300"}`}
+              className={`shrink-0 rounded-md px-1.5 text-[10px] leading-[16px] font-semibold ${modelChip.codex ? "bg-emerald-400/10 text-success" : "bg-orange-400/10 text-warning"}`}
               title={modelChip.title}
             >
               {modelChip.label}
@@ -361,7 +361,7 @@ function CardItem({
           <StatusBadge card={card} />
           {elsewhere && <MachineChip machine={card.machine} className="shrink-0" />}
           {card.status_text && card.status !== "running" && (
-            <span className={`truncate text-[11px] ${card.status === "error" ? "text-red-300/80" : "text-zinc-500"}`}>{card.status_text}</span>
+            <span className={`truncate text-[11px] ${card.status === "error" ? "text-danger/80" : "text-zinc-500"}`}>{card.status_text}</span>
           )}
         </div>
       )}
@@ -370,13 +370,13 @@ function CardItem({
         <div className="mt-2.5 flex items-center gap-2.5">
           {card.checkpoints_total > 0 && (
             <div className="flex min-w-0 flex-1 items-center gap-2">
-              <div className="h-[3px] flex-1 overflow-hidden rounded-full bg-ui-ink/[0.06]">
+              <div className="ui-progress flex-1">
                 <div
                   className={`h-full rounded-full transition-all ${done ? "bg-emerald-400" : "bg-indigo-400"}`}
                   style={{ width: `${(card.checkpoints_done / card.checkpoints_total) * 100}%` }}
                 />
               </div>
-              <span className={`tabular flex items-center gap-1 text-[10.5px] ${done ? "text-emerald-300" : "text-zinc-500"}`}>
+              <span className={`tabular flex items-center gap-1 text-[10.5px] ${done ? "text-success" : "text-zinc-500"}`}>
                 <ListChecks className="h-3 w-3" />
                 {card.checkpoints_done}/{card.checkpoints_total}
               </span>
@@ -413,8 +413,8 @@ function NewCardInput({ projectId, column, onDone }: { projectId: string; column
     <input ref={input} aria-label="Título de la nueva tarjeta" autoFocus value={title} readOnly={saving} onChange={e => setTitle(e.target.value)} onKeyDown={e => {
       if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); if (!e.repeat) void create(); }
       if (e.key === "Escape") { e.stopPropagation(); if (!saving) onDone(); }
-    }} placeholder="Título de la tarjeta…" className="w-full rounded-lg bg-transparent px-2 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-500" />
-    {error && <p role="alert" className="px-2 py-1 text-xs text-red-300">{error}</p>}
+    }} placeholder="Título de la tarjeta…" className="ui-field w-full rounded-lg bg-transparent px-2 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-500" />
+    {error && <p role="alert" className="px-2 py-1 text-xs text-danger">{error}</p>}
     <div className="mt-1 flex items-center justify-end gap-2"><Button size="sm" onClick={onDone} disabled={saving}>Cancelar</Button><Button size="sm" variant="primary" onClick={create} disabled={!title.trim() || saving}>{saving ? "Creando…" : "Añadir ↵"}</Button></div>
   </div>;
 }

@@ -30,8 +30,8 @@ export function useProjectTags(projectId: string | null | undefined, board: Boar
 export function TagChip({ tag, className = "" }: { tag: Tag; className?: string }) {
   return (
     <span
-      className={`inline-flex max-w-full items-center gap-1 rounded-md px-1.5 text-[10.5px] leading-[18px] font-medium ${className}`}
-      style={{ background: `${tag.color}22`, color: tag.color }}
+      className={`tag-chip inline-flex max-w-full items-center gap-1 rounded-md px-1.5 text-[10.5px] leading-[18px] font-medium ${className}`}
+      style={{ background: `${tag.color}22`, "--tag-color": tag.color } as React.CSSProperties}
       title={tag.model ? `Modelo: ${modelLabel(tag.model)}` : undefined}
     >
       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: tag.color }} />
@@ -125,11 +125,11 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
             }}
             placeholder="Buscar o crear etiqueta…"
             aria-label="Buscar o crear etiqueta"
-            className="mb-1 w-full rounded-lg bg-zinc-950 px-2.5 py-1.5 text-sm text-zinc-100 outline-none ring-1 ring-ui-ink/[0.06] placeholder:text-zinc-600 focus:ring-indigo-500/60"
+            className="ui-field ui-control mb-1 w-full rounded-lg bg-zinc-950 px-2.5 py-1.5 text-sm text-zinc-100 outline-none ring-1 ring-ui-ink/[0.06] placeholder:text-zinc-600 focus:ring-indigo-500/60"
           />
           <ul className="max-h-60 overflow-y-auto">
             {shown.map((t) => (
-              <li key={t.id} className="group/tag flex items-center gap-1 rounded-lg hover:bg-ui-ink/[0.05]">
+              <li key={t.id} className="tag-row group/tag flex items-center gap-1 rounded-lg hover:bg-ui-ink/[0.05]">
                 <button
                   onClick={manage}
                   className="ml-1.5 h-3.5 w-3.5 shrink-0 rounded-full ring-1 ring-black/20"
@@ -145,11 +145,11 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
                       {modelLabel(t.model, true)}
                     </span>
                   )}
-                  {card.tags.includes(t.id) && <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-indigo-300" />}
+                  {card.tags.includes(t.id) && <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-accent" />}
                 </button>
                 <button
                   onClick={() => remove(t)}
-                  className="mr-1 rounded p-1 text-zinc-600 opacity-0 transition group-hover/tag:opacity-100 hover:text-red-300"
+                  className="ui-reveal mr-1 rounded p-1 text-zinc-600 opacity-0 transition group-hover/tag:opacity-100 hover:text-danger"
                   title="Borrar etiqueta del proyecto"
                   aria-label={`Borrar etiqueta ${t.name}`}
                 >
@@ -160,7 +160,7 @@ export function TagPicker({ card, tags }: { card: Card; tags: Tag[] }) {
             {!tags.length && !q && <li className="px-2.5 py-2 text-xs text-zinc-500">Aún no hay etiquetas. Escribe un nombre y pulsa Enter.</li>}
           </ul>
           {q && !exact && (
-            <button onClick={create} className="mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm text-indigo-300 hover:bg-indigo-500/10">
+            <button onClick={create} className="mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm text-accent hover:bg-indigo-500/10">
               <Plus className="h-3.5 w-3.5" /> Crear «{query.trim()}»
             </button>
           )}

@@ -396,7 +396,7 @@ export default function App() {
           <>
             <ChevronRight className="h-3.5 w-3.5 text-zinc-600" />
             <ProjectAvatar id={project!.id} name={projectName(project!.name)} size={30} />
-            <span title={project!.repo_path || project!.name} className="max-w-[28rem] truncate text-2xl font-bold tracking-tight text-zinc-50">{projectName(project!.name)}</span>
+            <span title={project!.repo_path || project!.name} className="app-project-title ui-title max-w-[28rem] truncate">{projectName(project!.name)}</span>
             <BranchStatus project={project!} board={board} onOpenCard={setSelected} />
           </>
         )}
@@ -407,30 +407,30 @@ export default function App() {
           </>
         )}
 
-        <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
+        <div className="app-header-actions ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
           <SyncIndicator />
           {inBoard && project?.preview_card_id && (
-            <span className="mr-1 flex items-center gap-2 rounded-full bg-teal-400/10 py-1 pr-1 pl-2.5 text-[11.5px] text-teal-300 ring-1 ring-teal-300/20">
-              <Eye className="h-3.5 w-3.5 text-teal-300" />
+            <span className="mr-1 flex items-center gap-2 rounded-full bg-teal-400/10 py-1 pr-1 pl-2.5 text-[11.5px] text-success ring-1 ring-teal-300/20">
+              <Eye className="h-3.5 w-3.5 text-success" />
               <span className="max-w-[260px] truncate">
                 Tu repo muestra: <button className="font-medium hover:underline" onClick={() => previewCard && setSelected(previewCard.id)}>{previewCard?.title ?? "otra rama"}</button>
               </span>
               <button
                 onClick={() => togglePreview({ id: project.preview_card_id!, project_id: project.id, title: "" }, true)}
-                className="rounded-full bg-teal-300/15 px-2 py-0.5 font-medium text-teal-300 transition hover:bg-teal-300/25"
+                className="rounded-full bg-teal-300/15 px-2 py-0.5 font-medium text-success transition hover:bg-teal-300/25"
               >
                 Volver a {project.base_branch}
               </button>
             </span>
           )}
           {inBoard && running > 0 && (
-            <span className="mr-1 flex items-center gap-1.5 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11.5px] text-amber-200">
+            <span className="mr-1 flex items-center gap-1.5 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11.5px] text-warning">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
               {running} trabajando
             </span>
           )}
           {inBoard && waiting > 0 && (
-            <span className="mr-1 flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11.5px] text-violet-200">
+            <span className="mr-1 flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11.5px] text-waiting">
               <MessageCircleQuestion className="h-3 w-3" />
               {waiting} te {waiting === 1 ? "necesita" : "necesitan"}
             </span>
@@ -525,8 +525,8 @@ export default function App() {
             <div className={`relative isolate flex h-full flex-col pt-3 ${boardBackground(project).image ? "board-with-image" : ""}`}>
             <BoardBackground project={project} />
             <div className="flex flex-wrap items-center gap-3 px-4 pb-3">
-              <label className="flex min-w-48 max-w-sm flex-1 items-center gap-2 rounded-lg border border-ui-ink/10 bg-panel px-3 py-2"><Search className="h-4 w-4 text-zinc-500" /><input aria-label="Buscar tarjetas" placeholder="Buscar tarjetas…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); if (query) setQuery(""); else e.currentTarget.blur(); } }} className="min-w-0 flex-1 bg-transparent text-sm outline-none" />{query && <button aria-label="Limpiar búsqueda" className="text-zinc-500" onClick={() => setQuery("")}>×</button>}</label>
-              <div role="group" aria-label="Filtrar tarjetas" className="flex flex-wrap gap-1">{[["all", "Todas"], ["waiting", "Te necesitan"], ["review", "Por revisar"], ["error", "Errores"]].map(([value, label]) => <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)} className={`rounded-lg px-3 py-2 text-sm transition ${filter === value ? "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}>{label}</button>)}</div>
+              <label className="flex min-w-0 w-full sm:min-w-48 max-w-sm flex-1 items-center gap-2 rounded-lg border border-ui-ink/10 bg-panel px-3 py-2 focus-within:ring-2 focus-within:ring-indigo-400"><Search className="h-4 w-4 text-zinc-500" /><input aria-label="Buscar tarjetas" placeholder="Buscar tarjetas…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); if (query) setQuery(""); else e.currentTarget.blur(); } }} className="ui-field min-w-0 flex-1 bg-transparent text-sm outline-none" />{query && <button aria-label="Limpiar búsqueda" className="text-zinc-500" onClick={() => setQuery("")}>×</button>}</label>
+              <div role="group" aria-label="Filtrar tarjetas" className="flex flex-wrap gap-1">{[["all", "Todas"], ["waiting", "Te necesitan"], ["review", "Por revisar"], ["error", "Errores"]].map(([value, label]) => <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)} className={`rounded-lg px-3 py-2 text-sm transition ${filter === value ? "bg-indigo-500/10 text-accent ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}>{label}</button>)}</div>
               {(query || filter !== "all") && <span role="status" className="text-xs text-zinc-500">{Object.keys(visibleBoard.cards).length} resultados</span>}
               <button onClick={() => setShowTags(true)} title="Gestionar etiquetas: colores y modelo de cada una" className="ml-auto flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm text-zinc-400 ring-1 ring-ui-ink/10 transition hover:bg-ui-ink/5 hover:text-zinc-200"><Tags className="h-4 w-4" />Etiquetas</button>
             </div>
@@ -635,7 +635,7 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
           </ul>
         </section>
       )}
-      <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
+      <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
         {old.length > 0 && (
           <button onClick={() => setHistory(!history)} aria-expanded={history} className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300">
             <ChevronRight className={`h-3 w-3 transition ${history ? "rotate-90" : ""}`} />
@@ -644,7 +644,7 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
         )}
         {live.length === 0 && !history && <p className="text-sm text-zinc-500">Nada pendiente.</p>}
         {[...(history ? old : []), ...live].map((n) => (
-          <div key={n.id} className={`group text-sm ${n.archived ? "opacity-50" : ""}`}>
+          <div key={n.id} className={`ui-message group text-sm ${n.archived ? "opacity-50" : ""}`}>
             <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-zinc-500">
               {n.card_id ? (
                 <button onClick={() => onOpen(n.card_id!)} className="font-medium text-zinc-300 hover:underline">
@@ -660,22 +660,22 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
                   title="Archivar: los agentes dejan de verla"
                   aria-label="Archivar nota"
                   onClick={() => archive(n.id)}
-                  className="ml-auto rounded p-0.5 text-zinc-500 opacity-0 hover:text-zinc-300 focus:opacity-100 group-hover:opacity-100"
+                  className="ui-reveal ml-auto rounded p-0.5 text-zinc-500 opacity-0 hover:text-zinc-300 focus:opacity-100 group-hover:opacity-100"
                 >
                   <Archive className="h-3.5 w-3.5" />
                 </button>
               )}
             </div>
             {n.files.length > 0 && <div className="mb-0.5 font-mono text-[11px] text-zinc-500">{n.files.join(", ")}</div>}
-            <div className="whitespace-pre-wrap text-zinc-300">{n.content}</div>
+            <div className="ui-message whitespace-pre-wrap text-zinc-300">{n.content}</div>
           </div>
         ))}
         <div ref={scroll.end} />
       </div>
-      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300">Nuevos mensajes ↓</button>}
+      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-accent">Nuevos mensajes ↓</button>}
       <div className="border-t border-zinc-800 p-3">
-        <textarea aria-label="Mensaje al canal de agentes" rows={2} value={text} onChange={e => setText(e.target.value)} onKeyDown={e => chatKeyDown(e, send, setText)} placeholder="Avisa a todos los agentes…" className="w-full resize-y rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-500" />
-        <div className="mt-2 flex items-center justify-between gap-2"><p className="text-xs text-zinc-500"><ChatHint /></p><Button onClick={send} disabled={!text.trim() || sending}>Enviar</Button></div>
+        <textarea aria-label="Mensaje al canal de agentes" rows={2} value={text} onChange={e => setText(e.target.value)} onKeyDown={e => chatKeyDown(e, send, setText)} placeholder="Avisa a todos los agentes…" className="ui-field ui-control w-full resize-y rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-500" />
+        <div className="mt-2 flex items-center justify-between gap-2"><p className="text-xs text-zinc-500"><ChatHint /></p><Button variant="primary" onClick={send} disabled={!text.trim() || sending}>Enviar</Button></div>
       </div>
     </aside>
   );
@@ -714,16 +714,16 @@ function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onC
   ] as const;
 
   return (
-    <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={() => canClose && onClose()}>
+    <div data-modal className="ui-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={() => canClose && onClose()}>
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Nuevo proyecto"
         onClick={(e) => e.stopPropagation()}
-        className="max-h-[92vh] w-full max-w-xl space-y-4 overflow-y-auto rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]"
+        className="ui-dialog max-h-[92vh] w-full max-w-xl space-y-4 overflow-y-auto rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]"
       >
-        <div className="flex items-start gap-3">
+        <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0 flex-1">
             <h2 className="text-base font-semibold text-zinc-100">Nuevo proyecto</h2>
             <p className="text-xs text-zinc-500">
@@ -771,25 +771,25 @@ function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onC
               <div className="space-y-3 rounded-lg bg-zinc-950 p-3 ring-1 ring-zinc-800">
                 <div className="truncate font-mono text-xs text-zinc-300">{repo.path}</div>
                 {!repo.isRepo && (
-                  <label className="flex items-center gap-2 text-xs text-amber-200">
-                    <input type="checkbox" checked={init} onChange={(e) => setInit(e.target.checked)} className="accent-amber-400" />
+                  <label className="flex items-center gap-2 text-xs text-warning">
+                    <input type="checkbox" checked={init} onChange={(e) => setInit(e.target.checked)} className="ui-field accent-amber-400" />
                     No es un repo git — inicializarlo aquí (git init + primer commit)
                   </label>
                 )}
-                <div className="flex gap-3">
+                <div className="project-form-row flex gap-3">
                   <label className="block flex-1 text-xs text-zinc-400">
                     Nombre
-                    <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-indigo-500" />
+                    <input value={name} onChange={(e) => setName(e.target.value)} className="ui-field ui-control mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-indigo-500" />
                   </label>
                   <label className="block w-40 text-xs text-zinc-400">
                     Rama base
-                    <input value={base} onChange={(e) => setBase(e.target.value)} placeholder="la actual" className="mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 font-mono text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none placeholder:text-zinc-600 focus:ring-indigo-500" />
+                    <input value={base} onChange={(e) => setBase(e.target.value)} placeholder="la actual" className="ui-field ui-control mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 font-mono text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none placeholder:text-zinc-600 focus:ring-indigo-500" />
                   </label>
                 </div>
               </div>
             )}
 
-            {error && <p className="text-sm text-red-300">{error}</p>}
+            {error && <p className="ui-alert">{error}</p>}
             {footer(
               <Button variant="primary" type="submit" disabled={!repo || (!repo.isRepo && !init) || saving}>
                 Crear proyecto

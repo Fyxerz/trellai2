@@ -117,13 +117,13 @@ export function BranchStatus({ project, board, onOpenCard }: { project: Project;
         ) : (
           <>
             {st && st.behind > 0 && (
-              <span className="flex items-center text-amber-300">
+              <span className="flex items-center text-warning">
                 <ArrowDown className="h-3 w-3" />
                 {st.behind}
               </span>
             )}
             {st && st.ahead > 0 && (
-              <span className="flex items-center text-sky-300">
+              <span className="flex items-center text-info">
                 <ArrowUp className="h-3 w-3" />
                 {st.ahead}
               </span>
@@ -220,12 +220,12 @@ function BranchMenu({
         )}
       </div>
       {list && !list.fetch.ok && (
-        <div className="mx-1 mb-1.5 rounded-lg bg-red-400/10 px-2.5 py-1.5 text-[11px] text-red-200">
+        <div className="mx-1 mb-1.5 rounded-lg bg-red-400/10 px-2.5 py-1.5 text-[11px] text-danger">
           {list.fetch.message} Lo que ves de {list.remoteLabel} puede no estar al día.
         </div>
       )}
       {error ? (
-        <div className="px-2 py-3 text-[12px] text-red-300">{error}</div>
+        <div className="px-2 py-3 text-[12px] text-danger">{error}</div>
       ) : !list ? (
         <div className="flex items-center gap-2 px-2 py-3 text-[12px] text-zinc-500">
           <Spinner className="h-3.5 w-3.5" /> Cargando ramas…
@@ -262,23 +262,23 @@ function BranchItem({ b, remote, onOpenCard }: { b: BranchRow; remote: string | 
   const where = !remote ? null : b.local && b.remote ? null : b.local ? "solo aquí" : `solo en ${remote}`;
   const body = (
     <>
-      <GitBranch className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${b.current ? "text-teal-300" : "text-zinc-600"}`} />
+      <GitBranch className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${b.current ? "text-success" : "text-zinc-600"}`} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <span className={`truncate font-mono text-[11.5px] ${b.current ? "text-teal-200" : "text-zinc-200"}`}>{b.name}</span>
-          {b.current && <span className="shrink-0 rounded bg-teal-400/12 px-1 text-[10px] leading-4 font-semibold text-teal-200">actual</span>}
-          {b.worktree && <span className="shrink-0 rounded bg-amber-400/10 px-1 text-[10px] leading-4 text-amber-200" title={b.worktree}>worktree</span>}
+          <span className={`truncate font-mono text-[11.5px] ${b.current ? "text-success" : "text-zinc-200"}`}>{b.name}</span>
+          {b.current && <span className="shrink-0 rounded bg-teal-400/12 px-1 text-[10px] leading-4 font-semibold text-success">actual</span>}
+          {b.worktree && <span className="shrink-0 rounded bg-amber-400/10 px-1 text-[10px] leading-4 text-warning" title={b.worktree}>worktree</span>}
           {where && <span className="shrink-0 rounded bg-ui-ink/[0.06] px-1 text-[10px] leading-4 text-zinc-400">{where}</span>}
           {b.merged && !b.current && <GitMerge className="h-3 w-3 shrink-0 text-zinc-500" aria-label="Ya está en la rama base" />}
           <span className="ml-auto flex shrink-0 items-center gap-1 font-mono text-[10.5px]">
             {b.behind > 0 && (
-              <span className="flex items-center text-amber-300" title={`${b.behind} commit(s) en ${remote} que no tienes`}>
+              <span className="flex items-center text-warning" title={`${b.behind} commit(s) en ${remote} que no tienes`}>
                 <ArrowDown className="h-3 w-3" />
                 {b.behind}
               </span>
             )}
             {b.ahead > 0 && (
-              <span className="flex items-center text-sky-300" title={`${b.ahead} commit(s) sin subir a ${remote}`}>
+              <span className="flex items-center text-info" title={`${b.ahead} commit(s) sin subir a ${remote}`}>
                 <ArrowUp className="h-3 w-3" />
                 {b.ahead}
               </span>
@@ -319,7 +319,7 @@ export function SyncIndicator() {
   const Icon = s.ok ? Cloud : CloudOff;
   return (
     <span
-      className={`hidden items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] md:flex ${s.ok ? "text-zinc-500" : "text-red-300"}`}
+      className={`hidden items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] md:flex ${s.ok ? "text-zinc-500" : "text-danger"}`}
       title={
         s.ok
           ? `Tablero compartido entre tus ordenadores. Este es "${s.machine}".${s.last_sync ? ` Última sincronización: hace ${timeAgo(s.last_sync)}.` : ""}`
@@ -338,7 +338,7 @@ export function MachineChip({ machine, className = "" }: { machine: string | nul
   const s = useSync();
   if (!machine || !s?.enabled || machine === s.machine) return null;
   return (
-    <span className={`inline-flex items-center gap-1 rounded-md bg-sky-400/10 px-1.5 text-[10.5px] leading-4 text-sky-200 ${className}`} title={`Su agente y su worktree están en ${machine}`}>
+    <span className={`inline-flex items-center gap-1 rounded-md bg-sky-400/10 px-1.5 text-[10.5px] leading-4 text-info ${className}`} title={`Su agente y su worktree están en ${machine}`}>
       <Laptop className="h-3 w-3" />
       {machine}
     </span>
@@ -368,7 +368,7 @@ export function UnlinkedBanner({ project, onLinked }: { project: Project; onLink
   return (
     <div className="mx-4 mb-3 rounded-xl bg-sky-400/[0.06] p-4 ring-1 ring-sky-300/15">
       <div className="flex flex-wrap items-center gap-3">
-        <FolderGit2 className="h-5 w-5 shrink-0 text-sky-300" />
+        <FolderGit2 className="h-5 w-5 shrink-0 text-info" />
         <div className="min-w-0 flex-1">
           <div className="text-[13.5px] font-medium text-zinc-100">Este proyecto no está en este ordenador</div>
           <div className="mt-0.5 text-[12px] text-zinc-400">

@@ -109,7 +109,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
             onClick={async () => {
               if (await confirmDeleteCard(card)) api(`/api/cards/${card.id}`, undefined, "DELETE").then(onClose).catch(e => reportError(e.message));
             }}
-            className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-red-500/10 hover:text-red-300"
+            className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-red-500/10 hover:text-danger"
             title="Eliminar tarjeta"
           >
             <Trash2 className="h-4 w-4" />
@@ -122,7 +122,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
         <TitleInput card={card} />
         <TagPicker card={card} tags={tags} />
         {card.status_text && card.status !== "running" && (
-          <p className={`mt-1 text-[12.5px] ${card.status === "error" ? "text-red-300" : "text-zinc-400"}`}>{card.status_text}</p>
+          <p className={`mt-1 text-[12.5px] ${card.status === "error" ? "text-danger" : "text-zinc-400"}`}>{card.status_text}</p>
         )}
         <div className="mt-3 flex flex-wrap items-center gap-2 empty:hidden">
           {card.column === "backlog" && (
@@ -149,7 +149,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
             <Button
               onClick={() => togglePreview(card, previewing)}
               title={previewing ? "Devolver tu repo a su rama (v)" : "Poner esta rama en tu repo para verla con tu servidor de desarrollo (v)"}
-              className={previewing ? "!bg-teal-400/15 !text-teal-200 !ring-teal-300/30" : ""}
+              className={previewing ? "!bg-teal-400/15 !text-success !ring-teal-300/30" : ""}
             >
               {previewing ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
               {previewing ? "Dejar de ver" : "Ver esta rama"}
@@ -173,7 +173,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
 
       <Checkpoints card={card} items={checkpoints} setItems={setCheckpoints} />
 
-      <nav role="tablist" aria-label="Contenido de tarjeta" className="flex gap-1 border-b border-ui-ink/[0.06] px-5">
+      <nav role="tablist" aria-label="Contenido de tarjeta" className="ui-tabs panel-tabs border-b border-ui-ink/[0.06] px-5">
         {(["spec", "activity", "diff"] as Tab[]).map((t, i) => {
           const Icon = { spec: FileText, activity: MessagesSquare, diff: FileDiff }[t];
           return (
@@ -182,7 +182,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
               role="tab"
               aria-selected={tab === t}
               onClick={() => setTab(t)}
-              className={`-mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-2.5 text-sm transition ${
+              className={`ui-tab -mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-2.5 text-sm transition ${
                 tab === t ? "border-indigo-400 text-zinc-50" : "border-transparent text-zinc-500 hover:text-zinc-300"
               }`}
             >
@@ -221,8 +221,8 @@ function TitleInput({ card }: { card: Card }) {
       if (e.nativeEvent.isComposing) return;
       if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
       if (e.key === "Escape") { e.stopPropagation(); cancel.current = true; setV(card.title); setError(""); e.currentTarget.blur(); }
-    }} className="mt-3 w-full resize-none rounded-lg bg-transparent text-xl leading-snug font-semibold tracking-tight text-zinc-50" />
-    {error && <p role="alert" className="text-xs text-red-300">{error}</p>}
+    }} className="ui-field mt-3 w-full resize-none rounded-lg bg-transparent text-xl leading-snug font-semibold tracking-tight text-zinc-50" />
+    {error && <p role="alert" className="text-xs text-danger">{error}</p>}
   </>;
 }
 
@@ -276,13 +276,13 @@ function SpecTab({ card, board, questions, editSignal }: { card: Card; board: Bo
   return (
     <div className="h-full overflow-y-auto px-5 py-4">
       <div className="mb-2 flex items-center gap-2">
-        <h3 className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">Especificación</h3>
+        <h3 className="ui-section-title">Especificación</h3>
         <span className="text-[11px] text-zinc-600">{{ saved: "Guardado", saving: "Guardando…", error: "Error al guardar" }[saveState]}</span>
-        <button onClick={() => setEditing(!editing)} className="ml-auto text-xs text-indigo-400 hover:underline">
+        <button onClick={() => setEditing(!editing)} className="ml-auto text-xs text-accent hover:underline">
           {editing ? "Vista previa" : "Editar"}
         </button>
       </div>
-      {error && <div role="alert" className="mb-3 rounded-lg bg-red-500/10 p-3 text-sm text-red-300">{error} <button className="ml-2 underline" onClick={() => void flush().catch(() => {})}>Reintentar</button></div>}
+      {error && <div role="alert" className="ui-alert mb-3">{error} <button className="ml-2 underline" onClick={() => void flush().catch(() => {})}>Reintentar</button></div>}
       {editing ? (
         <textarea
           aria-label="Especificación"
@@ -295,11 +295,11 @@ function SpecTab({ card, board, questions, editSignal }: { card: Card; board: Bo
             save(e.target.value);
           }}
           placeholder={"Describe la feature como quieras: qué quieres, por qué, cómo debería comportarse, casos raros…\n\nMarkdown soportado."}
-          className="min-h-[50vh] w-full resize-y rounded-lg bg-zinc-900 p-3 font-mono text-sm leading-relaxed text-zinc-200 ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
+          className="ui-field ui-control min-h-[50vh] w-full resize-y rounded-lg bg-zinc-900 p-3 font-mono text-sm leading-relaxed text-zinc-200 ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
         />
       ) : (
-        <div className="rounded-lg bg-zinc-900/50 p-3 ring-1 ring-zinc-800">
-          {spec ? <Markdown>{spec}</Markdown> : <p className="text-sm text-zinc-500">Sin spec.</p>}
+        <div className="surface rounded-xl p-4">
+          {spec ? <Markdown>{spec}</Markdown> : <p className="ui-empty">Sin spec.</p>}
         </div>
       )}
       {card.column !== "backlog" && card.column !== "plan" && (
@@ -309,7 +309,7 @@ function SpecTab({ card, board, questions, editSignal }: { card: Card; board: Bo
 
       {card.plan && (
         <>
-          <h3 className="mt-6 mb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">Notas de preparación</h3>
+          <h3 className="mt-6 mb-2 ui-section-title">Notas de preparación</h3>
           <div className="rounded-lg bg-violet-500/5 p-3 ring-1 ring-violet-500/20">
             <Markdown>{card.plan}</Markdown>
           </div>
@@ -324,7 +324,7 @@ function SpecTab({ card, board, questions, editSignal }: { card: Card; board: Bo
       )}
       {answered.length > 0 && (
         <>
-          <h3 className="mt-6 mb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">Decisiones</h3>
+          <h3 className="mt-6 mb-2 ui-section-title">Decisiones</h3>
           <ul className="space-y-1.5 text-sm">
             {answered.map((q) => (
               <li key={q.id}>
@@ -383,7 +383,7 @@ function Questions({ card, questions }: { card: Card; questions: Question[] }) {
   return (
     <div className="border-b border-violet-500/30 bg-violet-500/[0.07] px-5 py-4">
       <div className="mb-3 flex items-center gap-3">
-        <h3 className="text-sm font-semibold text-violet-200">
+        <h3 className="text-sm font-semibold text-waiting">
           {questions.length === 1 ? "Claude tiene una pregunta" : `Pregunta ${i + 1} de ${questions.length}`}
         </h3>
         {questions.length > 1 && (
@@ -429,7 +429,7 @@ function Questions({ card, questions }: { card: Card; questions: Question[] }) {
         }}
         placeholder={q.options.length ? "…o escribe tu respuesta" : "Escribe tu respuesta"}
         aria-label={`Respuesta a: ${q.question}`}
-        className="mt-2 w-full rounded-md bg-zinc-900 px-2.5 py-1.5 text-sm ring-1 ring-zinc-700 outline-none focus:ring-violet-500"
+        className="ui-field ui-control mt-2 w-full rounded-md bg-zinc-900 px-2.5 py-1.5 text-sm ring-1 ring-zinc-700 outline-none focus:ring-violet-500"
       />
 
       <div className="mt-4 flex items-center gap-2">
@@ -481,7 +481,7 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
 
   return (
     <div className="flex h-full flex-col">
-      <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-4">
+      <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
         {messages.length === 0 && (
           <p className="pt-8 text-center text-sm text-zinc-500">
             {card.column === "plan" || card.column === "backlog"
@@ -495,13 +495,13 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
           </div>
         ))}
         {card.status === "running" && (
-          <div className="flex items-center gap-2 pt-1 text-xs text-amber-300/80">
+          <div className="flex items-center gap-2 pt-1 text-xs text-warning/80">
             <Spinner /> trabajando…
           </div>
         )}
         <div ref={scroll.end} />
       </div>
-      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300">Nuevos mensajes ↓</button>}
+      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-accent">Nuevos mensajes ↓</button>}
       <div className="border-t border-zinc-800 p-3" onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()} onDrop={images.onDrop}>
         {images.strip}
         <div className="flex items-end gap-2">
@@ -514,7 +514,7 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
             onPaste={images.onPaste}
             rows={2}
             placeholder={placeholder[card.column]}
-            className="flex-1 resize-none rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
+            className="ui-field ui-control flex-1 resize-none rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
           />
           <AddImageButton onFiles={(f) => void images.add(f)} />
           <Button variant={card.column === "review" ? "primary" : "default"} onClick={send} disabled={(!text.trim() && !images.ids.length) || images.uploading || sending}>
@@ -567,19 +567,19 @@ function MessageRow({ m, card }: { m: Message; card: Card }) {
             onClick={() => rewind(card, m)}
             title="Retroceder: volver la rama a como estaba antes de este mensaje"
             aria-label="Retroceder a antes de este mensaje"
-            className="mt-1.5 rounded p-1 text-zinc-500 opacity-0 transition group-hover:opacity-100 hover:bg-zinc-800 hover:text-zinc-200 focus:opacity-100"
+            className="ui-reveal mt-1.5 rounded p-1 text-zinc-500 opacity-0 transition group-hover:opacity-100 hover:bg-zinc-800 hover:text-zinc-200 focus:opacity-100"
           >
             <Undo2 className="h-3.5 w-3.5" />
           </button>
         )}
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-indigo-500/15 px-3.5 py-2 text-sm text-zinc-100 ring-1 ring-indigo-400/20">
+        <div className="ui-message max-w-[90%] rounded-2xl rounded-br-md bg-indigo-500/15 px-3.5 py-2 text-sm text-zinc-100 ring-1 ring-indigo-400/20">
           <Markdown>{m.content}</Markdown>
           {m.undone && <div className="mt-1 text-[11px] text-zinc-400">↶ deshecho</div>}
         </div>
       </div>
     );
   return (
-    <div className="rounded-lg px-1 py-1 text-zinc-200">
+    <div className="ui-message rounded-lg px-1 py-1 text-zinc-200">
       <Markdown>{m.content}</Markdown>
     </div>
   );
@@ -597,19 +597,19 @@ function DiffTab({ card }: { card: Card }) {
 
   if (!card.worktree)
     return <p className="p-6 text-sm text-zinc-500">{card.column === "merged" ? "Ya está mergeada." : "Todavía no hay rama de trabajo."}</p>;
-  if (!data) return <div className="p-6 text-zinc-500"><Spinner /></div>;
+  if (!data) return <div role="status" className="flex items-center gap-2 p-6 text-sm text-zinc-400"><Spinner /> Cargando cambios?</div>;
   return (
     <div className="h-full overflow-y-auto px-4 py-3">
       <div className="mb-3 flex items-center gap-2 text-xs text-zinc-400">
         {files.length} fichero(s)
-        <button onClick={load} className="ml-auto text-indigo-400 hover:underline">Refrescar</button>
+        <button onClick={load} className="ml-auto text-accent hover:underline">Refrescar</button>
       </div>
-      {files.length === 0 && <p className="text-sm text-zinc-500">Sin cambios todavía.</p>}
+      {files.length === 0 && <p className="ui-empty">Sin cambios todavía.</p>}
       {files.map((f) => (
         <details key={f.name} className="mb-3 overflow-hidden rounded-lg ring-1 ring-zinc-800">
           <summary className="cursor-pointer bg-zinc-900 px-3 py-1.5 font-mono text-xs text-zinc-300">
             {f.name}
-            <span className="ml-2 text-emerald-400">+{f.add}</span> <span className="text-red-400">−{f.del}</span>
+            <span className="ml-2 text-success">+{f.add}</span> <span className="text-danger">−{f.del}</span>
           </summary>
           <pre className="overflow-x-auto bg-zinc-950 py-1 font-mono text-[13px] leading-relaxed">
             {f.lines.map((l, i) => (
@@ -617,11 +617,11 @@ function DiffTab({ card }: { card: Card }) {
                 key={i}
                 className={
                   l.startsWith("+")
-                    ? "bg-emerald-500/10 px-3 text-emerald-200"
+                    ? "bg-emerald-500/10 px-3 text-success"
                     : l.startsWith("-")
-                      ? "bg-red-500/10 px-3 text-red-200"
+                      ? "bg-red-500/10 px-3 text-danger"
                       : l.startsWith("@@")
-                        ? "px-3 text-indigo-400/70"
+                        ? "px-3 text-accent/70"
                         : "px-3 text-zinc-400"
                 }
               >
@@ -676,13 +676,13 @@ function Checkpoints({ card, items, setItems }: { card: Card; items: Checkpoint[
   return (
     <section className="border-b border-zinc-800 px-5 py-3">
       <button onClick={() => setCollapsed(!collapsed)} className="flex w-full items-center gap-2 text-left">
-        <h3 className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">Checkpoints</h3>
+        <h3 className="ui-section-title">Checkpoints</h3>
         {items.length > 0 && (
           <>
             <span className="text-xs text-zinc-500">
               {done}/{items.length}
             </span>
-            <div className="h-1 flex-1 overflow-hidden rounded-full bg-zinc-800">
+            <div className="ui-progress flex-1">
               <div className={`h-full rounded-full transition-all ${pct === 100 ? "bg-emerald-400" : "bg-indigo-400"}`} style={{ width: `${pct}%` }} />
             </div>
           </>
@@ -709,9 +709,9 @@ function Checkpoints({ card, items, setItems }: { card: Card; items: Checkpoint[
             aria-label="Añadir checkpoint"
             data-kb="checkpoint"
             placeholder={items.length ? "+ Añadir checkpoint…" : "+ Añade los pasos que quieres ver hechos (Enter). Claude también añadirá los suyos."}
-            className="mt-1 w-full rounded-md bg-transparent px-2 py-1.5 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 hover:bg-zinc-900 focus:bg-zinc-900 focus:ring-1 focus:ring-zinc-700"
+            className="ui-field ui-control mt-1 w-full rounded-md bg-transparent px-2 py-1.5 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 hover:bg-zinc-900 focus:bg-zinc-900 focus:ring-1 focus:ring-zinc-700"
           />
-          {error && <p role="alert" className="mt-1 text-xs text-red-300">{error}</p>}
+          {error && <p role="alert" className="mt-1 text-xs text-danger">{error}</p>}
         </>
       )}
     </section>
@@ -734,8 +734,8 @@ function CheckpointRow({ c, onToggle }: { c: Checkpoint; onToggle: () => void })
     finally { busy.current = false; }
   };
   return (
-    <li className="group flex items-start gap-2 rounded-md px-2 py-1 hover:bg-zinc-900">
-      <input type="checkbox" checked={c.done} onChange={onToggle} className="mt-[3px] h-3.5 w-3.5 shrink-0 cursor-pointer accent-emerald-500" />
+    <li className="checkpoint-row group flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-zinc-900">
+      <input type="checkbox" checked={c.done} onChange={onToggle} className="ui-field mt-[3px] h-3.5 w-3.5 shrink-0 cursor-pointer accent-emerald-500" />
       {editing ? (
         <input
           autoFocus
@@ -751,7 +751,7 @@ function CheckpointRow({ c, onToggle }: { c: Checkpoint; onToggle: () => void })
               setEditing(false);
             }
           }}
-          className="flex-1 bg-transparent text-sm text-zinc-100 outline-none"
+          className="ui-field flex-1 bg-transparent text-sm text-zinc-100 outline-none"
         />
       ) : (
         <button onClick={() => { canceled.current = false; setEditing(true); }} className={`flex-1 cursor-text text-left text-sm leading-snug ${c.done ? "text-zinc-500 line-through" : "text-zinc-200"}`}>
@@ -759,13 +759,13 @@ function CheckpointRow({ c, onToggle }: { c: Checkpoint; onToggle: () => void })
         </button>
       )}
       {c.source === "agent" && (
-        <span className="mt-0.5 shrink-0 rounded bg-violet-500/10 px-1.5 text-[10px] text-violet-300/80" title="Añadido por Claude">
+        <span className="mt-0.5 shrink-0 rounded bg-violet-500/10 px-1.5 text-[10px] text-waiting/80" title="Añadido por Claude">
           Claude
         </span>
       )}
       <button
         onClick={() => api(`/api/checkpoints/${c.id}`, undefined, "DELETE").catch(e => reportError(e.message))}
-        className="shrink-0 text-xs text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-red-300"
+        className="ui-reveal shrink-0 text-xs text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-danger"
         title="Eliminar"
       >
         ✕

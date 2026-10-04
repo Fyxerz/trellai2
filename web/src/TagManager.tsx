@@ -62,14 +62,14 @@ export function TagManager({ projectId, onClose, onChanged }: { projectId: strin
   };
 
   return (
-    <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={onClose}>
+    <div data-modal className="ui-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={onClose}>
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Gestionar etiquetas"
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[85vh] w-full max-w-xl flex-col gap-4 rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]"
+        className="ui-dialog flex max-h-[85vh] w-full max-w-xl flex-col gap-4 rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]"
       >
         <div className="flex items-start">
           <div>
@@ -86,7 +86,7 @@ export function TagManager({ projectId, onClose, onChanged }: { projectId: strin
         <ul className="-mx-1 space-y-1 overflow-y-auto px-1">
           {tags.map((t) => (
             <li key={t.id} className="rounded-xl bg-zinc-950/60 p-2 ring-1 ring-ui-ink/[0.05]">
-              <div className="flex items-center gap-2">
+              <div className="tag-editor-row flex items-center gap-2">
                 <button
                   onClick={() => setPicking(picking === t.id ? null : t.id)}
                   className="h-6 w-6 shrink-0 rounded-md ring-1 ring-black/20 transition hover:scale-105"
@@ -102,18 +102,18 @@ export function TagManager({ projectId, onClose, onChanged }: { projectId: strin
                   onBlur={(e) => rename(t, e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
                   aria-label={`Nombre de ${t.name}`}
-                  className="min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-sm text-zinc-100 outline-none ring-ui-ink/[0.08] hover:ring-1 focus:ring-1 focus:ring-indigo-500/60"
+                  className="ui-field ui-control min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-sm text-zinc-100 outline-none ring-ui-ink/[0.08] hover:ring-1 focus:ring-1 focus:ring-indigo-500/60"
                 />
                 <ModelPicker
                   value={t.model ?? null}
                   inheritLabel="Sin modelo (usa el del proyecto)"
                   title="Modelo con el que se desarrollan las tarjetas con esta etiqueta"
                   onChange={(model) => patch(t, { model })}
-                  className="w-64 shrink-0"
+                  className="model-picker w-64 shrink-0 max-w-full"
                 />
                 <button
                   onClick={() => remove(t)}
-                  className="rounded p-1.5 text-zinc-600 transition hover:bg-red-500/10 hover:text-red-300"
+                  className="rounded p-1.5 text-zinc-600 transition hover:bg-red-500/10 hover:text-danger"
                   title="Borrar etiqueta"
                   aria-label={`Borrar etiqueta ${t.name}`}
                 >
@@ -148,7 +148,7 @@ export function TagManager({ projectId, onClose, onChanged }: { projectId: strin
             e.preventDefault();
             void create();
           }}
-          className="flex items-center gap-2"
+          className="tag-editor-row flex items-center gap-2"
         >
           <input
             value={name}
@@ -156,12 +156,12 @@ export function TagManager({ projectId, onClose, onChanged }: { projectId: strin
             placeholder="Nueva etiqueta…"
             aria-label="Nombre de la nueva etiqueta"
             maxLength={40}
-            className="min-w-0 flex-1 rounded-lg bg-zinc-950 px-2.5 py-1.5 text-sm text-zinc-100 outline-none ring-1 ring-ui-ink/[0.06] placeholder:text-zinc-600 focus:ring-indigo-500/60"
+            className="ui-field ui-control min-w-0 flex-1 rounded-lg bg-zinc-950 px-2.5 py-1.5 text-sm text-zinc-100 outline-none ring-1 ring-ui-ink/[0.06] placeholder:text-zinc-600 focus:ring-indigo-500/60"
           />
           <button
             type="submit"
             disabled={!name.trim()}
-            className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-sm text-indigo-300 ring-1 ring-indigo-500/30 hover:bg-indigo-500/10 disabled:opacity-40"
+            className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-sm text-accent ring-1 ring-indigo-500/30 hover:bg-indigo-500/10 disabled:opacity-40"
           >
             <Plus className="h-3.5 w-3.5" /> Crear
           </button>

@@ -16,7 +16,7 @@ const dirName = (url: string) =>
 
 const CLONE_DIR = "trellai:cloneDir";
 
-const input = "mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none placeholder:text-zinc-600 focus:ring-indigo-500";
+const input = "ui-field ui-control mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none placeholder:text-zinc-600 focus:ring-indigo-500";
 
 /**
  * "Nuevo proyecto → Clonar de GitHub": your repos through the `gh` CLI (if it's logged in),
@@ -119,7 +119,7 @@ export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => vo
             onKeyDown={(e) => e.key === "Enter" && e.preventDefault()}
             disabled={!gh?.loggedIn}
             placeholder={gh?.loggedIn ? `Buscar en tus ${gh.repos.length} repos…` : "Tus repos de GitHub"}
-            className="min-w-0 flex-1 bg-transparent py-0.5 text-sm outline-none placeholder:text-zinc-600 disabled:opacity-60"
+            className="ui-field min-w-0 flex-1 bg-transparent py-0.5 text-sm outline-none placeholder:text-zinc-600 disabled:opacity-60"
           />
           <button type="button" onClick={loadRepos} title="Volver a cargar" className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200">
             {loadingRepos ? <Spinner className="h-3.5 w-3.5" /> : <RefreshCw className="h-3.5 w-3.5" />}
@@ -130,7 +130,7 @@ export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => vo
           {gh && !gh.available && (
             <GhHelp>
               No encuentro <code>gh</code>, el programa de GitHub para la terminal. Instálalo desde{" "}
-              <a href="https://cli.github.com" target="_blank" rel="noreferrer" className="text-indigo-300 hover:underline">cli.github.com</a>, ejecuta{" "}
+              <a href="https://cli.github.com" target="_blank" rel="noreferrer" className="text-accent hover:underline">cli.github.com</a>, ejecuta{" "}
               <code>gh auth login</code> y pulsa ↻ para ver aquí tus repos.
             </GhHelp>
           )}
@@ -139,7 +139,7 @@ export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => vo
               Tienes <code>gh</code> pero no has iniciado sesión. Ejecuta <code>gh auth login</code> en una terminal y pulsa ↻ para ver aquí tus repos.
             </GhHelp>
           )}
-          {gh?.error && <li className="px-3 py-2 text-sm text-red-300">{gh.error}</li>}
+          {gh?.error && <li className="px-3 py-2 text-sm text-danger">{gh.error}</li>}
           {gh?.loggedIn && !gh.error && repos.length === 0 && <li className="px-3 py-2 text-sm text-zinc-500">{q ? "Ningún repo coincide." : "No tienes repos."}</li>}
           {gh?.loggedIn &&
             repos.map((r) => (
@@ -183,7 +183,7 @@ export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => vo
             className={`${input} font-mono`}
           />
         </label>
-        <div className="flex gap-3">
+        <div className="project-form-row flex gap-3">
           <div className="min-w-0 flex-1 text-xs text-zinc-400">
             <label htmlFor="clone-parent">Clonar dentro de</label>
             <div className="mt-1 flex gap-1.5">
@@ -209,7 +209,7 @@ export function CloneRepo({ onCreated, footer }: { onCreated: (p: Project) => vo
         )}
       </div>
 
-      {error && <p className="text-sm text-red-300">{error}</p>}
+      {error && <p className="ui-alert">{error}</p>}
       {footer(
         <Button variant="primary" type="submit" disabled={!url.trim() || cloning}>
           {cloning ? <Spinner /> : null}
