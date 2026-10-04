@@ -262,7 +262,7 @@ export function Board({
             <section
               key={col}
               onDoubleClick={(e) => {
-                if (!canAdd || (e.target as HTMLElement).closest("[data-card], input, textarea, button")) return;
+                if (!canAdd || (e.target as HTMLElement).closest("[data-card], [data-add-zone], input, textarea, button")) return;
                 onCursor(col, null);
                 setAdding(col);
               }}
@@ -316,12 +316,16 @@ export function Board({
                       });
                     })()}
                     {p.placeholder}
-                    {canAdd && adding !== col && <button onClick={() => { onCursor(col, null); setAdding(col); }} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-zinc-400 hover:bg-ui-ink/5 hover:text-zinc-100"><Plus className="h-4 w-4" /> Añadir tarjeta</button>}
+                    {canAdd && adding !== col && <button data-add-zone onClick={() => { onCursor(col, null); setAdding(col); }} className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm text-zinc-400 hover:bg-ui-ink/5 hover:text-zinc-100"><Plus className="h-4 w-4" /> Añadir tarjeta</button>}
                     {adding === col && <NewCardInput projectId={projectId} column={col} onDone={() => setAdding(null)} />}
                     {cards.length === 0 && adding !== col && !snap.isDraggingOver && (
-                      <div className="ui-empty pointer-events-none mx-1 mt-0.5">
-                        {canAdd ? "Doble clic para añadir" : EMPTY[col]}
-                      </div>
+                      canAdd ? (
+                        <button data-add-zone onClick={() => { onCursor(col, null); setAdding(col); }} className="ui-empty mx-1 mt-0.5 cursor-pointer transition-colors hover:text-zinc-300">
+                          Clic para añadir
+                        </button>
+                      ) : (
+                        <div className="ui-empty pointer-events-none mx-1 mt-0.5">{EMPTY[col]}</div>
+                      )
                     )}
                     {canAdd && cards.length > 0 && adding !== col && !snap.isDraggingOver && (
                       <span className="ui-reveal pointer-events-none absolute bottom-3 left-3.5 text-[11px] text-zinc-600 opacity-0 transition-opacity group-hover:opacity-100">
