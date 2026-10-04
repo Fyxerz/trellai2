@@ -5,10 +5,15 @@ import { getCard } from "./db.js";
 /** Per-project event bus feeding the SSE stream. */
 const bus = new EventEmitter();
 bus.setMaxListeners(0);
+const ALL = Symbol("all");
 
 export function subscribe(projectId: string, fn: (e: ServerEvent) => void) {
   bus.on(projectId, fn);
-  return () => bus.off(projectId, fn);
+  bus.on(ALL, fn);
+  return () => {
+    bus.off(projectId, fn);
+    bus.off(ALL, fn);
+  };
 }
 
 function emit(projectId: string, e: ServerEvent) {
@@ -59,4 +64,9 @@ export function emitTags(projectId: string, tags: Tag[]) {
 
 export function emitSync(projectId: string) {
   emit(projectId, { type: "sync" });
+}
+
+/** For every open board, whatever the project. */
+export function emitAll(e: ServerEvent) {
+  bus.emit(ALL, e);
 }

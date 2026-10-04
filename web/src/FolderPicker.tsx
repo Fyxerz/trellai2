@@ -15,7 +15,7 @@ interface Listing {
 const LAST_DIR = "trellai:lastDir";
 
 /**
- * In-app folder browser. Calls `onPick(path)` when you choose a folder.
+ * In-app folder browser. Click a folder to select it (`onPick`), double-click to open it.
  * Git repos are highlighted; plain folders can be chosen too (the caller decides).
  */
 export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRepo: boolean) => void; selected?: string }) {
@@ -127,17 +127,12 @@ export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRe
         {error && <li className="px-3 py-2 text-sm text-red-300">{error}</li>}
         {!error && listing && entries.length === 0 && <li className="px-3 py-2 text-sm text-zinc-500">Sin subcarpetas.</li>}
         {entries.map((e) => (
-          <li key={e.path} className={`group flex items-center gap-2 px-3 py-1 hover:bg-zinc-800/70 ${selected === e.path ? "bg-indigo-500/10" : ""}`}>
-            <button type="button" onClick={() => go(e.path)} onDoubleClick={() => e.isRepo && onPick(e.path, true)} className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm">
+          <li key={e.path} className={`flex items-center gap-2 px-3 py-1 ${selected === e.path ? "bg-indigo-500/20" : "hover:bg-zinc-800/70"}`}>
+            <button type="button" onClick={() => onPick(e.path, e.isRepo)} onDoubleClick={() => go(e.path)} title="Doble click para entrar" aria-pressed={selected === e.path} className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm">
               <FolderIcon repo={e.isRepo} />
               <span className={`truncate ${e.isRepo ? "text-zinc-100" : "text-zinc-400"}`}>{e.name}</span>
               {e.isRepo && <span className="rounded bg-emerald-500/15 px-1.5 py-px text-[10px] font-medium text-emerald-300">git</span>}
             </button>
-            {e.isRepo && (
-              <button type="button" onClick={() => onPick(e.path, true)} className="rounded px-2 py-0.5 text-xs text-indigo-400 opacity-0 group-hover:opacity-100 hover:bg-indigo-500/10">
-                Elegir
-              </button>
-            )}
           </li>
         ))}
       </ul>

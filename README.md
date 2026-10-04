@@ -39,10 +39,10 @@ Usa tu sesión de Claude Code: si `claude` funciona en tu terminal, Trellai tamb
 **Checkpoints.** Cada tarjeta tiene una lista de pasos con casillas. Puedes escribir los tuyos en Plan; en Preparation Claude añade los suyos (marcados como *Claude*), y en Doing el agente los va marcando según termina cada uno. **Cada checkpoint que marca el agente se convierte en un commit** en la rama de la tarjeta (con el texto del checkpoint como mensaje), así el historial queda paso a paso. En el tablero ves el progreso de cada tarjeta (3/5).
 
 **Coordinación entre agentes.** Comparten un *canal* (botón "Canal de agentes"):
-- `post_note`: un agente avisa de cambios que afectan a otros (schema, APIs, ficheros compartidos…).
-- Las notas nuevas de los demás **se inyectan automáticamente** en el contexto de cada agente después de cada herramienta que usa.
-- Al entrar en Doing, Trellai compara los ficheros previstos y los ya tocados por cada agente, y avisa en el canal si dos tarjetas se pisan.
-- Tú también puedes escribir en el canal para avisar a todos.
+- **Qué toca cada uno.** Antes de editar, el agente dice con `claim_files` qué fichero toca, en qué zona (función, componente…) y para qué. Trellai rellena las líneas cambiadas a partir de su `git diff` y reserva también los ficheros que cambie sin avisar. Arriba del canal ves "En uso ahora".
+- **Cada agente solo oye lo suyo.** `post_note` acepta `files`: esa nota solo llega a los agentes que tienen alguno de esos ficheros reservados. Las notas sin ficheros (schema, dependencias…) y las tuyas llegan a todos. Se **inyectan automáticamente** después de cada herramienta, cada nota una sola vez.
+- **Solapamientos.** Si dos tarjetas reservan el mismo fichero, Trellai avisa solo a esas dos, con la zona y las líneas de cada una.
+- **Limpieza.** Cuando una tarjeta sale de Doing se borran sus reservas y sus notas pasan al *historial* (plegado en el canal; los agentes ya no las ven). Tus avisos generales se archivan cuando no queda nadie en Doing, o antes si los archivas tú.
 
 **En cualquier momento** puedes escribir al agente desde Actividad. Si está en mitad de un paso, recibe el mensaje en cuanto lo termina. También puedes **pararlo** o **reintentar**.
 

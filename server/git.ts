@@ -113,6 +113,41 @@ export function changedFiles(cwd: string, base: string): string[] {
   return [...new Set([...committed.split("\n").filter(Boolean), ...status])];
 }
 
+/**
+ * Changed line ranges per file on the branch (committed + uncommitted) vs base, numbered as in
+ * the branch's version. Untracked files map to "new", deleted ones to "deleted".
+ */
+export function changedLines(cwd: string, base: string): Map<string, [number, number][] | "new" | "deleted"> {
+  const mb = git(cwd, ["merge-base", base, "HEAD"], { allowFail: true }) || base;
+  const out = new Map<string, [number, number][] | "new" | "deleted">();
+  const diff = git(cwd, ["-c", "core.quotepath=off", "diff", "-U0", "--no-color", "--no-ext-diff", mb], { allowFail: true });
+  const unquote = (p: string) => p.replace(/^"(.*)"$/, "$1");
+  let file: string | null = null;
+  let oldFile: string | null = null;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("--- ")) oldFile = line === "--- /dev/null" ? null : unquote(line.slice(4)).replace(/^a\//, "");
+    else if (line.startsWith("+++ ")) {
+      if (line === "+++ /dev/null") {
+        if (oldFile) out.set(oldFile, "deleted");
+        file = null;
+      } else {
+        file = unquote(line.slice(4)).replace(/^b\//, "");
+        if (!out.has(file)) out.set(file, []);
+      }
+    } else if (file && line.startsWith("@@")) {
+      const m = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+      if (!m) continue;
+      const start = Math.max(1, Number(m[1]));
+      const count = m[2] === undefined ? 1 : Number(m[2]);
+      (out.get(file) as [number, number][]).push([start, start + Math.max(count, 1) - 1]);
+    }
+  }
+  for (const f of git(cwd, ["-c", "core.quotepath=off", "ls-files", "--others", "--exclude-standard"], { allowFail: true }).split("\n")) {
+    if (f) out.set(f, "new");
+  }
+  return out;
+}
+
 /** Full diff of the card's work vs base, including uncommitted and untracked files. */
 export function diffVsBase(cwd: string, base: string): string {
   const mb = git(cwd, ["merge-base", base, "HEAD"], { allowFail: true }) || base;

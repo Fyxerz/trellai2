@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { prettyModel } from "../shared/models.js";
 import type { Card } from "../shared/types.js";
+import * as claims from "./claims.js";
 import * as db from "./db.js";
 import { emitCard, emitCheckpoints, emitMessage, emitNote, emitQuestions } from "./events.js";
 import { runFakeAgent } from "./fake-agent.js";
@@ -79,14 +80,22 @@ This card is in the DOING column. You are ONE OF SEVERAL agents working IN PARAL
 each agent has its own git worktree and branch. Your current working directory is your worktree — only work there.
 
 How to work:
-1. Call \`read_notes\` first to see what the other agents are doing.
+1. Your first message lists what the other agents are touching right now. Before editing a file, call
+   \`claim_files\` with the file, the area (function / component / endpoint) and what for — one call can claim
+   several files, and calling it again for a file updates it. It tells you if another agent is on the same file.
+   Trellai fills in the changed lines from your git diff, and claims any file you change without claiming it.
+   If you claimed a file you ended up not needing, \`release_files\` it. Everything is released automatically
+   when the card leaves Doing.
 2. Implement the feature following the spec and plan. Run the project's tests / typecheck / lint if it has them.
 3. Commits: every time you call \`check_checkpoint\`, Trellai commits ALL current changes in your worktree with the
    checkpoint text as the message, so finish a checkpoint's work before checking it. Any remaining changes are
    committed when you finish, and the branch is rebased for you. Don't rewrite history.
 4. Coordination: whenever you change something other agents may depend on or collide with (shared files,
    DB schema, public APIs, shared components, new helpers, config, dependencies), call \`post_note\` with a short,
-   concrete message. Notes from other agents are injected into your context automatically — take them into account.
+   concrete message, passing \`files\` when it's about specific files (only agents on those files get it; leave it
+   empty for things that affect everyone, like a schema or a new dependency). Notes that concern you — about your
+   files, addressed to you, or general — are injected into your context automatically; take them into account.
+   \`read_notes\` shows them again together with what each agent is touching.
 5. Only if you are truly blocked by a decision that only Pedro can make, call \`ask_questions\` and end your turn.
 6. The card has CHECKPOINTS (listed with their ids in your first message; \`list_checkpoints\` shows them again).
    Each time you finish one, call \`check_checkpoint\` with its id so Pedro sees progress live. If you discover
@@ -102,8 +111,11 @@ Write to Pedro in Spanish. Be brief.`;
 export function makeToolkit(card: Card, signals: Signals) {
   const log = (role: "system" | "assistant", content: string) =>
     emitMessage(card.project_id, db.addMessage(card.id, role, content));
+  const notes = claims.notePoller(card.id);
 
   return {
+    /** New channel notes that concern this card, for injection after each tool call. */
+    pollNotes: () => notes.poll(),
     askQuestions(questions: { question: string; options: string[] }[]) {
       for (const q of questions) db.addQuestion(card.id, q.question, q.options ?? []);
       signals.asked = true;
@@ -121,17 +133,23 @@ export function makeToolkit(card: Card, signals: Signals) {
       signals.ready = { plan, files };
       return "Card marked as ready. It will move to DOING. End your turn now.";
     },
-    postNote(message: string) {
-      const note = db.addNote(card.project_id, card.id, message);
+    postNote(message: string, files: string[] = []) {
+      const note = db.addNote(card.project_id, card.id, message, { files: files.map((f) => f.trim()).filter(Boolean) });
       emitNote(note);
-      log("system", `📣 Nota: ${message}`);
-      return "Note posted to the other agents.";
+      log("system", `📣 Nota${note.files.length ? ` (${note.files.join(", ")})` : ""}: ${message}`);
+      return note.files.length ? `Note posted to the agents working on ${note.files.join(", ")}.` : "Note posted to all the other agents.";
     },
     readNotes() {
-      const notes = db.listNotes(card.project_id, 50).filter((n) => n.card_id !== card.id);
-      if (!notes.length) return "No notes from other agents yet.";
-      return notes.map((n) => `[${n.card_title ?? "Trellai"}] ${n.content}`).join("\n");
+      const me = db.getCard(card.id) ?? card;
+      const relevant = claims.notesFor(me);
+      notes.seen(relevant);
+      return [
+        `## What the other agents are touching\n\n${claims.othersWork(me)}`,
+        `## Notes that concern you\n\n${relevant.length ? relevant.map(claims.formatNote).join("\n") : "None."}`,
+      ].join("\n\n");
     },
+    claimFiles: (input: { file: string; area?: string; purpose?: string }[]) => claims.claimFiles(card.id, input),
+    releaseFiles: (files: string[]) => claims.releaseFiles(card.id, files),
     checkCheckpoint(id: number, done = true) {
       const cp = db.getCheckpoint(id);
       if (!cp || cp.card_id !== card.id) return `No checkpoint with id ${id} on this card.`;
@@ -145,6 +163,7 @@ export function makeToolkit(card: Card, signals: Signals) {
           try {
             const sha = commitAll(wt, cp.text);
             if (sha) {
+              claims.refreshClaims(db.getCard(card.id)!);
               log("system", `📌 Commit \`${sha.slice(0, 7)}\` · ${cp.text}`);
               followPreview(db.getCard(card.id)!);
               const branch = db.getCard(card.id)?.branch;
@@ -210,12 +229,44 @@ export function cardTools(kind: AgentKind, kit: ReturnType<typeof makeToolkit>):
   return [
     ask,
     {
-      name: "post_note",
-      description: "Post a short note to the other agents working in parallel on this repo.",
-      shape: { message: z.string() },
-      run: ({ message }) => kit.postNote(message),
+      name: "claim_files",
+      description:
+        "Say which files you are about to change, where and what for, so other agents know. Tells you if another agent is on the same file.",
+      shape: {
+        claims: z
+          .array(
+            z.object({
+              file: z.string().describe("Path relative to the repo root"),
+              area: z.string().optional().describe("Function / component / endpoint / section you change"),
+              purpose: z.string().optional().describe("What for, in a few words (Spanish)"),
+            }),
+          )
+          .min(1),
+      },
+      run: ({ claims }) => kit.claimFiles(claims),
     },
-    { name: "read_notes", description: "Read the recent notes posted by other agents.", shape: {}, run: () => kit.readNotes() },
+    {
+      name: "release_files",
+      description: "Release files you claimed but no longer need (files you already changed stay claimed until the card leaves Doing).",
+      shape: { files: z.array(z.string()).min(1) },
+      run: ({ files }) => kit.releaseFiles(files),
+    },
+    {
+      name: "post_note",
+      description:
+        "Post a short note to the other agents working in parallel on this repo. Pass `files` when it's about specific files: only agents on them get it.",
+      shape: {
+        message: z.string(),
+        files: z.array(z.string()).optional().describe("Files the note is about (empty = it concerns every agent)"),
+      },
+      run: ({ message, files }) => kit.postNote(message, files ?? []),
+    },
+    {
+      name: "read_notes",
+      description: "What the other agents are touching right now, and the channel notes that concern you.",
+      shape: {},
+      run: () => kit.readNotes(),
+    },
     {
       name: "check_checkpoint",
       description: "Mark one of the card's checkpoints as done (or undone with done=false). Commits your current changes.",
@@ -284,14 +335,6 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       return { ok: true, aborted: abort.signal.aborted, sessionId, signals };
     }
 
-    let lastSeen = db.lastNoteId(card.project_id);
-    const pollNotes = () => {
-      const fresh = db.notesSince(card.project_id, card.id, lastSeen);
-      if (!fresh.length) return null;
-      lastSeen = fresh[fresh.length - 1].id;
-      return `New notes from the other agents working in parallel:\n${fresh.map((n) => `- [${n.card_title ?? "Trellai"}] ${n.content}`).join("\n")}`;
-    };
-
     const res = await runEngine({
       model: cardModel(card, kind),
       cwd: opts.cwd,
@@ -302,7 +345,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       contextIfFresh: cardContext(card, kind),
       access: kind === "prep" ? "read" : "write",
       tools: cardTools(kind, kit),
-      pollNotes: kind === "dev" ? pollNotes : undefined,
+      pollNotes: kind === "dev" ? kit.pollNotes : undefined,
       signal: abort.signal,
       onText: (t) => log("assistant", t),
       onTool: (t) => log("tool", t),

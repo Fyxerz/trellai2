@@ -22,6 +22,10 @@ export function assistantRunning(projectId: string, mode: Mode) {
   return running.has(key(projectId, mode));
 }
 
+export function assistantCount() {
+  return running.size;
+}
+
 export function stopAssistant(projectId: string, mode: Mode) {
   running.get(key(projectId, mode))?.abort();
 }

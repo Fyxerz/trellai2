@@ -8,6 +8,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve } from "node:path";
 import { COLUMNS, isColumn, TAG_COLORS, type ServerEvent } from "../shared/types.js";
+import { sweepAll } from "./claims.js";
 import * as db from "./db.js";
 import { emitCard, emitCardDeleted, emitCheckpoints, emitMessage, emitNote, emitTags, subscribe } from "./events.js";
 import * as git from "./git.js";
@@ -18,6 +19,7 @@ import { MACHINE } from "./machine.js";
 import * as remote from "./remote.js";
 import { startSync, syncStatus } from "./sync.js";
 import { assistantRunning, sendToAssistant, stopAssistant } from "./assistant.js";
+import { buildInfo, distDir, startSelfUpdate } from "./selfupdate.js";
 
 const app = new Hono();
 
@@ -294,8 +296,18 @@ app.get("/api/projects/:id/cards", (c) => c.json(db.listCards(c.req.param("id"))
 app.get("/api/projects/:id/notes", (c) => c.json(db.listNotes(c.req.param("id"))));
 
 app.post("/api/projects/:id/notes", async (c) => {
-  const { content } = await c.req.json<{ content: string }>();
-  const note = db.addNote(c.req.param("id"), null, `Pedro: ${content}`);
+  const { content, files } = await c.req.json<{ content: string; files?: string[] }>();
+  const note = db.addNote(c.req.param("id"), null, `Pedro: ${content}`, { files: (files ?? []).map((f) => f.trim()).filter(Boolean) });
+  emitNote(note);
+  return c.json(note);
+});
+
+/** Stop showing a note to the agents (it stays in the channel's history). */
+app.post("/api/notes/:id/archive", (c) => {
+  const id = Number(c.req.param("id"));
+  db.archiveNotes([id]);
+  const note = db.getNote(id);
+  if (!note) return c.json({ error: "Nota no encontrada" }, 404);
   emitNote(note);
   return c.json(note);
 });
@@ -534,12 +546,22 @@ app.get("/api/cards/:id/diff", async (c) => {
 
 // ---------- static UI (production) ----------
 
+app.get("/api/build", (c) => c.json(buildInfo()));
+
 if (process.env.NODE_ENV === "production") {
-  app.use("/*", serveStatic({ root: "./dist" }));
-  app.get("*", serveStatic({ path: "./dist/index.html" }));
+  // The folder changes when the UI is rebuilt after a branch switch (selfupdate.ts).
+  const statics = new Map<string, ReturnType<typeof serveStatic>[]>();
+  const handlers = () => {
+    const dir = distDir();
+    if (!statics.has(dir)) statics.set(dir, [serveStatic({ root: `./${dir}` }), serveStatic({ path: `./${dir}/index.html` })]);
+    return statics.get(dir)!;
+  };
+  app.use("/*", (c, next) => handlers()[0](c, next));
+  app.get("*", (c, next) => handlers()[1](c, next));
 }
 
 wf.recoverAfterRestart();
+sweepAll(); // claims/notes left over from cards that are no longer in Doing
 // Projects added before remotes were tracked: remember their remote (to find them on other computers).
 for (const p of db.listProjects()) {
   if (p.repo_path && !p.remote_url) {
@@ -548,6 +570,7 @@ for (const p of db.listProjects()) {
   }
 }
 startSync();
+startSelfUpdate();
 
 const port = Number(process.env.PORT ?? 4317);
 const hostname = process.env.HOST ?? "127.0.0.1";

@@ -75,6 +75,8 @@ export interface Card {
   /** preparation session (runs in the main checkout) */
   prep_session_id: string | null;
   files: string[];
+  /** What the card's agent is touching right now (only while in Doing; cleared when it leaves) */
+  claims: Claim[];
   /** Model override for this card (null = project default) */
   model: string | null;
   /** Exact model of the agent's latest run, e.g. "claude-opus-5-5" or "codex:gpt-5-codex" */
@@ -123,12 +125,32 @@ export interface Question {
   created_at: string;
 }
 
+/** A file an agent in Doing is working on. */
+export interface Claim {
+  file: string;
+  /** function / component / endpoint it changes ("" = not said) */
+  area: string;
+  /** what for ("" = not said) */
+  purpose: string;
+  /** changed lines in the agent's version, computed by Trellai from git ("" = untouched so far, "nuevo" = new file) */
+  lines: string;
+  /** plan: predicted in Preparation · agent: declared with claim_files · auto: seen in its git diff */
+  source: "plan" | "agent" | "auto";
+}
+
 export interface Note {
   id: number;
   project_id: string;
+  /** author card (null = Pedro or Trellai) */
   card_id: string | null;
   card_title: string | null;
   content: string;
+  /** files it's about: only agents working on one of them get it ([] = everyone) */
+  files: string[];
+  /** cards it's addressed to ([] = every agent) */
+  targets: string[];
+  /** no longer shown to agents: its card left Doing, or it was archived by hand */
+  archived: boolean;
   created_at: string;
 }
 
@@ -157,7 +179,16 @@ export type ServerEvent =
   | { type: "preview"; cardId: string | null }
   | { type: "tags"; tags: Tag[] }
   /** another computer changed things: reload the board */
-  | { type: "sync" };
+  | { type: "sync" }
+  /** Trellai's own code changed (branch switch): a new UI build, or a restart pending */
+  | { type: "build"; id: string };
+
+/** "listNotes() — filtrar por ficheros · líneas 40-60" */
+export function describeClaim(c: Claim): string {
+  const what = [c.area, c.purpose].filter(Boolean).join(" — ") || (c.source === "plan" ? "previsto" : "sin detallar");
+  const where = c.lines === "nuevo" ? "fichero nuevo" : c.lines === "borrado" ? "lo borra" : c.lines ? `líneas ${c.lines}` : "";
+  return [what, where].filter(Boolean).join(" · ");
+}
 
 export function isColumn(v: unknown): v is Column {
   return typeof v === "string" && (COLUMNS as readonly string[]).includes(v);
