@@ -58,7 +58,9 @@ How to write cards:
 - Spec (Spanish markdown) with these sections when they apply:
   **Qué** (what Pedro wants, in his terms) · **Por qué** · **Comportamiento** (concrete behaviour, edge cases) ·
   **Notas técnicas** (real files/places in the repo, approach) · **Fuera de alcance**.
-- Checkpoints: 3–8 short, concrete, verifiable steps.
+- Checkpoints: 3–8 one-line steps in product language: what Pedro will notice or be able to do in the app when each
+  is done (e.g. "Al pegar una imagen en la spec aparece adjunta"), not code details — no table, function or file
+  names (those go in **Notas técnicas**). For purely technical work, one clear sentence about the outcome.
 - Column: "backlog" by default. Use "plan" only if Pedro says it's ready to be worked on.
 - Area: "ui" if the card is mainly interface/visual/styling work, "logic" for algorithms, data or backend.
 
@@ -134,7 +136,7 @@ function assistantTools(kit: ReturnType<typeof makeAssistantToolkit>): ToolSpec[
             z.object({
               title: z.string().describe("Short Spanish title starting with a verb"),
               spec: z.string().describe("Spanish markdown spec (Qué / Por qué / Comportamiento / Notas técnicas / Fuera de alcance)"),
-              checkpoints: z.array(z.string()).describe("3-8 short verifiable steps in Spanish"),
+              checkpoints: z.array(z.string()).describe("3-8 one-line steps in Spanish, in product language (what Pedro will notice), not code details"),
               column: z.enum(["backlog", "plan"]).optional().describe("backlog by default"),
               area: z
                 .enum(["ui", "logic"])

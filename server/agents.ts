@@ -65,13 +65,17 @@ can be implemented without important ambiguity.
   concrete questions, each with 2–4 short options, then END YOUR TURN. Do not ask about things you can decide
   yourself with good judgement — Pedro wants you to be autonomous.
 - Otherwise call \`mark_ready\` with:
-  - \`checkpoints\`: the work broken into 3–10 short, concrete, verifiable steps (Spanish, one line each, e.g.
-    "Añadir columna \`tips\` a la tabla \`orders\`", "Test del cálculo de propinas"). This is what Pedro reads to see
-    at a glance what will be done, so make them scannable. If the card already has checkpoints (Pedro's), they are
+  - \`checkpoints\`: the work broken into 3–10 short steps (Spanish, one line each) written in PRODUCT language:
+    describe what Pedro will notice or be able to do when the step is done, not how it's coded. Ask yourself "can
+    Pedro check this by using the app?". E.g. "Al pegar una imagen en la spec aparece adjunta", "Cada camarero ve
+    su parte de las propinas en el cierre de caja" — NOT "Añadir columna \`tips\` a la tabla \`orders\`". No table,
+    function or file names: those go in \`plan\`. For purely technical work with no visible effect, write one clear
+    sentence about the outcome ("Los datos se sincronizan entre dispositivos"). This is what Pedro reads to see at a
+    glance what will be done, so make them scannable. If the card already has checkpoints (Pedro's), they are
     kept — send only the ones you want to ADD.
   - \`plan\`: optional short notes for the developer agent (decisions, gotchas) — don't repeat the checkpoints.
   - \`files\`: the files you expect to touch.
-  The card will then move to DOING automatically.
+  The card is then ready for DOING (Trellai or Pedro moves it there).
 
 Always write to Pedro in Spanish. Be brief.`;
 
@@ -99,7 +103,9 @@ How to work:
 5. Only if you are truly blocked by a decision that only Pedro can make, call \`ask_questions\` and end your turn.
 6. The card has CHECKPOINTS (listed with their ids in your first message; \`list_checkpoints\` shows them again).
    Each time you finish one, call \`check_checkpoint\` with its id so Pedro sees progress live. If you discover
-   necessary extra work, add it with \`add_checkpoint\`. All checkpoints should be done before you finish.
+   necessary extra work, add it with \`add_checkpoint\`, written like the others: one line in product language about
+   what Pedro will notice (e.g. "Los adjuntos también se ven en el móvil"), not code details.
+   All checkpoints should be done before you finish.
 7. When finished, call \`report_done\` with a short summary in Spanish of what you did and how to test it.
 
 Write to Pedro in Spanish. Be brief.`;
@@ -131,7 +137,7 @@ export function makeToolkit(card: Card, signals: Signals) {
       }
       if (checkpoints.length) emitCheckpoints(card.project_id, card.id);
       signals.ready = { plan, files };
-      return "Card marked as ready. It will move to DOING. End your turn now.";
+      return "Card marked as ready for DOING. End your turn now.";
     },
     postNote(message: string, files: string[] = []) {
       const note = db.addNote(card.project_id, card.id, message, { files: files.map((f) => f.trim()).filter(Boolean) });
@@ -219,7 +225,9 @@ export function cardTools(kind: AgentKind, kit: ReturnType<typeof makeToolkit>):
         shape: {
           checkpoints: z
             .array(z.string())
-            .describe("3-10 short, concrete, verifiable steps in Spanish (only ones not already on the card)"),
+            .describe(
+              "3-10 one-line steps in Spanish, in product language: what Pedro will notice in the app, not code details (only ones not already on the card)",
+            ),
           plan: z.string().describe("Optional short notes for the developer agent, in Spanish (markdown)"),
           files: z.array(z.string()).describe("Files you expect to create or modify"),
         },
@@ -276,7 +284,7 @@ export function cardTools(kind: AgentKind, kit: ReturnType<typeof makeToolkit>):
     {
       name: "add_checkpoint",
       description: "Add a checkpoint for necessary extra work you discovered.",
-      shape: { text: z.string().describe("Short step, in Spanish") },
+      shape: { text: z.string().describe("One-line step in Spanish, in product language (what Pedro will notice), not code details") },
       run: ({ text }) => kit.addCheckpoint(text),
     },
     { name: "list_checkpoints", description: "List the card's checkpoints with ids and status.", shape: {}, run: () => kit.listCheckpoints() },
@@ -289,10 +297,20 @@ export function cardTools(kind: AgentKind, kit: ReturnType<typeof makeToolkit>):
   ];
 }
 
-/** The model a card's agent uses: the card's own choice, else the project's default for that phase. */
+/** The model a card's agent uses: the card's own choice, else (dev only) its first tagged model, else the project's default for that phase. */
 export function cardModel(card: Card, kind: AgentKind): string {
   const p = db.getProject(card.project_id);
-  return card.model || (kind === "prep" ? p?.model_prep : p?.model_dev) || "claude";
+  return card.model || (kind === "dev" ? tagModel(card) : null) || (kind === "prep" ? p?.model_prep : p?.model_dev) || "claude";
+}
+
+/** Model of the card's first tag (in the order they were added to the card) that has one. */
+export function tagModel(card: Card): string | null {
+  const tags = db.getProject(card.project_id)?.tags ?? [];
+  for (const id of card.tags) {
+    const model = tags.find((t) => t.id === id)?.model;
+    if (model) return model;
+  }
+  return null;
 }
 
 /** Everything an agent needs when it can't resume the previous session (e.g. the model changed). */

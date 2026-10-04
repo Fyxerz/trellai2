@@ -30,15 +30,15 @@ export function Home({
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-[1400px] px-6 pt-4 pb-10">
+      <div className="mx-auto max-w-[1400px] px-4 sm:px-6 pt-5 pb-10">
         <div className="mb-6 flex flex-wrap items-end gap-4">
           <div>
-            <h1 className="text-[22px] font-semibold tracking-tight text-zinc-50">Proyectos</h1>
+            <h1 className="ui-title">Proyectos</h1>
             <p className="mt-1 text-[13px] text-zinc-500">
               {projects.length} {projects.length === 1 ? "proyecto" : "proyectos"}
-              {totals.running > 0 && <span className="text-amber-300"> · {totals.running} agentes trabajando</span>}
-              {totals.waiting > 0 && <span className="text-violet-300"> · {totals.waiting} esperando tu respuesta</span>}
-              {totals.review > 0 && <span className="text-emerald-300"> · {totals.review} por revisar</span>}
+              {totals.running > 0 && <span className="text-warning"> · {totals.running} agentes trabajando</span>}
+              {totals.waiting > 0 && <span className="text-waiting"> · {totals.waiting} esperando tu respuesta</span>}
+              {totals.review > 0 && <span className="text-success"> · {totals.review} por revisar</span>}
             </p>
           </div>
           <div className="ml-auto flex items-center gap-3 text-[11px] text-zinc-500">
@@ -52,7 +52,7 @@ export function Home({
           </div>
         </div>
 
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(330px,1fr))] gap-4">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,330px),1fr))] gap-4">
           {projects.map((p, i) => (
             <ProjectCard key={p.id} project={p} s={summaries[p.id]} cursor={i === cursor} onOpen={() => onOpen(p.id)} onRemoved={onRemoved} />
           ))}
@@ -93,8 +93,12 @@ function ProjectCard({
     <div
       ref={ref}
       onClick={onOpen}
+      role="button"
+      tabIndex={0}
+      aria-label={`Abrir ${projectName(p.name)}`}
+      onKeyDown={e => { if (e.target !== e.currentTarget) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onOpen(); } }}
       style={{ boxShadow: "var(--shadow-card)" }}
-      className={`group relative flex min-h-[230px] cursor-pointer flex-col rounded-2xl border bg-zinc-900/80 p-4 transition-all duration-150 hover:-translate-y-0.5 hover:bg-zinc-900 ${
+      className={`project-card group relative flex min-h-[230px] cursor-pointer flex-col rounded-2xl border bg-zinc-900/80 p-4 transition-all duration-150 hover:-translate-y-0.5 hover:bg-zinc-900 ${
         cursor ? "border-indigo-400/70 ring-2 ring-indigo-400/20" : "border-ui-ink/[0.06] hover:border-ui-ink/[0.12]"
       }`}
     >
@@ -121,7 +125,7 @@ function ProjectCard({
             await api(`/api/projects/${p.id}`, undefined, "DELETE");
             onRemoved();
           }}
-          className="rounded-md p-1.5 text-zinc-500 opacity-0 transition group-hover:opacity-100 hover:bg-red-500/10 hover:text-red-300"
+          className="ui-reveal rounded-md p-1.5 text-zinc-500 opacity-0 transition group-hover:opacity-100 hover:bg-red-500/10 hover:text-danger"
           title="Quitar de Trellai"
         >
           <Trash2 className="h-4 w-4" />
@@ -165,7 +169,7 @@ function ProjectCard({
         {(s?.active ?? []).map((a) => (
           <div key={a.id} className="flex min-w-0 items-center gap-2 text-[12.5px]">
             {a.status === "running" ? (
-              <Spinner className="h-3 w-3 shrink-0 text-amber-300" />
+              <Spinner className="h-3 w-3 shrink-0 text-warning" />
             ) : (
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
@@ -173,7 +177,7 @@ function ProjectCard({
               />
             )}
             <span className="min-w-0 flex-1 truncate text-zinc-300">{a.title}</span>
-            <span className={`shrink-0 text-[11px] ${a.status === "waiting" ? "text-violet-300" : a.status === "error" ? "text-red-300" : "text-zinc-600"}`}>
+            <span className={`shrink-0 text-[11px] ${a.status === "waiting" ? "text-waiting" : a.status === "error" ? "text-danger" : "text-zinc-600"}`}>
               {a.status === "waiting" ? "te necesita" : a.status === "error" ? "error" : a.status === "running" ? COLUMN_LABELS[a.column] : "por revisar"}
             </span>
           </div>
@@ -200,7 +204,7 @@ function ModelChip({ spec, title }: { spec: string; title: string }) {
   return (
     <span
       title={`${title}: ${modelLabel(spec)}`}
-      className={`rounded-md px-1.5 text-[10px] leading-4 font-semibold ${gpt ? "bg-emerald-400/10 text-emerald-300" : "bg-orange-400/10 text-orange-300"}`}
+      className={`rounded-md px-1.5 text-[10px] leading-4 font-semibold ${gpt ? "bg-emerald-400/10 text-success" : "bg-orange-400/10 text-warning"}`}
     >
       {gpt ? "GPT" : modelLabel(spec, true)}
     </span>

@@ -4,22 +4,26 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, parse, resolve } from "node:path";
-import { COLUMNS, isColumn, TAG_COLORS, type ServerEvent } from "../shared/types.js";
+import { basename, dirname, join, parse, resolve, sep } from "node:path";
+import { COLUMNS, isColumn, TAG_COLORS, type CloneJob, type Project, type ServerEvent } from "../shared/types.js";
 import { sweepAll } from "./claims.js";
 import * as db from "./db.js";
-import { emitCard, emitCardDeleted, emitCheckpoints, emitMessage, emitNote, emitTags, subscribe } from "./events.js";
+import { cleanAnnotations, parseImage } from "./attachments.js";
+import { emitAttachments, emitCard, emitCardDeleted, emitCheckpoints, emitMessage, emitNote, emitTags, subscribe } from "./events.js";
 import * as git from "./git.js";
 import * as wf from "./workflow.js";
-import { claudeModels, codexDefaultModel, codexStatus, mcpCallTool, mcpListTools } from "./engine.js";
+import { claudeLoggedIn, claudeModels, codexDefaultModel, codexModels, codexStatus, loginState, mcpCallTool, mcpListTools, startLogin } from "./engine.js";
 import { startPreview, stopPreview } from "./preview.js";
 import { MACHINE } from "./machine.js";
 import * as remote from "./remote.js";
+import { repoLock } from "./lock.js";
+import * as github from "./github.js";
 import { startSync, syncStatus } from "./sync.js";
 import { assistantRunning, sendToAssistant, stopAssistant } from "./assistant.js";
 import { buildInfo, distDir, startSelfUpdate } from "./selfupdate.js";
+import { backgroundFile, backgroundStatus, generateBackground, imageMime, stopBackground } from "./background.js";
 
 const app = new Hono();
 
@@ -91,23 +95,103 @@ app.post("/api/fs/pick", async (c) => {
 
 app.get("/api/projects", (c) => c.json(db.listProjects()));
 
-app.post("/api/projects", async (c) => {
-  const body = await c.req.json<{ name?: string; repo_path?: string; base_branch?: string; init?: boolean }>();
-  const path = expandHome(String(body.repo_path ?? "").trim());
-  if (!existsSync(path) || !statSync(path).isDirectory()) return c.json({ error: `No existe la carpeta: ${path}` }, 400);
+/** Add the repo at `path` to the board (shared by "Carpeta local" and "Clonar de GitHub"). */
+function addProject(path: string, opts: { name?: string; base_branch?: string; init?: boolean } = {}): { project: Project } | { error: string; notRepo?: boolean } {
+  if (!existsSync(path) || !statSync(path).isDirectory()) return { error: `No existe la carpeta: ${path}` };
   if (!git.isRepo(path)) {
-    if (!body.init) return c.json({ error: `No es un repositorio git: ${path}`, notRepo: true }, 400);
+    if (!opts.init) return { error: `No es un repositorio git: ${path}`, notRepo: true };
     git.initRepo(path);
   }
   const repo = git.topLevel(path);
-  if (!git.hasCommits(repo)) return c.json({ error: "El repo no tiene ningún commit todavía. Haz un primer commit." }, 400);
+  if (!git.hasCommits(repo)) return { error: "El repo no tiene ningún commit todavía. Haz un primer commit." };
   const remoteUrl = git.remoteUrlSync(repo);
   // Already on the board from another computer? Then this is just where it lives here.
   const twin = db.listProjects().find((p) => !p.repo_path && git.sameRemoteSync(p.remote_url, remoteUrl));
-  if (twin) return c.json(db.updateProject(twin.id, { repo_path: repo }));
-  const base = body.base_branch?.trim() || git.currentBranch(repo);
-  const name = basename(body.name?.trim() || repo);
-  return c.json(db.createProject({ name, repo_path: repo, base_branch: base, remote_url: remoteUrl }));
+  if (twin) return { project: db.updateProject(twin.id, { repo_path: repo })! };
+  const base = opts.base_branch?.trim() || git.currentBranch(repo);
+  const name = basename(opts.name?.trim() || repo);
+  return { project: db.createProject({ name, repo_path: repo, base_branch: base, remote_url: remoteUrl }) };
+}
+
+app.post("/api/projects", async (c) => {
+  const body = await c.req.json<{ name?: string; repo_path?: string; base_branch?: string; init?: boolean }>();
+  const r = addProject(expandHome(String(body.repo_path ?? "").trim()), body);
+  return "error" in r ? c.json(r, 400) : c.json(r.project);
+});
+
+/** Your GitHub repos through the `gh` CLI (+ whether it's installed / logged in). */
+app.get("/api/github/repos", async (c) => c.json(await github.listRepos()));
+
+/** Where clones go by default: the folder most of your projects live in (else ~/code). */
+function cloneDir(): string {
+  const count = new Map<string, number>();
+  for (const p of db.listProjects()) {
+    if (!p.repo_path || !existsSync(p.repo_path)) continue;
+    const parent = dirname(resolve(p.repo_path));
+    count.set(parent, (count.get(parent) ?? 0) + 1);
+  }
+  const best = [...count].sort((a, b) => b[1] - a[1])[0];
+  return best ? best[0] : expandHome("~/code");
+}
+
+app.get("/api/clone-dir", (c) => c.json({ dir: cloneDir(), sep: process.platform === "win32" ? "\\" : "/" }));
+
+/** Clone a repo (default: <cloneDir>/<name>) and add it to the board. A folder already holding that repo is reused. */
+app.post("/api/projects/clone", async (c) => {
+  const body = await c.req.json<{ url?: string; dest?: string; name?: string; base_branch?: string }>();
+  let url = String(body.url ?? "").trim();
+  if (!url) return c.json({ error: "Pega la URL del repo." }, 400);
+  // "owner/name" → GitHub
+  if (/^[\w.-]+\/[\w.-]+$/.test(url) && !existsSync(expandHome(url))) url = `https://github.com/${url}.git`;
+  const dirName = github.repoDirName(url);
+  if (!dirName) return c.json({ error: `No entiendo esa URL: ${url}` }, 400);
+  const dest = expandHome(body.dest?.trim() || join(cloneDir(), dirName));
+  const opts = { name: body.name?.trim() || dirName, base_branch: body.base_branch };
+  if (existsSync(dest)) {
+    if (git.isRepo(dest) && git.sameRemoteSync(git.remoteUrlSync(dest), url)) {
+      // Already cloned there: reuse it (and its project, if it's on the board already).
+      const repo = git.topLevel(dest);
+      const existing = db.listProjects().find((p) => p.repo_path && resolve(p.repo_path) === resolve(repo));
+      if (existing) return c.json(existing);
+      const r = addProject(repo, opts);
+      return "error" in r ? c.json(r, 400) : c.json(r.project);
+    }
+    const empty = statSync(dest).isDirectory() && readdirSync(dest).length === 0;
+    if (!empty) {
+      const other = git.isRepo(dest) ? git.remoteUrlSync(dest) : null;
+      return c.json({ error: `Ya existe ${dest} y ${other ? `es otro repo (${other})` : "no es una copia de este repo"}. Elige otra carpeta de destino.` }, 400);
+    }
+  }
+  if (cloningInto.has(resolve(dest))) return c.json({ error: `Ya se está clonando algo en ${dest}.` }, 400);
+  // The clone itself runs in the background: the client follows it with GET /api/clone-jobs/:id.
+  const jobId = `clone-${Date.now().toString(36)}-${++cloneSeq}`;
+  const job: CloneJob = { stage: "cloning", percent: 0, message: "Conectando…" };
+  cloneJobs.set(jobId, job);
+  cloningInto.add(resolve(dest));
+  (async () => {
+    const cloned = await remote.cloneRepo(url, dest, (p) => Object.assign(job, { percent: p.percent, message: p.phase }));
+    if (!cloned.ok) return Object.assign(job, { stage: "error", message: cloned.message });
+    Object.assign(job, { stage: "creating", percent: 100, message: undefined });
+    const r = addProject(dest, opts);
+    if ("error" in r) Object.assign(job, { stage: "error", message: r.error });
+    else Object.assign(job, { stage: "done", project: r.project });
+  })()
+    .catch((e) => Object.assign(job, { stage: "error", message: String(e?.message ?? e) }))
+    .finally(() => {
+      cloningInto.delete(resolve(dest));
+      setTimeout(() => cloneJobs.delete(jobId), 60 * 60_000);
+    });
+  return c.json({ jobId });
+});
+
+/** Background clones (in memory: they're gone if the server restarts). */
+const cloneJobs = new Map<string, CloneJob>();
+const cloningInto = new Set<string>();
+let cloneSeq = 0;
+
+app.get("/api/clone-jobs/:id", (c) => {
+  const job = cloneJobs.get(c.req.param("id"));
+  return job ? c.json(job) : c.json({ error: "Ese clonado ya no existe (¿se reinició Trellai?)." }, 404);
 });
 
 // ---------- other computers / GitHub ----------
@@ -148,6 +232,30 @@ app.post("/api/projects/:id/clone", async (c) => {
   return c.json(db.updateProject(project.id, { repo_path: dest }));
 });
 
+const PROJECT_DOCS = ["README.md", "AGENTS.md", "CLAUDE.md"];
+const DOC_MAX_BYTES = 200_000;
+
+/** The repo's README / AGENTS.md / CLAUDE.md (root only, any casing), for the read-only "Documentos del proyecto" modal. */
+app.get("/api/projects/:id/docs", (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project?.repo_path || !existsSync(project.repo_path)) return c.json({ error: "Este proyecto no está en este ordenador" }, 400);
+  const root = resolve(project.repo_path);
+  const entries = readdirSync(root);
+  const docs: { name: string; content: string; truncated: boolean }[] = [];
+  for (const wanted of PROJECT_DOCS) {
+    const name = entries.find((e) => e.toLowerCase() === wanted.toLowerCase());
+    if (!name) continue;
+    const path = join(root, name);
+    try {
+      const st = statSync(path); // follows symlinks: skip directories and anything that leaves the repo
+      if (!st.isFile() || !realpathSync(path).startsWith(realpathSync(root) + sep)) continue;
+      const buf = readFileSync(path);
+      docs.push({ name, content: buf.subarray(0, DOC_MAX_BYTES).toString("utf8"), truncated: buf.length > DOC_MAX_BYTES });
+    } catch {}
+  }
+  return c.json(docs);
+});
+
 /** Base branch vs the remote, for the header (fetches at most once a minute). */
 app.get("/api/projects/:id/git", async (c) => {
   const project = db.getProject(c.req.param("id"));
@@ -155,23 +263,86 @@ app.get("/api/projects/:id/git", async (c) => {
   return c.json(await remote.baseStatus(project.repo_path, project.base_branch));
 });
 
+const ACTIVE_COLUMNS = new Set(["plan", "preparation", "doing", "review"]);
+
+/** Every branch with its card and, when it can't be deleted from the menu, why. */
+function branchRows(project: Project) {
+  const list = git.listBranches(project.repo_path!, project.base_branch);
+  const cards = new Map(db.listCards(project.id).filter((k) => k.branch).map((k) => [k.branch!, k]));
+  return {
+    ...list,
+    branches: list.branches.map((b) => {
+      const k = cards.get(b.name);
+      const locked =
+        b.name === project.base_branch
+          ? "Es la rama base."
+          : b.current
+            ? "Estás en esta rama: cámbiate a otra primero."
+            : k && ACTIVE_COLUMNS.has(k.column)
+              ? `Es de la tarjeta «${k.title}», que está en curso: se quita descartando la tarjeta.`
+              : null;
+      return { ...b, card: k ? { id: k.id, title: k.title, column: k.column } : null, locked };
+    }),
+  };
+}
+type BranchRowInfo = ReturnType<typeof branchRows>["branches"][number];
+
+/** Delete one branch (local, worktree and remote). Errors come back in the result, never thrown. */
+async function deleteBranch(project: Project, b: BranchRowInfo, force: boolean) {
+  const repo = project.repo_path!;
+  if (b.locked) return { name: b.name, ok: false, error: b.locked };
+  if (!b.merged && !force)
+    return { name: b.name, ok: false, error: `Tiene ${b.unmerged} commit(s) que no están en ${project.base_branch}; se perderían.` };
+  if (b.dirty && !force) return { name: b.name, ok: false, error: `Su carpeta de trabajo (${b.worktree}) tiene cambios sin commitear.` };
+  const errors: string[] = [];
+  if (b.local || b.worktree) {
+    try {
+      await repoLock(repo, async () => git.deleteLocalBranch(repo, b.name, { worktree: b.worktree, force }));
+    } catch (err) {
+      errors.push((err as Error).message.replace(/^git [^:]*: /, ""));
+    }
+  }
+  if (b.remote && !errors.length) {
+    const r = await remote.deleteRemoteBranchNow(repo, b.name);
+    if (!r.ok) errors.push(r.message!);
+  }
+  return errors.length ? { name: b.name, ok: false, error: errors.join(" — ") } : { name: b.name, ok: true };
+}
+
 /** All branches (local + remote) for the header's branch list, with the card each one belongs to. */
 app.get("/api/projects/:id/branches", async (c) => {
   const project = db.getProject(c.req.param("id"));
   if (!project?.repo_path) return c.json({ error: "Este proyecto no está en este ordenador" }, 400);
   const f = await remote.fetchRemote(project.repo_path, 60_000);
-  const list = git.listBranches(project.repo_path, project.base_branch);
-  const cards = new Map(db.listCards(project.id).filter((k) => k.branch).map((k) => [k.branch!, k]));
+  const list = branchRows(project);
   return c.json({
     ...list,
     base: project.base_branch,
     remoteLabel: list.remote ? remote.remoteLabel(project.repo_path) : null,
     fetch: { ok: f.ok, message: f.message },
-    branches: list.branches.map((b) => {
-      const k = cards.get(b.name);
-      return { ...b, card: k ? { id: k.id, title: k.title, column: k.column } : null };
-    }),
   });
+});
+
+/** Delete one branch from the menu. `force` = the user accepted losing unmerged commits / uncommitted changes. */
+app.post("/api/projects/:id/branches/delete", async (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project?.repo_path) return c.json({ error: "Este proyecto no está en este ordenador" }, 400);
+  const { name, force } = await c.req.json<{ name: string; force?: boolean }>();
+  const b = branchRows(project).branches.find((x) => x.name === name);
+  if (!b) return c.json({ error: `No existe la rama ${name}` }, 404);
+  const r = await deleteBranch(project, b, !!force);
+  return r.ok ? c.json(r) : c.json(r, b.locked ? 400 : 409);
+});
+
+/** Delete every branch already in the base branch (recomputed here; `names`, if given, narrows it to what the user saw). */
+app.post("/api/projects/:id/branches/cleanup", async (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project?.repo_path) return c.json({ error: "Este proyecto no está en este ordenador" }, 400);
+  const { names } = await c.req.json<{ names?: string[] }>().catch(() => ({ names: undefined }));
+  const todo = branchRows(project).branches.filter((b) => b.merged && !b.locked && (!names || names.includes(b.name)));
+  const results = [];
+  for (const b of todo) results.push(await deleteBranch(project, b, false));
+  return c.json({ results });
 });
 
 app.post("/api/projects/:id/pull", async (c) => {
@@ -189,14 +360,47 @@ app.post("/api/projects/:id/pull", async (c) => {
 app.patch("/api/projects/:id", async (c) => {
   const body = await c.req.json<Record<string, string | null>>();
   if (!db.getProject(c.req.param("id"))) return c.json({ error: "Proyecto no encontrado" }, 404);
+  if (body.auto_doing !== undefined && typeof body.auto_doing !== "boolean") return c.json({ error: "auto_doing debe ser true o false" }, 400);
+  if (body.bg_mode !== undefined && !["none", "color", "image"].includes(body.bg_mode as string))
+    return c.json({ error: "Fondo no válido (none, color o image)" }, 400);
+  if (body.bg_color != null && !/^#[0-9a-f]{6}$/i.test(body.bg_color)) return c.json({ error: "Color no válido (#rrggbb)" }, 400);
+  delete body.bg_image; // only set by the generator
   return c.json(db.updateProject(c.req.param("id"), body));
+});
+
+// ---------- board background ----------
+
+/** The generated image (this computer's `.trellai/background.*`). Use ?v=<bg_image> to bust the cache. */
+app.get("/api/projects/:id/background", (c) => {
+  const p = db.getProject(c.req.param("id"));
+  const file = p?.repo_path ? backgroundFile(p.repo_path) : null;
+  if (!file) return c.json({ error: "Este proyecto no tiene imagen de fondo en este ordenador" }, 404);
+  const buf = readFileSync(file);
+  return c.body(buf, 200, { "content-type": imageMime(buf), "cache-control": "private, max-age=31536000, immutable" });
+});
+app.get("/api/projects/:id/background/status", (c) => c.json(backgroundStatus(c.req.param("id"))));
+/** Starts Codex (in the background); progress and the end arrive as "background" events. */
+app.post("/api/projects/:id/background/generate", async (c) => c.json(await generateBackground(c.req.param("id"))));
+app.post("/api/projects/:id/background/stop", (c) => {
+  stopBackground(c.req.param("id"));
+  return c.json(backgroundStatus(c.req.param("id")));
 });
 
 // ---------- engines / models ----------
 
 app.get("/api/engines", async (c) => {
-  const [models, codex] = await Promise.all([claudeModels().catch(() => []), codexStatus()]);
-  return c.json({ claude: { installed: true, models }, codex: { ...codex, defaultModel: codexDefaultModel() } });
+  const [models, codex, claudeIn] = await Promise.all([claudeModels().catch(() => []), codexStatus(), claudeLoggedIn()]);
+  return c.json({
+    claude: { installed: true, loggedIn: claudeIn, models, login: loginState("claude") },
+    codex: { ...codex, defaultModel: codexDefaultModel(), models: codexModels(), login: loginState("codex") },
+  });
+});
+
+// Opens the engine's login page in the browser (the CLI waits for the callback); the UI polls /api/engines.
+app.post("/api/engines/:engine/login", (c) => {
+  const engine = c.req.param("engine");
+  if (engine !== "claude" && engine !== "codex") return c.json({ error: "Motor desconocido" }, 400);
+  return c.json(startLogin(engine));
 });
 
 // Codex reaches Trellai's tools through server/mcp-bridge.mjs, which calls these.
@@ -341,9 +545,11 @@ app.get("/api/projects/:id/events", (c) => {
 
 // ---------- tags ----------
 
-const tagBody = (b: { name?: string; color?: string }) => ({
+const tagBody = (b: { name?: string; color?: string; model?: unknown }) => ({
   name: b.name?.trim().slice(0, 40) || undefined,
   color: b.color && /^#[0-9a-f]{6}$/i.test(b.color) ? b.color : undefined,
+  // undefined = leave as is; "" / null = no model
+  model: b.model === undefined ? undefined : typeof b.model === "string" ? b.model.trim() || null : null,
 });
 
 app.get("/api/projects/:id/tags", (c) => c.json(db.getProject(c.req.param("id"))?.tags ?? []));
@@ -351,10 +557,10 @@ app.get("/api/projects/:id/tags", (c) => c.json(db.getProject(c.req.param("id"))
 app.post("/api/projects/:id/tags", async (c) => {
   const project = db.getProject(c.req.param("id"));
   if (!project) return c.json({ error: "Proyecto no encontrado" }, 404);
-  const { name, color } = tagBody(await c.req.json());
+  const { name, color, model } = tagBody(await c.req.json());
   if (!name) return c.json({ error: "Falta el nombre de la etiqueta" }, 400);
   if (project.tags.some((t) => t.name.toLowerCase() === name.toLowerCase())) return c.json({ error: `Ya existe la etiqueta "${name}"` }, 400);
-  const tag = db.ensureTag(project.id, name, color ?? TAG_COLORS[project.tags.length % TAG_COLORS.length]);
+  const tag = db.ensureTag(project.id, name, color ?? TAG_COLORS[project.tags.length % TAG_COLORS.length], model ?? null);
   emitTags(project.id, db.getProject(project.id)!.tags);
   return c.json(tag);
 });
@@ -367,7 +573,7 @@ app.patch("/api/projects/:id/tags/:tagId", async (c) => {
   if (patch.name && project.tags.some((t) => t.id !== id && t.name.toLowerCase() === patch.name!.toLowerCase())) {
     return c.json({ error: `Ya existe la etiqueta "${patch.name}"` }, 400);
   }
-  const tags = db.setProjectTags(project.id, project.tags.map((t) => (t.id === id ? { ...t, name: patch.name ?? t.name, color: patch.color ?? t.color } : t)));
+  const tags = db.setProjectTags(project.id, project.tags.map((t) => (t.id === id ? { ...t, name: patch.name ?? t.name, color: patch.color ?? t.color, model: patch.model === undefined ? (t.model ?? null) : patch.model } : t)));
   emitTags(project.id, tags);
   return c.json(tags.find((t) => t.id === id) ?? null);
 });
@@ -404,11 +610,12 @@ app.post("/api/cards/:id/copy", async (c) => {
   if (!db.getProject(project_id)) return c.json({ error: "Proyecto no encontrado" }, 404);
   let card = db.createCard({ project_id, title: source.title, spec: source.spec, column: "backlog" });
   for (const cp of db.listCheckpoints(source.id)) db.addCheckpoint(card.id, cp.text, cp.source);
+  db.copyAttachments(source.id, card.id);
   // Tags belong to a project: reuse the target's tag with the same name, or create it.
   const sourceTags = db.getProject(source.project_id)?.tags ?? [];
   const tags = source.tags.map((id) => sourceTags.find((t) => t.id === id)).filter((t) => !!t);
   if (tags.length) {
-    card = db.updateCard(card.id, { tags: tags.map((t) => db.ensureTag(project_id, t.name, t.color).id) });
+    card = db.updateCard(card.id, { tags: tags.map((t) => db.ensureTag(project_id, t.name, t.color, t.model ?? null).id) });
     emitTags(project_id, db.getProject(project_id)!.tags);
   }
   const from = db.getProject(source.project_id)!;
@@ -486,6 +693,61 @@ app.delete("/api/checkpoints/:id", (c) => {
   return c.json({ ok: true });
 });
 
+// ---------- images on a card ----------
+
+app.get("/api/cards/:id/attachments", (c) => c.json(db.listAttachments(c.req.param("id"))));
+
+/** Body: { name, data: base64 or data URL, mime?, annotations?, annotated? } */
+app.post("/api/cards/:id/attachments", async (c) => {
+  const card = db.getCard(c.req.param("id"));
+  if (!card) return c.json({ error: "Tarjeta no encontrada" }, 404);
+  const body = await c.req.json<{ name?: string; data?: string; mime?: string; annotations?: unknown; annotated?: string }>();
+  const img = parseImage(body.data, body.mime);
+  const annotated = body.annotated ? parseImage(body.annotated, img.mime).data : null;
+  const name = body.name?.trim().slice(0, 120) || "imagen";
+  const att = db.addAttachment(card.id, { name, ...img, annotated, annotations: cleanAnnotations(body.annotations) });
+  emitAttachments(card.project_id, card.id);
+  return c.json(att);
+});
+
+/** :id is the local id, or the uid (same on every computer). */
+app.get("/api/attachments/:id/image", (c) => {
+  const key = c.req.param("id");
+  const att = /^\d+$/.test(key) ? db.getAttachment(Number(key)) : db.getAttachmentByUid(key);
+  const annotated = c.req.query("annotated") === "1";
+  const data = att && db.attachmentData(att.id, annotated);
+  if (!att || !data) return c.json({ error: "Imagen no encontrada" }, 404);
+  // The original never changes; the drawn copy is redone whenever the boxes change.
+  const cache = annotated ? "no-store" : "private, max-age=31536000, immutable";
+  return c.body(Buffer.from(data, "base64"), 200, { "content-type": att.mime, "cache-control": cache });
+});
+
+/** Body: { annotations?, annotated?: base64 | null (copy with the boxes drawn), name? } */
+app.patch("/api/attachments/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const before = db.getAttachment(id);
+  if (!before) return c.json({ error: "Imagen no encontrada" }, 404);
+  const body = await c.req.json<{ annotations?: unknown; annotated?: string | null; name?: string }>();
+  const att = db.updateAttachment(id, {
+    annotations: body.annotations === undefined ? undefined : cleanAnnotations(body.annotations),
+    annotated: body.annotated === undefined ? undefined : body.annotated ? parseImage(body.annotated, before.mime).data : null,
+    name: body.name?.trim().slice(0, 120) || undefined,
+  });
+  const card = db.getCard(before.card_id);
+  if (card) emitAttachments(card.project_id, card.id);
+  return c.json(att);
+});
+
+app.delete("/api/attachments/:id", (c) => {
+  const att = db.getAttachment(Number(c.req.param("id")));
+  if (att) {
+    db.deleteAttachment(att.id);
+    const card = db.getCard(att.card_id);
+    if (card) emitAttachments(card.project_id, card.id);
+  }
+  return c.json({ ok: true });
+});
+
 // ---------- "Ver esta rama" ----------
 
 app.post("/api/cards/:id/preview", async (c) => {
@@ -506,11 +768,16 @@ app.get("/api/cards/:id/messages", (c) => c.json(db.listMessages(c.req.param("id
 app.get("/api/cards/:id/questions", (c) => c.json(db.listQuestions(c.req.param("id"))));
 
 app.post("/api/cards/:id/message", async (c) => {
-  const { text } = await c.req.json<{ text: string }>();
-  if (!text?.trim()) return c.json({ error: "Mensaje vacío" }, 400);
-  wf.sendMessage(c.req.param("id"), text.trim());
+  const { text, attachments } = await c.req.json<{ text: string; attachments?: number[] }>();
+  const ids = (Array.isArray(attachments) ? attachments : []).map(Number).filter((id) => db.getAttachment(id)?.card_id === c.req.param("id"));
+  if (!text?.trim() && !ids.length) return c.json({ error: "Mensaje vacío" }, 400);
+  wf.sendMessage(c.req.param("id"), text?.trim() ?? "", ids);
   return c.json({ ok: true });
 });
+
+/** ↶ on one of your requests: what it would throw away (GET) and doing it (POST). */
+app.get("/api/cards/:id/messages/:mid/rewind", (c) => c.json(wf.rewindPreview(c.req.param("id"), Number(c.req.param("mid")))));
+app.post("/api/cards/:id/messages/:mid/rewind", async (c) => c.json(await wf.rewindTo(c.req.param("id"), Number(c.req.param("mid")))));
 
 app.post("/api/cards/:id/answers", async (c) => {
   const { answers } = await c.req.json<{ answers: Record<string, string> }>();

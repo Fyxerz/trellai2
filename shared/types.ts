@@ -44,7 +44,54 @@ export interface Project {
   remote_url: string | null;
   /** tags you can put on this project's cards */
   tags: Tag[];
+  /** Board background */
+  bg_mode: BgMode;
+  /** hex color (bg_mode "color", and fallback when the image is missing) */
+  bg_color: string | null;
+  /** when this computer last generated `.trellai/background.*` (ms, as text; cache-buster) — null = no image */
+  bg_image: string | null;
+  /** When preparation finishes, move the card to Doing by itself (otherwise it waits in Preparation) */
+  auto_doing: boolean;
   created_at: string;
+}
+
+export type BgMode = "none" | "color" | "image";
+
+/** Background image generation for a project (runs on this computer). */
+export interface BgStatus {
+  running: boolean;
+  error: string | null;
+  /** what the model is doing right now */
+  activity: string | null;
+}
+
+/** A repo of your GitHub account, as listed by the `gh` CLI ("Clonar de GitHub"). */
+export interface GitHubRepo {
+  /** "owner/name" */
+  name: string;
+  description: string | null;
+  private: boolean;
+  updated_at: string;
+  /** URL to clone with, following `gh config get git_protocol` (ssh or https) */
+  clone_url: string;
+}
+
+/** GET /api/github/repos: whether `gh` is installed, logged in, and your repos. */
+export interface GitHubRepos {
+  available: boolean;
+  loggedIn: boolean;
+  repos: GitHubRepo[];
+  error?: string;
+}
+
+/** A background "clone from GitHub" (GET /api/clone-jobs/:id). */
+export interface CloneJob {
+  stage: "cloning" | "creating" | "done" | "error";
+  /** 0–100 while cloning (git's "Receiving objects" / "Resolving deltas"). */
+  percent?: number;
+  /** What git is doing right now, or the error. */
+  message?: string;
+  project?: Project;
 }
 
 export interface Tag {
@@ -52,7 +99,16 @@ export interface Tag {
   name: string;
   /** hex color */
   color: string;
+  /** model the dev agent uses on cards with this tag (unless the card picks its own); absent = none */
+  model?: string | null;
 }
+
+/** Colors offered in the tag manager's grid (TAG_COLORS are used, in order, for new tags). */
+export const TAG_PALETTE = [
+  "#f87171", "#fb923c", "#fbbf24", "#facc15", "#a3e635", "#4ade80", "#34d399", "#2dd4bf",
+  "#22d3ee", "#38bdf8", "#60a5fa", "#818cf8", "#a78bfa", "#c084fc", "#e879f9", "#f472b6",
+  "#fb7185", "#dc2626", "#ea580c", "#16a34a", "#0d9488", "#2563eb", "#7c3aed", "#a1a1aa",
+];
 
 export const TAG_COLORS = ["#f87171", "#fb923c", "#facc15", "#4ade80", "#2dd4bf", "#60a5fa", "#a78bfa", "#f472b6", "#a1a1aa"];
 
@@ -114,6 +170,13 @@ export interface Message {
   role: MessageRole;
   content: string;
   created_at: string;
+  /** your requests on a card with a branch: its HEAD (and commits ahead of base) when you sent it */
+  head_sha: string | null;
+  head_ahead: number | null;
+  /** column the card was in when you sent it (where ↶ takes it back) */
+  column_before: Column | null;
+  /** undone by a rewind (↶) */
+  undone: boolean;
 }
 
 export interface Question {
@@ -167,17 +230,42 @@ export interface AssistantMessage {
   created_at: string;
 }
 
+/** A rectangle on an image, in relative coordinates (0–1), with Pedro's comment. */
+export interface Annotation {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  comment: string;
+}
+
+/** An image attached to a card (the bytes are served by /api/attachments/:id/image). */
+export interface Attachment {
+  id: number;
+  uid: string;
+  card_id: string;
+  name: string;
+  mime: string;
+  annotations: Annotation[];
+  /** there is a copy with the numbered boxes drawn on it (?annotated=1) */
+  has_annotated: boolean;
+  created_at: string;
+}
+
 export type ServerEvent =
   | { type: "card"; card: Card }
   | { type: "card_deleted"; id: string }
   | { type: "message"; message: Message }
   | { type: "questions"; cardId: string }
   | { type: "checkpoints"; cardId: string }
+  | { type: "attachments"; cardId: string }
   | { type: "note"; note: Note }
   | { type: "assistant_message"; message: AssistantMessage }
   | { type: "assistant_status"; mode: "plan" | "do"; running: boolean }
   | { type: "preview"; cardId: string | null }
   | { type: "tags"; tags: Tag[] }
+  /** background image generation started/progressed/finished */
+  | { type: "background"; status: BgStatus }
   /** another computer changed things: reload the board */
   | { type: "sync" }
   /** Trellai's own code changed (branch switch): a new UI build, or a restart pending */

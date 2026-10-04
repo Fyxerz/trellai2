@@ -3,14 +3,16 @@ import { reportError } from "./notifications";
 import { DragDropContext, Draggable, Droppable, type DropResult } from "@hello-pangea/dnd";
 import { MachineChip } from "./SyncUI";
 import { useSync } from "./api";
-import { useEffect, useRef, useState } from "react";
-import { COLUMNS, COLUMN_LABELS, type Card, type Column, type Tag } from "../../shared/types";
+import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from "react";
+import { createPortal } from "react-dom";
+import { COLUMNS, COLUMN_LABELS, type Card, type Column, type Project, type Tag } from "../../shared/types";
 import { api, type Board as BoardState } from "./api";
-import { ArrowRight, ChevronRight, Eye, GitBranch, GitMerge, ListChecks, Play, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, ChevronRight, Eye, EyeOff, GitBranch, GitMerge, ListChecks, Play, Plus, Trash2 } from "lucide-react";
 import { cardTags, TagChip, useProjectTags } from "./tags";
-import { confirmDeleteCard } from "./Confirm";
+import { useTagDrag } from "./tagDrag";
+import { confirmDeleteCard, togglePreview } from "./Confirm";
 import { Button, COLUMN_HEX, COLUMN_ICON, StatusBadge } from "./ui";
-import { modelLabel, useEngines } from "./models";
+import { backgroundUrl, modelLabel, useEngines } from "./models";
 import { prettyModel } from "../../shared/models";
 
 const HINTS: Record<Column, string> = {
@@ -39,12 +41,6 @@ export const CAN_ADD = new Set<Column>(["backlog", "plan"]);
 /** Merged is shown newest first, grouped by day. */
 const mergedAt = (c: Card) => c.merged_at ?? c.updated_at;
 
-export function columnCards(cards: Record<string, Card>, col: Column): Card[] {
-  return Object.values(cards)
-    .filter((c) => c.column === col)
-    .sort(col === "merged" ? (a, b) => mergedAt(b).localeCompare(mergedAt(a)) : (a, b) => a.position - b.position);
-}
-
 /** Local calendar day, e.g. "2026-10-04". */
 function dayKey(iso: string) {
   const d = new Date(iso);
@@ -70,6 +66,31 @@ export function mergedDays(cards: Card[]): { day: string; cards: Card[] }[] {
     else groups.push({ day, cards: [c] });
   }
   return groups;
+}
+
+/**
+ * A column's cards in screen order: by position, but the card being previewed (`pinnedId`) goes first.
+ * Merged is newest first (grouped by day on screen), with no pinning.
+ */
+export function columnCards(cards: Record<string, Card>, col: Column, pinnedId?: string | null): Card[] {
+  const list = Object.values(cards)
+    .filter((c) => c.column === col)
+    .sort(col === "merged" ? (a, b) => mergedAt(b).localeCompare(mergedAt(a)) : (a, b) => a.position - b.position);
+  const i = pinnedId && col !== "merged" ? list.findIndex((c) => c.id === pinnedId) : -1;
+  if (i > 0) list.unshift(...list.splice(i, 1));
+  return list;
+}
+
+/**
+ * Turns a screen index (where card `id` is dropped among the other cards of `col`, pinned one first)
+ * into the stored index `moveCard` expects: it goes right before the same neighbour it has on screen.
+ * The pinning is only visual, so the pinned card keeps its stored position.
+ */
+export function storedIndex(cards: Record<string, Card>, col: Column, pinnedId: string | null | undefined, id: string, screenIndex: number) {
+  const screen = columnCards(cards, col, pinnedId).filter((c) => c.id !== id);
+  const stored = columnCards(cards, col).filter((c) => c.id !== id);
+  const next = screen.slice(Math.max(0, screenIndex)).find((c) => c.id !== pinnedId);
+  return next ? stored.findIndex((c) => c.id === next.id) : stored.length;
 }
 
 /** Move a card locally right away, then tell the server (which may start/stop agents). */
@@ -102,6 +123,21 @@ export async function moveCard(board: BoardState, id: string, to: Column, index:
   });
 }
 
+/** The project's board background: its image (if this computer has it), else its color. */
+export function boardBackground(project: Project): { image: string | null; color: string | null } {
+  const image = project.bg_mode === "image" && project.bg_image ? backgroundUrl(project) : null;
+  const color = project.bg_mode !== "none" ? project.bg_color : null;
+  return { image, color };
+}
+
+/** Fills its (relative, isolated) parent behind the board; a veil keeps the columns readable in both themes. */
+export function BoardBackground({ project }: { project: Project }) {
+  const { image, color } = boardBackground(project);
+  if (!image && !color) return null;
+  const style = { "--board-bg": color ?? "transparent", backgroundImage: image ? `url("${image}")` : undefined } as CSSProperties;
+  return <div aria-hidden data-board-bg={image ? "image" : "color"} className={`board-bg ${image ? "has-image" : ""}`} style={style} />;
+}
+
 export function Board({
   projectId,
   board,
@@ -126,7 +162,7 @@ export function Board({
   focused: boolean;
   onCursor: (col: Column, id: string | null) => void;
 }) {
-  const byColumn = (col: Column) => columnCards(board.cards, col);
+  const byColumn = (col: Column) => columnCards(board.cards, col, previewCardId);
   const tags = useProjectTags(projectId, board);
   useEngines(); // re-render once the exact model versions are known
 
@@ -143,13 +179,15 @@ export function Board({
 
   const renderCard = (card: Card, i: number) => (
     <Draggable key={card.id} draggableId={card.id} index={i}>
-      {(dp, ds) => (
-        <div ref={dp.innerRef} {...dp.draggableProps} {...dp.dragHandleProps} data-card className="cursor-pointer">
+      {(dp, ds) => inBody(ds.isDragging, (
+        <div ref={dp.innerRef} {...dp.draggableProps} {...dp.dragHandleProps} data-card data-card-id={card.id} data-card-tags={card.tags.join(",")} className="board-card cursor-pointer" onKeyDown={e => { if (e.target === e.currentTarget && e.key === "Enter") { e.preventDefault(); e.stopPropagation(); onCursor(card.column, card.id); onOpen(card.id); } }}>
           <CardItem
             card={card}
             dragging={ds.isDragging}
             selected={card.id === selectedId}
             cursor={focused && cursor.id === card.id}
+            follow={card.id === (focused && cursor.id ? cursor.id : selectedId)}
+            index={i}
             previewing={previewCardId === card.id}
             tags={cardTags(card, tags)}
             onAdvance={(to) => {
@@ -162,7 +200,7 @@ export function Board({
             }}
           />
         </div>
-      )}
+      ))}
     </Draggable>
   );
 
@@ -199,14 +237,16 @@ export function Board({
     const to = r.destination.droppableId as Column;
     const from = r.source.droppableId as Column;
     if (to === from && r.destination.index === r.source.index) return;
+    // The previewed card stays on top of its column anyway.
+    if (to === from && r.draggableId === previewCardId) return;
 
-    moveCard(board, r.draggableId, to, r.destination.index);
+    moveCard(board, r.draggableId, to, storedIndex(board.cards, to, previewCardId, r.draggableId, r.destination.index));
     onCursor(to, r.draggableId);
   };
 
   return (
     <DragDropContext onDragStart={onDragStart} onDragEnd={onDragEnd}>
-      <div className="flex h-full items-start gap-2.5 overflow-x-auto px-4 pt-1 pb-5">
+      <div data-board-scroll className="flex h-full items-start gap-3 overflow-x-auto px-4 pt-1 pb-5">
         {COLUMNS.map((col) => {
           const cards = byColumn(col);
           const canAdd = CAN_ADD.has(col);
@@ -226,7 +266,7 @@ export function Board({
                 <Icon className="h-[15px] w-[15px]" style={{ color: COLUMN_HEX[col] }} strokeWidth={2.2} />
                 <h2 className={`text-sm font-semibold tracking-tight ${active ? "text-zinc-100" : "text-zinc-200"}`}>{COLUMN_LABELS[col]}</h2>
                 <span className="tabular rounded-full bg-ui-ink/[0.06] px-1.5 text-[11px] leading-[18px] text-zinc-400">{cards.length}</span>
-                <span className="ml-auto truncate text-[11px] text-zinc-500 opacity-0 transition-opacity group-hover/h:opacity-100">{HINTS[col]}</span>
+                <span className="ui-reveal ml-auto truncate text-[11px] text-zinc-500 opacity-0 transition-opacity group-hover/h:opacity-100">{HINTS[col]}</span>
                 {canAdd && (
                   <button
                     onClick={() => {
@@ -272,12 +312,12 @@ export function Board({
                     {canAdd && adding !== col && <button onClick={() => { onCursor(col, null); setAdding(col); }} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-zinc-400 hover:bg-ui-ink/5 hover:text-zinc-100"><Plus className="h-4 w-4" /> Añadir tarjeta</button>}
                     {adding === col && <NewCardInput projectId={projectId} column={col} onDone={() => setAdding(null)} />}
                     {cards.length === 0 && adding !== col && !snap.isDraggingOver && (
-                      <div className="pointer-events-none mx-1 mt-0.5 rounded-xl border border-dashed border-ui-ink/[0.06] px-3 py-4 text-center text-[11px] text-zinc-600">
+                      <div className="ui-empty pointer-events-none mx-1 mt-0.5">
                         {canAdd ? "Doble clic para añadir" : EMPTY[col]}
                       </div>
                     )}
                     {canAdd && cards.length > 0 && adding !== col && !snap.isDraggingOver && (
-                      <span className="pointer-events-none absolute bottom-3 left-3.5 text-[11px] text-zinc-600 opacity-0 transition-opacity group-hover:opacity-100">
+                      <span className="ui-reveal pointer-events-none absolute bottom-3 left-3.5 text-[11px] text-zinc-600 opacity-0 transition-opacity group-hover:opacity-100">
                         Doble clic para añadir
                       </span>
                     )}
@@ -301,11 +341,43 @@ const EMPTY: Record<Column, string> = {
   merged: "Aún no hay nada mergeado",
 };
 
+/**
+ * The dragged card is `position: fixed`, but the columns' `backdrop-filter` (board with a background image)
+ * makes them its containing block, so it was drawn off by the column's offset — away from the pointer or
+ * out of sight. While dragging, render it on <body>.
+ */
+function inBody(dragging: boolean, el: ReactElement) {
+  return dragging ? createPortal(el, document.body) : el;
+}
+
+/**
+ * Scroll just the card's column and the board so the card shows. Not `scrollIntoView`: that also scrolls
+ * the app's `overflow: hidden` wrappers, which shifts the whole board off its place.
+ */
+function keepInView(el: HTMLElement) {
+  const pad = 8;
+  const list = el.closest<HTMLElement>("[data-rfd-droppable-id]");
+  if (list) {
+    const c = el.getBoundingClientRect(), r = list.getBoundingClientRect();
+    if (c.top < r.top + pad) list.scrollTop -= r.top + pad - c.top;
+    else if (c.bottom > r.bottom - pad) list.scrollTop += Math.min(c.bottom - r.bottom + pad, c.top - r.top - pad);
+  }
+  const board = el.closest<HTMLElement>("[data-board-scroll]");
+  const column = el.closest("section");
+  if (board && column) {
+    const c = column.getBoundingClientRect(), r = board.getBoundingClientRect();
+    if (c.left < r.left) board.scrollLeft -= r.left - c.left + pad;
+    else if (c.right > r.right) board.scrollLeft += Math.min(c.right - r.right + pad, c.left - r.left);
+  }
+}
+
 function CardItem({
   card,
   dragging,
   selected,
   cursor,
+  follow,
+  index,
   previewing,
   tags,
   onAdvance,
@@ -315,6 +387,9 @@ function CardItem({
   dragging: boolean;
   selected: boolean;
   cursor: boolean;
+  /** the card the view should keep in sight: the keyboard cursor, or else the open one */
+  follow: boolean;
+  index: number;
   previewing: boolean;
   tags: Tag[];
   onAdvance: (to: Column) => void;
@@ -329,42 +404,83 @@ function CardItem({
       ? { label: modelLabel(card.model, true), title: `Modelo elegido: ${modelLabel(card.model)}`, codex: card.model.startsWith("codex") }
       : null;
   const ref = useRef<HTMLDivElement>(null);
+  // Keep it in sight when it gets the focus and whenever it moves (keyboard, advance button, an agent).
+  // Next frame, so the board has laid out its new spot.
   useEffect(() => {
-    if (cursor) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [cursor]);
+    if (!follow || dragging) return;
+    const raf = requestAnimationFrame(() => ref.current && keepInView(ref.current));
+    return () => cancelAnimationFrame(raf);
+  }, [follow, dragging, card.column, index]);
   const merged = card.column === "merged";
   const accent = card.status === "waiting" ? "#a78bfa" : card.status === "error" ? "#f87171" : null;
   const done = card.checkpoints_total > 0 && card.checkpoints_done === card.checkpoints_total;
   const showBranch = card.branch && (card.column === "doing" || card.column === "review");
   const sync = useSync();
+  // a tag being dragged over this card (shown as if already on it) or just dropped on it
+  const tagDrag = useTagDrag();
+  const hoverTag = tagDrag.hover?.cardId === card.id ? tagDrag.hover.tag : null;
+  const landed = tagDrag.landed?.cardId === card.id ? tagDrag.landed : null;
+  const shownTags = [...tags, ...[hoverTag, landed?.tag].filter((t): t is Tag => !!t && !tags.some((x) => x.id === t.id))].filter(
+    (t, i, all) => all.findIndex((x) => x.id === t.id) === i,
+  );
   const elsewhere = !merged && !!card.machine && !!sync?.enabled && card.machine !== sync.machine && ["preparation", "doing", "review"].includes(card.column);
 
   return (
     <div
       ref={ref}
       onClick={onClick}
-      style={{ boxShadow: dragging ? "var(--shadow-pop)" : "var(--shadow-card)" }}
+      key={landed?.key}
+      style={{
+        boxShadow: hoverTag
+          ? `var(--shadow-lift), 0 0 0 2px ${hoverTag.color}aa`
+          : dragging
+            ? "var(--shadow-pop)"
+            : "var(--shadow-card)",
+        // Tinted wash over the card's own background so the previewed card stands out (tone set per theme in index.css).
+        backgroundImage: previewing ? "linear-gradient(var(--preview-wash), var(--preview-wash))" : undefined,
+      }}
       className={[
-        "group/card relative overflow-hidden rounded-[var(--radius-card)] border bg-zinc-900 px-3 py-2.5 transition-all duration-150",
+        "board-card group/card relative overflow-hidden rounded-[var(--radius-card)] border bg-zinc-900 px-3 py-2.5 transition-all duration-150",
         card.status === "running" ? "working" : "",
         cursor
           ? "border-indigo-400/70 ring-2 ring-indigo-400/25"
           : selected
             ? "border-indigo-400/40"
-            : "border-ui-ink/[0.06] hover:-translate-y-px hover:border-ui-ink/[0.12] hover:bg-zinc-800",
+            : previewing
+              ? "border-teal-400/50 hover:-translate-y-px hover:border-teal-400/70"
+              : "border-ui-ink/[0.06] hover:-translate-y-px hover:border-ui-ink/[0.12] hover:bg-zinc-800",
         dragging ? "rotate-[1.5deg]" : "",
+        hoverTag ? "-translate-y-0.5" : "",
+        landed ? "card-land" : "",
         merged ? "opacity-55 hover:opacity-90" : "",
       ].join(" ")}
     >
       {accent && <span className="absolute inset-y-2 left-0 w-[2px] rounded-full" style={{ background: accent }} />}
-      <div className="absolute top-1.5 right-1.5 z-10 flex items-center gap-1">
+      <div className="card-actions absolute top-1.5 right-1.5 z-10 flex items-center gap-1">
+        {card.column === "review" && card.branch && card.status !== "running" && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePreview(card, previewing);
+            }}
+            className={[
+              "flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] leading-none font-medium shadow-sm ring-1 transition",
+              previewing
+                ? "bg-teal-500/15 text-teal-200 ring-teal-400/30 hover:bg-teal-500/25"
+                : "ui-reveal bg-zinc-900/90 text-zinc-300 opacity-0 ring-ui-ink/[0.08] group-hover/card:visible group-hover/card:opacity-100 hover:bg-zinc-800 hover:text-zinc-100",
+            ].join(" ")}
+            title={previewing ? "Devolver tu repo a su rama" : "Poner esta rama en tu repo"}
+          >
+            {previewing ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />} {previewing ? "Dejar de ver" : "Ver rama"}
+          </button>
+        )}
         {next && (
           <button
             onClick={(e) => {
               e.stopPropagation();
               onAdvance(next.to);
             }}
-            className="invisible flex items-center gap-1 rounded-md bg-indigo-500 px-1.5 py-1 text-[11px] leading-none font-medium text-white opacity-0 shadow-sm transition group-hover/card:visible group-hover/card:opacity-100 hover:bg-indigo-400"
+            className="ui-reveal flex items-center gap-1 rounded-md bg-indigo-600 px-1.5 py-1 text-[11px] leading-none font-medium text-white opacity-0 shadow-sm transition group-hover/card:visible group-hover/card:opacity-100 hover:bg-indigo-400"
             title={next.label}
           >
             <next.Icon className="h-3 w-3" /> {next.label}
@@ -375,37 +491,37 @@ function CardItem({
             e.stopPropagation();
             if (await confirmDeleteCard(card)) api(`/api/cards/${card.id}`, undefined, "DELETE").catch((err) => reportError(err.message));
           }}
-          className="rounded-md bg-zinc-900/90 p-1 text-zinc-500 opacity-0 ring-1 ring-ui-ink/[0.06] transition group-hover/card:opacity-100 focus-visible:opacity-100 hover:bg-red-500/15 hover:text-red-300"
+          className="ui-reveal rounded-md bg-zinc-900/90 p-1 text-zinc-500 opacity-0 ring-1 ring-ui-ink/[0.06] transition group-hover/card:opacity-100 focus-visible:opacity-100 hover:bg-red-500/15 hover:text-danger"
           title="Eliminar tarjeta (x)"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
-      {tags.length > 0 && (
-        <div className="mb-1.5 flex flex-wrap gap-1">
-          {tags.map((t) => (
-            <TagChip key={t.id} tag={t} />
+      {(shownTags.length > 0 || previewing || (modelChip && !merged)) && (
+        <div className="mb-1.5 flex flex-wrap items-center gap-1">
+          {shownTags.map((t) => (
+            <TagChip
+              key={t.id}
+              tag={t}
+              className={landed?.tag.id === t.id ? "tag-pop" : hoverTag?.id === t.id ? "opacity-80 outline-1 outline-dashed outline-current" : ""}
+            />
           ))}
+          {previewing && (
+            <span className="flex shrink-0 items-center gap-1 rounded-md bg-teal-400/12 px-1.5 text-[10px] leading-[16px] font-semibold text-success" title="Esta rama está puesta en tu repo">
+              <Eye className="h-3 w-3" /> en tu repo
+            </span>
+          )}
+          {modelChip && !merged && (
+            <span
+              className={`shrink-0 rounded-md px-1.5 text-[10px] leading-[16px] font-semibold ${modelChip.codex ? "bg-emerald-400/10 text-success" : "bg-orange-400/10 text-warning"}`}
+              title={modelChip.title}
+            >
+              {modelChip.label}
+            </span>
+          )}
         </div>
       )}
-      <div className="flex items-start gap-2">
-        <div className={`min-w-0 flex-1 text-sm leading-snug font-medium ${merged ? "text-zinc-400 line-through decoration-zinc-600" : "text-zinc-100"}`}>
-          {card.title}
-        </div>
-        {previewing && (
-          <span className="mt-0.5 flex shrink-0 items-center gap-1 rounded-md bg-teal-400/12 px-1.5 text-[10px] leading-[16px] font-semibold text-teal-200" title="Esta rama está puesta en tu repo">
-            <Eye className="h-3 w-3" /> en tu repo
-          </span>
-        )}
-        {modelChip && !merged && (
-          <span
-            className={`mt-0.5 shrink-0 rounded-md px-1.5 text-[10px] leading-[16px] font-semibold ${modelChip.codex ? "bg-emerald-400/10 text-emerald-300" : "bg-orange-400/10 text-orange-300"}`}
-            title={modelChip.title}
-          >
-            {modelChip.label}
-          </span>
-        )}
-      </div>
+      <div className={`text-sm leading-snug font-medium ${merged ? "text-zinc-400 line-through decoration-zinc-600" : "text-zinc-100"}`}>{card.title}</div>
       {card.spec && !merged && <div className="mt-1 line-clamp-2 text-sm leading-relaxed text-zinc-500">{specPreview(card.spec)}</div>}
 
       {(card.status !== "idle" || (card.status_text && !merged) || elsewhere) && (
@@ -413,7 +529,7 @@ function CardItem({
           <StatusBadge card={card} />
           {elsewhere && <MachineChip machine={card.machine} className="shrink-0" />}
           {card.status_text && card.status !== "running" && (
-            <span className={`truncate text-[11px] ${card.status === "error" ? "text-red-300/80" : "text-zinc-500"}`}>{card.status_text}</span>
+            <span className={`truncate text-[11px] ${card.status === "error" ? "text-danger/80" : "text-zinc-500"}`}>{card.status_text}</span>
           )}
         </div>
       )}
@@ -422,13 +538,13 @@ function CardItem({
         <div className="mt-2.5 flex items-center gap-2.5">
           {card.checkpoints_total > 0 && (
             <div className="flex min-w-0 flex-1 items-center gap-2">
-              <div className="h-[3px] flex-1 overflow-hidden rounded-full bg-ui-ink/[0.06]">
+              <div className="ui-progress flex-1">
                 <div
                   className={`h-full rounded-full transition-all ${done ? "bg-emerald-400" : "bg-indigo-400"}`}
                   style={{ width: `${(card.checkpoints_done / card.checkpoints_total) * 100}%` }}
                 />
               </div>
-              <span className={`tabular flex items-center gap-1 text-[10.5px] ${done ? "text-emerald-300" : "text-zinc-500"}`}>
+              <span className={`tabular flex items-center gap-1 text-[10.5px] ${done ? "text-success" : "text-zinc-500"}`}>
                 <ListChecks className="h-3 w-3" />
                 {card.checkpoints_done}/{card.checkpoints_total}
               </span>
@@ -465,8 +581,8 @@ function NewCardInput({ projectId, column, onDone }: { projectId: string; column
     <input ref={input} aria-label="Título de la nueva tarjeta" autoFocus value={title} readOnly={saving} onChange={e => setTitle(e.target.value)} onKeyDown={e => {
       if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); if (!e.repeat) void create(); }
       if (e.key === "Escape") { e.stopPropagation(); if (!saving) onDone(); }
-    }} placeholder="Título de la tarjeta…" className="w-full rounded-lg bg-transparent px-2 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-500" />
-    {error && <p role="alert" className="px-2 py-1 text-xs text-red-300">{error}</p>}
+    }} placeholder="Título de la tarjeta…" className="ui-field w-full rounded-lg bg-transparent px-2 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-500" />
+    {error && <p role="alert" className="px-2 py-1 text-xs text-danger">{error}</p>}
     <div className="mt-1 flex items-center justify-end gap-2"><Button size="sm" onClick={onDone} disabled={saving}>Cancelar</Button><Button size="sm" variant="primary" onClick={create} disabled={!title.trim() || saving}>{saving ? "Creando…" : "Añadir ↵"}</Button></div>
   </div>;
 }

@@ -41,6 +41,7 @@ const LOCAL: Record<string, string[]> = {
     "assistant_pending",
     "direct_session_id",
     "direct_pending",
+    "bg_image", // the image file lives in this computer's .trellai/
   ],
   cards: ["worktree", "session_id", "prep_session_id", "pending_input"],
 };

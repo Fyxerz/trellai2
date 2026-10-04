@@ -1,18 +1,21 @@
 import { Notifications, reportError } from "./notifications";
 import { useMessageDraft, useChatScroll } from "./chat";
 import { projectName, MOD, Appearance, useDialogFocus } from "./preferences";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { COLUMNS, describeClaim, type Column, type Project } from "../../shared/types";
 import { api, useBoard, useProjects, type Board as BoardState } from "./api";
 import { AssistantPanel, type AssistantMode } from "./Assistant";
-import { Board, CAN_ADD, columnCards, moveCard } from "./Board";
+import { Board, BoardBackground, boardBackground, CAN_ADD, columnCards, moveCard, storedIndex } from "./Board";
 import { CardPanel } from "./CardPanel";
 import { FolderPicker } from "./FolderPicker";
+import { CloneRepo } from "./CloneRepo";
+import { CloneToasts } from "./CloneToasts";
 import { Help } from "./Help";
 import { ConfirmHost, confirmDeleteCard, togglePreview } from "./Confirm";
 import { Home } from "./Home";
 import {
   Archive,
+  BookOpen,
   ChevronRight,
   Eye,
   Keyboard,
@@ -23,8 +26,12 @@ import {
   Sparkles,
   Search,
   X,
+  Tags,
 } from "lucide-react";
 import { ProjectSettings } from "./models";
+import { TagManager } from "./TagManager";
+import { ProjectDocs } from "./ProjectDocs";
+import { useProjectTags } from "./tags";
 import { Sidebar } from "./Sidebar";
 import { BranchStatus, SyncIndicator, UnlinkedBanner } from "./SyncUI";
 import { Button, ChatHint, chatKeyDown, Kbd, ProjectAvatar, timeAgo } from "./ui";
@@ -65,6 +72,9 @@ export default function App() {
   const [showHelp, setShowHelp] = useState(false);
   const [showAssistant, setShowAssistant] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showTags, setShowTags] = useState(false);
+  const closeTags = useCallback(() => setShowTags(false), []);
+  const [showDocs, setShowDocs] = useState(false);
   const [assistantMode, setAssistantMode] = useState<AssistantMode>("plan");
   const [selected, setSelected] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => store.get(SIDEBAR_OPEN) !== "0");
@@ -75,6 +85,7 @@ export default function App() {
   const [view, setView] = useState<"home" | "board">(() => (store.get(VIEW) === "home" ? "home" : "board"));
   const [homeCursor, setHomeCursor] = useState(0);
   const board = useBoard(projectId);
+  const projectTags = useProjectTags(projectId, board);
   const liveNotes = board.notes.filter((n) => !n.archived).length;
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -100,7 +111,7 @@ export default function App() {
   // "Ver esta rama" changes live on the project row
   useEffect(() => {
     const off = board.on((e) => {
-      if (e.type === "preview" || e.type === "sync") reload();
+      if (e.type === "preview" || e.type === "sync" || (e.type === "background" && !e.status.running)) reload();
     });
     return () => void off();
   }, [projectId]);
@@ -254,7 +265,8 @@ export default function App() {
       // ---------------- board
       const cur = resolveCursor();
       const colIdx = COLUMNS.indexOf(cur.col);
-      const list = columnCards(s.board.cards, cur.col);
+      const pinned = s.projects?.find((p) => p.id === s.projectId)?.preview_card_id;
+      const list = columnCards(s.board.cards, cur.col, pinned);
       const follow = (id: string | null) => {
         if (s.selected && id) setSelected(id);
       };
@@ -280,14 +292,16 @@ export default function App() {
         const i = list.findIndex((c) => c.id === cur.id);
         const j = i + (key === "J" ? 1 : -1);
         if (j < 0 || j >= list.length) return;
-        moveCard(s.board, cur.id, cur.col, j);
+        // The previewed card stays on top: it can't move, nor be passed.
+        if (cur.id === pinned || list[j].id === pinned) return;
+        moveCard(s.board, cur.id, cur.col, storedIndex(s.board.cards, cur.col, pinned, cur.id, j));
         return;
       }
       if (key === "h" || key === "l" || key === "ArrowLeft" || key === "ArrowRight") {
         e.preventDefault();
         const dir = key === "l" || key === "ArrowRight" ? 1 : -1;
         const col = COLUMNS[Math.max(0, Math.min(COLUMNS.length - 1, colIdx + dir))];
-        const target = columnCards(s.board.cards, col);
+        const target = columnCards(s.board.cards, col, pinned);
         const pos = Math.max(0, list.findIndex((c) => c.id === cur.id));
         go(col, target[Math.min(pos, target.length - 1)]?.id ?? null);
         return;
@@ -342,7 +356,8 @@ export default function App() {
     function resolveCursor() {
       const s = st.current;
       const c = s.cursor;
-      const list = columnCards(s.board.cards, c.col);
+      const pinned = s.projects?.find((p) => p.id === s.projectId)?.preview_card_id;
+      const list = columnCards(s.board.cards, c.col, pinned);
       if (c.id && list.some((x) => x.id === c.id)) return c;
       return { col: c.col, id: list[0]?.id ?? null };
     }
@@ -389,7 +404,7 @@ export default function App() {
           <>
             <ChevronRight className="h-3.5 w-3.5 text-zinc-600" />
             <ProjectAvatar id={project!.id} name={projectName(project!.name)} size={30} />
-            <span title={project!.repo_path || project!.name} className="max-w-[28rem] truncate text-2xl font-bold tracking-tight text-zinc-50">{projectName(project!.name)}</span>
+            <span title={project!.repo_path || project!.name} className="app-project-title ui-title max-w-[28rem] truncate">{projectName(project!.name)}</span>
             <BranchStatus project={project!} board={board} onOpenCard={setSelected} />
           </>
         )}
@@ -400,31 +415,30 @@ export default function App() {
           </>
         )}
 
-        <div className="ml-auto flex items-center gap-1.5">
-          <Appearance />
+        <div className="app-header-actions ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
           <SyncIndicator />
           {inBoard && project?.preview_card_id && (
-            <span className="mr-1 flex items-center gap-2 rounded-full bg-teal-400/10 py-1 pr-1 pl-2.5 text-[11.5px] text-teal-300 ring-1 ring-teal-300/20">
-              <Eye className="h-3.5 w-3.5 text-teal-300" />
+            <span className="mr-1 flex items-center gap-2 rounded-full bg-teal-400/10 py-1 pr-1 pl-2.5 text-[11.5px] text-success ring-1 ring-teal-300/20">
+              <Eye className="h-3.5 w-3.5 text-success" />
               <span className="max-w-[260px] truncate">
                 Tu repo muestra: <button className="font-medium hover:underline" onClick={() => previewCard && setSelected(previewCard.id)}>{previewCard?.title ?? "otra rama"}</button>
               </span>
               <button
                 onClick={() => togglePreview({ id: project.preview_card_id!, project_id: project.id, title: "" }, true)}
-                className="rounded-full bg-teal-300/15 px-2 py-0.5 font-medium text-teal-300 transition hover:bg-teal-300/25"
+                className="rounded-full bg-teal-300/15 px-2 py-0.5 font-medium text-success transition hover:bg-teal-300/25"
               >
                 Volver a {project.base_branch}
               </button>
             </span>
           )}
           {inBoard && running > 0 && (
-            <span className="mr-1 flex items-center gap-1.5 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11.5px] text-amber-200">
+            <span className="mr-1 flex items-center gap-1.5 rounded-full bg-amber-400/10 px-2.5 py-1 text-[11.5px] text-warning">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
               {running} trabajando
             </span>
           )}
           {inBoard && waiting > 0 && (
-            <span className="mr-1 flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11.5px] text-violet-200">
+            <span className="mr-1 flex items-center gap-1.5 rounded-full bg-violet-400/10 px-2.5 py-1 text-[11.5px] text-waiting">
               <MessageCircleQuestion className="h-3 w-3" />
               {waiting} te {waiting === 1 ? "necesita" : "necesitan"}
             </span>
@@ -454,12 +468,33 @@ export default function App() {
                   setSelected(null);
                 }}
               />
-              <span className="mx-1 h-4 w-px bg-ui-ink/[0.08]" />
-              <IconButton title="Modelos del proyecto" onClick={() => setShowSettings(true)}>
-                <SlidersHorizontal className="h-4 w-4" />
-              </IconButton>
             </>
           )}
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-haspopup="dialog"
+            title={project ? "Documentos del proyecto: README, AGENTS.md y CLAUDE.md" : "Abre un proyecto para ver sus documentos"}
+            disabled={!project}
+            onClick={() => setShowDocs(true)}
+            className="ring-1 ring-ui-ink/10"
+          >
+            <BookOpen className="h-4 w-4" />
+            Documentos del proyecto
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-haspopup="dialog"
+            title={project ? `Ajustes de ${projectName(project.name)}: modelos y fondo del tablero` : "Abre un proyecto para cambiar sus ajustes"}
+            disabled={!project}
+            onClick={() => setShowSettings(true)}
+            className="ring-1 ring-ui-ink/10"
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+            Ajustes de proyecto
+          </Button>
+          <Appearance />
           <IconButton title="Atajos de teclado (?)" onClick={() => setShowHelp(true)}>
             <Keyboard className="h-4 w-4" />
           </IconButton>
@@ -477,7 +512,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex min-h-0 flex-1">
+      <main className="relative flex min-h-0 flex-1">
         {sidebarOpen && projects && projects.length > 0 && (
           <Sidebar
             projects={projects}
@@ -491,18 +526,21 @@ export default function App() {
             onRemoved={reload}
           />
         )}
-        <div className="min-w-0 flex-1 pt-3" onMouseDown={() => setZone("board")}>
+        <div className={`min-w-0 flex-1 ${view === "home" ? "pt-3" : ""}`} onMouseDown={() => setZone("board")}>
           {view === "home" && projects ? (
             <Home projects={projects} cursor={homeCursor} onOpen={openProject} onNew={() => setShowNew(true)} onRemoved={reload} />
           ) : projectId && project ? (
-            <div className="flex h-full flex-col">
+            <div className={`relative isolate flex h-full flex-col pt-3 ${boardBackground(project).image ? "board-with-image" : ""}`}>
+            <BoardBackground project={project} />
             <div className="flex flex-wrap items-center gap-3 px-4 pb-3">
-              <label className="flex min-w-48 max-w-sm flex-1 items-center gap-2 rounded-lg border border-ui-ink/10 bg-panel px-3 py-2"><Search className="h-4 w-4 text-zinc-500" /><input aria-label="Buscar tarjetas" placeholder="Buscar tarjetas…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); if (query) setQuery(""); else e.currentTarget.blur(); } }} className="min-w-0 flex-1 bg-transparent text-sm outline-none" />{query && <button aria-label="Limpiar búsqueda" className="text-zinc-500" onClick={() => setQuery("")}>×</button>}</label>
-              <div role="group" aria-label="Filtrar tarjetas" className="flex flex-wrap gap-1">{[["all", "Todas"], ["waiting", "Te necesitan"], ["review", "Por revisar"], ["error", "Errores"]].map(([value, label]) => <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)} className={`rounded-lg px-3 py-2 text-sm transition ${filter === value ? "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}>{label}</button>)}</div>
+              <label className="flex min-w-0 w-full sm:min-w-48 max-w-sm flex-1 items-center gap-2 rounded-lg border border-ui-ink/10 bg-panel px-3 py-2 focus-within:ring-2 focus-within:ring-indigo-400"><Search className="h-4 w-4 text-zinc-500" /><input aria-label="Buscar tarjetas" placeholder="Buscar tarjetas…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); if (query) setQuery(""); else e.currentTarget.blur(); } }} className="ui-field min-w-0 flex-1 bg-transparent text-sm outline-none" />{query && <button aria-label="Limpiar búsqueda" className="text-zinc-500" onClick={() => setQuery("")}>×</button>}</label>
+              <div role="group" aria-label="Filtrar tarjetas" className="flex flex-wrap gap-1">{[["all", "Todas"], ["waiting", "Te necesitan"], ["review", "Por revisar"], ["error", "Errores"]].map(([value, label]) => <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)} className={`rounded-lg px-3 py-2 text-sm transition ${filter === value ? "bg-indigo-500/10 text-accent ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}>{label}</button>)}</div>
               {(query || filter !== "all") && <span role="status" className="text-xs text-zinc-500">{Object.keys(visibleBoard.cards).length} resultados</span>}
+              <button data-tags-toggle onClick={() => setShowTags(!showTags)} aria-expanded={showTags} title={showTags ? "Ocultar etiquetas" : "Etiquetas: colores, modelo de cada una y arrastrarlas a las tarjetas"} className={`ml-auto flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm ring-1 transition ${showTags ? "bg-indigo-500/10 text-accent ring-indigo-400/30" : "text-zinc-400 ring-ui-ink/10 hover:bg-ui-ink/5 hover:text-zinc-200"}`}><Tags className="h-4 w-4" />Etiquetas</button>
             </div>
             {!project.repo_path && <UnlinkedBanner project={project} onLinked={reload} />}
-            <div className="min-h-0 flex-1">
+            <div className="relative min-h-0 flex-1">
+            {showTags && <TagManager projectId={project.id} tags={projectTags} draggable onClose={closeTags} className="absolute top-0 right-4 z-40 max-h-[70%] w-[min(26rem,calc(100%-2rem))] overflow-y-auto rounded-2xl bg-panel p-3 shadow-[var(--shadow-pop)] ring-1 ring-ui-ink/[0.1]" />}
             <Board
               projectId={projectId}
               board={visibleBoard}
@@ -539,13 +577,16 @@ export default function App() {
       </main>
 
       <Notifications />
+      <CloneToasts onOpen={(p) => openProject(p.id)} onFinished={reload} />
       <ConfirmHost />
       {showHelp && <Help onClose={() => setShowHelp(false)} />}
+      {showDocs && project && <ProjectDocs projectId={project.id} onClose={() => setShowDocs(false)} />}
       {showSettings && project && <ProjectSettings project={project} onClose={() => setShowSettings(false)} onSaved={reload} />}
       {showNew && (
         <NewProject
           canClose={!!projects?.length}
           onClose={() => setShowNew(false)}
+          onCloneStarted={() => setShowNew(false)}
           onCreated={(p) => {
             setShowNew(false);
             reload();
@@ -576,7 +617,7 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
     finally { busy.current = false; setSending(false); }
   };
   return (
-    <aside className="work-panel flex h-full w-[360px] shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel shadow-[-24px_0_48px_-24px_rgb(0_0_0/0.6)]">
+    <aside aria-label="Canal de agentes" style={{ "--panel-width": "360px" } as React.CSSProperties} className="work-panel overlay flex h-full shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel">
       <div className="border-b border-zinc-800 px-4 py-3">
         <div className="flex items-center justify-between"><h2 className="text-sm font-semibold text-zinc-100">Canal de agentes</h2><button aria-label="Cerrar canal" onClick={onClose} className="rounded-lg p-2 text-zinc-400 hover:bg-ui-ink/5"><X className="h-4 w-4" /></button></div>
         <p className="text-xs text-zinc-500">Qué toca cada agente ahora y lo que se cuentan. Cada uno solo recibe lo que afecta a sus ficheros; al salir de Doing se borra lo suyo.</p>
@@ -604,7 +645,7 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
           </ul>
         </section>
       )}
-      <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
+      <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
         {old.length > 0 && (
           <button onClick={() => setHistory(!history)} aria-expanded={history} className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300">
             <ChevronRight className={`h-3 w-3 transition ${history ? "rotate-90" : ""}`} />
@@ -613,7 +654,7 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
         )}
         {live.length === 0 && !history && <p className="text-sm text-zinc-500">Nada pendiente.</p>}
         {[...(history ? old : []), ...live].map((n) => (
-          <div key={n.id} className={`group text-sm ${n.archived ? "opacity-50" : ""}`}>
+          <div key={n.id} className={`ui-message group text-sm ${n.archived ? "opacity-50" : ""}`}>
             <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-zinc-500">
               {n.card_id ? (
                 <button onClick={() => onOpen(n.card_id!)} className="font-medium text-zinc-300 hover:underline">
@@ -629,29 +670,30 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
                   title="Archivar: los agentes dejan de verla"
                   aria-label="Archivar nota"
                   onClick={() => archive(n.id)}
-                  className="ml-auto rounded p-0.5 text-zinc-500 opacity-0 hover:text-zinc-300 focus:opacity-100 group-hover:opacity-100"
+                  className="ui-reveal ml-auto rounded p-0.5 text-zinc-500 opacity-0 hover:text-zinc-300 focus:opacity-100 group-hover:opacity-100"
                 >
                   <Archive className="h-3.5 w-3.5" />
                 </button>
               )}
             </div>
             {n.files.length > 0 && <div className="mb-0.5 font-mono text-[11px] text-zinc-500">{n.files.join(", ")}</div>}
-            <div className="whitespace-pre-wrap text-zinc-300">{n.content}</div>
+            <div className="ui-message whitespace-pre-wrap text-zinc-300">{n.content}</div>
           </div>
         ))}
         <div ref={scroll.end} />
       </div>
-      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300">Nuevos mensajes ↓</button>}
+      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-accent">Nuevos mensajes ↓</button>}
       <div className="border-t border-zinc-800 p-3">
-        <textarea aria-label="Mensaje al canal de agentes" rows={2} value={text} onChange={e => setText(e.target.value)} onKeyDown={e => chatKeyDown(e, send, setText)} placeholder="Avisa a todos los agentes…" className="w-full resize-y rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-500" />
-        <div className="mt-2 flex items-center justify-between gap-2"><p className="text-xs text-zinc-500"><ChatHint /></p><Button onClick={send} disabled={!text.trim() || sending}>Enviar</Button></div>
+        <textarea aria-label="Mensaje al canal de agentes" rows={2} value={text} onChange={e => setText(e.target.value)} onKeyDown={e => chatKeyDown(e, send, setText)} placeholder="Avisa a todos los agentes…" className="ui-field ui-control w-full resize-y rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-500" />
+        <div className="mt-2 flex items-center justify-between gap-2"><p className="text-xs text-zinc-500"><ChatHint /></p><Button variant="primary" onClick={send} disabled={!text.trim() || sending}>Enviar</Button></div>
       </div>
     </aside>
   );
 }
 
-function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onCreated: (p: Project) => void; canClose: boolean }) {
-  const dialogRef = useDialogFocus<HTMLFormElement>();
+function NewProject({ onClose, onCreated, onCloneStarted, canClose }: { onClose: () => void; onCreated: (p: Project) => void; onCloneStarted: () => void; canClose: boolean }) {
+  const dialogRef = useDialogFocus<HTMLDivElement>();
+  const [tab, setTab] = useState<"local" | "clone">("local");
   const [repo, setRepo] = useState<{ path: string; isRepo: boolean } | null>(null);
   const [name, setName] = useState("");
   const [base, setBase] = useState("");
@@ -666,70 +708,106 @@ function NewProject({ onClose, onCreated, canClose }: { onClose: () => void; onC
     setError("");
   };
 
+  const footer = (submit: React.ReactNode) => (
+    <div className="flex justify-end gap-2">
+      {canClose && (
+        <Button type="button" variant="ghost" onClick={onClose}>
+          Cancelar
+        </Button>
+      )}
+      {submit}
+    </div>
+  );
+  const tabs = [
+    ["local", "Carpeta local"],
+    ["clone", "Clonar de GitHub"],
+  ] as const;
+
   return (
-    <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={() => canClose && onClose()}>
-      <form
+    <div data-modal className="ui-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={() => canClose && onClose()}>
+      <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Nuevo proyecto"
         onClick={(e) => e.stopPropagation()}
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if (!repo || saving || (!repo.isRepo && !init)) return;
-          setError("");
-          setSaving(true);
-          try {
-            onCreated(await api<Project>("/api/projects", { repo_path: repo.path, name, base_branch: base, init }));
-          } catch (err) {
-            setError((err as Error).message);
-          } finally {
-            setSaving(false);
-          }
-        }}
-        className="w-full max-w-xl space-y-4 rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]"
+        className="ui-dialog max-h-[92vh] w-full max-w-xl space-y-4 overflow-y-auto rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]"
       >
-        <div>
-          <h2 className="text-base font-semibold text-zinc-100">Nuevo proyecto</h2>
-          <p className="text-xs text-zinc-500">Elige la carpeta del repo. Las carpetas con git salen en verde.</p>
-        </div>
-
-        <FolderPicker onPick={pick} selected={repo?.path} />
-
-        {repo && (
-          <div className="space-y-3 rounded-lg bg-zinc-950 p-3 ring-1 ring-zinc-800">
-            <div className="truncate font-mono text-xs text-zinc-300">{repo.path}</div>
-            {!repo.isRepo && (
-              <label className="flex items-center gap-2 text-xs text-amber-200">
-                <input type="checkbox" checked={init} onChange={(e) => setInit(e.target.checked)} className="accent-amber-400" />
-                No es un repo git — inicializarlo aquí (git init + primer commit)
-              </label>
-            )}
-            <div className="flex gap-3">
-              <label className="block flex-1 text-xs text-zinc-400">
-                Nombre
-                <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-indigo-500" />
-              </label>
-              <label className="block w-40 text-xs text-zinc-400">
-                Rama base
-                <input value={base} onChange={(e) => setBase(e.target.value)} placeholder="la actual" className="mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 font-mono text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none placeholder:text-zinc-600 focus:ring-indigo-500" />
-              </label>
-            </div>
+        <div className="flex flex-wrap items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-semibold text-zinc-100">Nuevo proyecto</h2>
+            <p className="text-xs text-zinc-500">
+              {tab === "local" ? "Elige la carpeta del repo. Las carpetas con git salen en verde." : "Elige uno de tus repos o pega su URL; se clona en segundo plano y te avisa al terminar."}
+            </p>
           </div>
-        )}
-
-        {error && <p className="text-sm text-red-300">{error}</p>}
-        <div className="flex justify-end gap-2">
-          {canClose && (
-            <Button type="button" variant="ghost" onClick={onClose}>
-              Cancelar
-            </Button>
-          )}
-          <Button variant="primary" type="submit" disabled={!repo || (!repo.isRepo && !init) || saving}>
-            Crear proyecto
-          </Button>
+          <div role="tablist" aria-label="Origen del proyecto" className="flex shrink-0 gap-0.5 rounded-lg bg-zinc-950 p-0.5 ring-1 ring-zinc-800">
+            {tabs.map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={tab === id}
+                onClick={() => setTab(id)}
+                className={`rounded-md px-2.5 py-1 text-xs transition ${tab === id ? "bg-ui-ink/[0.09] text-zinc-50 ring-1 ring-ui-ink/[0.1]" : "text-zinc-400 hover:text-zinc-100"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
-      </form>
+
+        {tab === "clone" ? (
+          <CloneRepo onCreated={onCreated} onStarted={onCloneStarted} footer={footer} />
+        ) : (
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!repo || saving || (!repo.isRepo && !init)) return;
+              setError("");
+              setSaving(true);
+              try {
+                onCreated(await api<Project>("/api/projects", { repo_path: repo.path, name, base_branch: base, init }));
+              } catch (err) {
+                setError((err as Error).message);
+              } finally {
+                setSaving(false);
+              }
+            }}
+            className="space-y-4"
+          >
+            <FolderPicker onPick={pick} selected={repo?.path} />
+
+            {repo && (
+              <div className="space-y-3 rounded-lg bg-zinc-950 p-3 ring-1 ring-zinc-800">
+                <div className="truncate font-mono text-xs text-zinc-300">{repo.path}</div>
+                {!repo.isRepo && (
+                  <label className="flex items-center gap-2 text-xs text-warning">
+                    <input type="checkbox" checked={init} onChange={(e) => setInit(e.target.checked)} className="ui-field accent-amber-400" />
+                    No es un repo git — inicializarlo aquí (git init + primer commit)
+                  </label>
+                )}
+                <div className="project-form-row flex gap-3">
+                  <label className="block flex-1 text-xs text-zinc-400">
+                    Nombre
+                    <input value={name} onChange={(e) => setName(e.target.value)} className="ui-field ui-control mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-indigo-500" />
+                  </label>
+                  <label className="block w-40 text-xs text-zinc-400">
+                    Rama base
+                    <input value={base} onChange={(e) => setBase(e.target.value)} placeholder="la actual" className="ui-field ui-control mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 font-mono text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none placeholder:text-zinc-600 focus:ring-indigo-500" />
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {error && <p className="ui-alert">{error}</p>}
+            {footer(
+              <Button variant="primary" type="submit" disabled={!repo || (!repo.isRepo && !init) || saving}>
+                Crear proyecto
+              </Button>,
+            )}
+          </form>
+        )}
+      </div>
     </div>
   );
 }

@@ -15,20 +15,24 @@ interface Listing {
 const LAST_DIR = "trellai:lastDir";
 
 /**
- * In-app folder browser. Click a folder to select it (`onPick`), double-click to open it.
+ * In-app folder browser. Calls `onPick(path)` when you choose a folder.
+ * A click selects an entry; double click or Enter opens it.
  * Git repos are highlighted; plain folders can be chosen too (the caller decides).
  */
-export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRepo: boolean) => void; selected?: string }) {
+export function FolderPicker({ onPick, selected, start: startAt }: { onPick: (path: string, isRepo: boolean) => void; selected?: string; /** folder to open first (default: the last one visited) */ start?: string }) {
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState("");
   const [hidden, setHidden] = useState(false);
   const [typed, setTyped] = useState("");
+  // Entry selected with a single click (double click / Enter opens it).
+  const [highlighted, setHighlighted] = useState<Listing["entries"][number] | null>(null);
 
   const go = async (path: string): Promise<boolean> => {
     setLoading(true);
     setError("");
+    setHighlighted(null);
     try {
       const l = await api<Listing>(`/api/fs?path=${encodeURIComponent(path)}${hidden ? "&hidden=1" : ""}`);
       setListing(l);
@@ -49,11 +53,13 @@ export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRe
   };
 
   useEffect(() => {
-    let start = "~/code";
-    try {
-      start = localStorage.getItem(LAST_DIR) ?? start;
-    } catch {
-      /* ignore */
+    let start = startAt || "~/code";
+    if (!startAt) {
+      try {
+        start = localStorage.getItem(LAST_DIR) ?? start;
+      } catch {
+        /* ignore */
+      }
     }
     go(start).then((ok) => !ok && go("~"));
   }, []);
@@ -71,6 +77,9 @@ export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRe
 
   const crumbs = listing ? breadcrumbs(listing.path, listing.home) : [];
   const entries = (listing?.entries ?? []).filter((e) => e.name.toLowerCase().includes(filter.toLowerCase()));
+  // What the footer describes and «Usar esta carpeta» picks: the selected entry, else the current folder.
+  // The listing doesn't include subfolders' branches.
+  const current = highlighted ? { ...highlighted, branch: null } : listing && { path: listing.path, isRepo: listing.isRepo, branch: listing.branch };
 
   return (
     <div className="overflow-hidden rounded-lg ring-1 ring-zinc-700">
@@ -86,7 +95,7 @@ export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRe
           onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); if (!e.nativeEvent.isComposing) go(typed); } }}
           value={typed}
           onChange={(e) => setTyped(e.target.value)}
-          className="min-w-0 flex-1 bg-transparent px-1 font-mono text-xs text-zinc-300 outline-none"
+          className="ui-field min-w-0 flex-1 bg-transparent px-1 font-mono text-xs text-zinc-300 outline-none"
           spellCheck={false}
         />
         {loading && <Spinner className="h-3 w-3 text-zinc-500" />}
@@ -106,7 +115,7 @@ export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRe
           <button type="button" onClick={() => go("~")} className="hover:text-zinc-200">Inicio</button>
           <button type="button" onClick={() => go("~/code")} className="hover:text-zinc-200">~/code</button>
           <label className="flex cursor-pointer items-center gap-1 hover:text-zinc-200">
-            <input type="checkbox" checked={hidden} onChange={(e) => setHidden(e.target.checked)} className="accent-indigo-500" /> ocultas
+            <input type="checkbox" checked={hidden} onChange={(e) => setHidden(e.target.checked)} className="ui-field accent-indigo-500" /> ocultas
           </label>
         </span>
       </div>
@@ -116,33 +125,60 @@ export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRe
         <input
           onKeyDown={e => { if (e.key === "Enter") e.preventDefault(); }}
           value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          onChange={(e) => {
+            setFilter(e.target.value);
+            setHighlighted(null);
+          }}
           placeholder="Filtrar…"
-          className="w-full border-b border-zinc-800 bg-zinc-950 px-3 py-1.5 text-sm outline-none placeholder:text-zinc-600"
+          className="ui-field w-full border-b border-zinc-800 bg-zinc-950 px-3 py-1.5 text-sm outline-none placeholder:text-zinc-600"
         />
       )}
 
       {/* list */}
       <ul className="h-64 overflow-y-auto bg-zinc-950 py-1">
-        {error && <li className="px-3 py-2 text-sm text-red-300">{error}</li>}
+        {error && <li className="ui-alert m-2">{error}</li>}
         {!error && listing && entries.length === 0 && <li className="px-3 py-2 text-sm text-zinc-500">Sin subcarpetas.</li>}
         {entries.map((e) => (
-          <li key={e.path} className={`flex items-center gap-2 px-3 py-1 ${selected === e.path ? "bg-indigo-500/20" : "hover:bg-zinc-800/70"}`}>
-            <button type="button" onClick={() => onPick(e.path, e.isRepo)} onDoubleClick={() => go(e.path)} title="Doble click para entrar" aria-pressed={selected === e.path} className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm">
+          <li
+            key={e.path}
+            className={`folder-row group flex items-center gap-2 px-3 py-1 ${
+              highlighted?.path === e.path ? "bg-indigo-500/25 ring-1 ring-inset ring-indigo-500/50" : selected === e.path ? "bg-indigo-500/10 hover:bg-zinc-800/70" : "hover:bg-zinc-800/70"
+            }`}
+          >
+            <button
+              type="button"
+              aria-pressed={highlighted?.path === e.path}
+              onClick={() => setHighlighted(e)}
+              onDoubleClick={() => go(e.path)}
+              onKeyDown={(ev) => {
+                if (ev.key === "Enter") {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  if (!ev.nativeEvent.isComposing) go(e.path);
+                }
+              }}
+              className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm outline-none"
+            >
               <FolderIcon repo={e.isRepo} />
               <span className={`truncate ${e.isRepo ? "text-zinc-100" : "text-zinc-400"}`}>{e.name}</span>
-              {e.isRepo && <span className="rounded bg-emerald-500/15 px-1.5 py-px text-[10px] font-medium text-emerald-300">git</span>}
+              {e.isRepo && <span className="rounded bg-emerald-500/15 px-1.5 py-px text-[10px] font-medium text-success">git</span>}
             </button>
+            {e.isRepo && (
+              <button type="button" onClick={() => onPick(e.path, true)} className="ui-reveal rounded px-2 py-0.5 text-xs text-accent opacity-0 group-hover:opacity-100 hover:bg-indigo-500/10">
+                Elegir
+              </button>
+            )}
           </li>
         ))}
       </ul>
 
       {/* footer: choose current */}
-      {listing && (
+      {listing && current && (
         <div className="flex items-center gap-2 border-t border-zinc-800 bg-zinc-900 px-3 py-2">
           <div className="min-w-0 flex-1 text-xs">
-            {listing.isRepo ? (
-              <span className="text-emerald-300">Repo git{listing.branch ? ` · ${listing.branch}` : ""}</span>
+            {highlighted && <span className="mr-1.5 font-medium text-zinc-200">{highlighted.name}:</span>}
+            {current.isRepo ? (
+              <span className="text-success">Repo git{current.branch ? ` · ${current.branch}` : ""}</span>
             ) : (
               <span className="text-zinc-500">No es un repo git</span>
             )}
@@ -152,7 +188,7 @@ export function FolderPicker({ onPick, selected }: { onPick: (path: string, isRe
               Finder…
             </Button>
           )}
-          <Button type="button" variant={listing.isRepo ? "primary" : "default"} onClick={() => onPick(listing.path, listing.isRepo)} className="!py-1 text-xs">
+          <Button type="button" variant={current.isRepo ? "primary" : "default"} onClick={() => onPick(current.path, current.isRepo)} className="!py-1 text-xs">
             Usar esta carpeta
           </Button>
         </div>
