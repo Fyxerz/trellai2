@@ -10,7 +10,7 @@
  * Repos without a remote just skip all of this. Git never prompts (GIT_TERMINAL_PROMPT=0):
  * it uses the credentials you already have (ssh keys, credential helper, gh).
  */
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import * as git from "./git.js";
 import { repoLock } from "./lock.js";
 
@@ -241,9 +241,55 @@ export async function baseStatus(repo: string, base: string) {
   return { remote: f.remote, ok: f.ok, message: f.message, ahead: c?.ahead ?? 0, behind: c?.behind ?? 0 };
 }
 
-export async function cloneRepo(url: string, dest: string): Promise<{ ok: boolean; message?: string }> {
-  const r = await run(process.cwd(), ["clone", url, dest], 10 * 60_000);
-  return r.ok ? { ok: true } : { ok: false, message: `No pude clonar: ${firstLine(r.err)}` };
+export interface CloneProgress {
+  /** "Recibiendo objetos", "Resolviendo deltas"… */
+  phase: string;
+  /** 0–100 over the whole clone (receiving is 0–90, resolving deltas 90–100). */
+  percent: number;
+}
+
+const PHASES: Record<string, [string, number, number]> = {
+  "Counting objects": ["Contando objetos", 0, 0],
+  "Compressing objects": ["Comprimiendo objetos", 0, 0],
+  "Receiving objects": ["Recibiendo objetos", 0, 90],
+  "Resolving deltas": ["Resolviendo deltas", 90, 10],
+};
+
+/** One line of `git clone --progress` → progress, or null for lines we don't follow. */
+export function parseCloneProgress(line: string): CloneProgress | null {
+  const m = line.match(/(Counting objects|Compressing objects|Receiving objects|Resolving deltas):\s+(\d+)%/);
+  if (!m) return null;
+  const [phase, from, span] = PHASES[m[1]];
+  return { phase, percent: Math.round(from + (span * Number(m[2])) / 100) };
+}
+
+export async function cloneRepo(url: string, dest: string, onProgress?: (p: CloneProgress) => void): Promise<{ ok: boolean; message?: string }> {
+  if (!onProgress) {
+    const r = await run(process.cwd(), ["clone", url, dest], 10 * 60_000);
+    return r.ok ? { ok: true } : { ok: false, message: `No pude clonar: ${firstLine(r.err)}` };
+  }
+  // --progress: git writes "Receiving objects:  42% (…)\r" to stderr even without a terminal.
+  return new Promise((resolve) => {
+    const child = spawn("git", ["clone", "--progress", url, dest], { cwd: process.cwd(), env, windowsHide: true });
+    let err = "";
+    let rest = "";
+    const timer = setTimeout(() => child.kill(), 10 * 60_000);
+    child.stderr.on("data", (d: Buffer) => {
+      const parts = (rest + d.toString()).split(/[\r\n]/);
+      rest = parts.pop() ?? "";
+      for (const line of parts) {
+        const p = parseCloneProgress(line);
+        if (p) onProgress(p);
+        else if (line.trim()) err += line + "\n";
+      }
+    });
+    const done = (ok: boolean, why = "") => {
+      clearTimeout(timer);
+      resolve(ok ? { ok: true } : { ok: false, message: `No pude clonar: ${firstLine(err + rest + why)}` });
+    };
+    child.on("error", (e) => done(false, e.message));
+    child.on("close", (code) => done(code === 0, code === null ? "se tardó demasiado" : ""));
+  });
 }
 
 /** "GitHub" when the remote is on github.com, else the remote's name. */

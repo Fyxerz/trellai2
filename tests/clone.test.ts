@@ -7,8 +7,9 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { GitHubRepos, Project } from "../shared/types";
+import type { CloneJob, GitHubRepos, Project } from "../shared/types";
 import { parseRepos, repoDirName } from "../server/github";
+import { parseCloneProgress } from "../server/remote";
 
 const PORT = 4950 + Math.floor(Math.random() * 400);
 const URL = `http://127.0.0.1:${PORT}`;
@@ -23,6 +24,20 @@ async function call<T = any>(path: string, body?: unknown): Promise<{ status: nu
     body: body ? JSON.stringify(body) : undefined,
   });
   return { status: r.status, json: (await r.json()) as T };
+}
+
+/** POST /api/projects/clone and, when it starts a background clone, poll the job until it ends. */
+async function clone(body: unknown): Promise<{ status: number; json: any; job?: CloneJob; stages: string[] }> {
+  const r = await call("/api/projects/clone", body);
+  if (r.status !== 200 || !r.json.jobId) return { ...r, stages: [] };
+  const stages: string[] = [];
+  for (let i = 0; i < 300; i++) {
+    const { json: job } = await call<CloneJob>(`/api/clone-jobs/${r.json.jobId}`);
+    if (stages.at(-1) !== job.stage) stages.push(job.stage);
+    if (job.stage === "done" || job.stage === "error") return { ...r, job, stages };
+    await new Promise((res) => setTimeout(res, 100));
+  }
+  throw new Error("clone job never finished");
 }
 
 const sh = (cmd: string, cwd: string) => execSync(cmd, { cwd, encoding: "utf8" }).trim();
@@ -64,8 +79,11 @@ afterAll(() => {
 describe("clone from GitHub", () => {
   it("clones a URL into the chosen folder and creates the project", async () => {
     const dest = join(dir, "clones", "hola");
-    const { status, json: p } = await call<Project>("/api/projects/clone", { url: origin, dest });
+    const { status, json, job, stages } = await clone({ url: origin, dest });
     expect(status).toBe(200);
+    expect(json.jobId).toBeTruthy();
+    expect(stages.at(-1)).toBe("done");
+    const p = job!.project!;
     expect(p.name).toBe("hola");
     expect(p.base_branch).toBe("main");
     expect(same(p.repo_path, dest)).toBe(true);
@@ -76,6 +94,7 @@ describe("clone from GitHub", () => {
   it("reuses a folder that already holds the same repo", async () => {
     const dest = join(dir, "clones", "hola");
     const before = (await call<Project[]>("/api/projects")).json.length;
+    // answered at once with the project, no background job
     const { status, json: p } = await call<Project>("/api/projects/clone", { url: origin, dest });
     expect(status).toBe(200);
     expect(same(p.repo_path, dest)).toBe(true);
@@ -92,28 +111,38 @@ describe("clone from GitHub", () => {
   it("clones into an existing empty folder", async () => {
     const dest = join(dir, "empty");
     mkdirSync(dest);
-    const { status, json: p } = await call<Project>("/api/projects/clone", { url: origin, dest, name: "Otro nombre" });
+    const { status, job } = await clone({ url: origin, dest, name: "Otro nombre" });
     expect(status).toBe(200);
+    const p = job!.project!;
     expect(p.name).toBe("Otro nombre");
     expect(existsSync(join(dest, "README.md"))).toBe(true);
   });
 
   it("explains failures", async () => {
     expect((await call("/api/projects/clone", { url: "" })).json.error).toMatch(/URL/);
-    const bad = await call("/api/projects/clone", { url: join(dir, "nope.git"), dest: join(dir, "clones", "nope") });
-    expect(bad.status).toBe(400);
-    expect(bad.json.error).toMatch(/No pude clonar/);
+    // git itself failing shows up in the job, not in the POST
+    const bad = await clone({ url: join(dir, "nope.git"), dest: join(dir, "clones", "nope") });
+    expect(bad.status).toBe(200);
+    expect(bad.job?.stage).toBe("error");
+    expect(bad.job?.message).toMatch(/No pude clonar/);
+    expect((await call("/api/clone-jobs/nope")).status).toBe(404);
+  });
+
+  it("reads git's progress lines", () => {
+    expect(parseCloneProgress("Receiving objects:  50% (5/10), 1.2 MiB | 3 MiB/s")).toEqual({ phase: "Recibiendo objetos", percent: 45 });
+    expect(parseCloneProgress("Resolving deltas: 100% (3/3), done.")).toEqual({ phase: "Resolviendo deltas", percent: 100 });
+    expect(parseCloneProgress("Cloning into 'x'...")).toBeNull();
   });
 });
 
 describe("default clone folder", () => {
   it("is where most of your projects live, and clones go there without a dest", async () => {
     // projects so far: clones/hola and empty → one more in clones/ makes it the favourite
-    expect((await call("/api/projects/clone", { url: join(dir, "adios.git"), dest: join(dir, "clones", "adios") })).status).toBe(200);
+    expect((await clone({ url: join(dir, "adios.git"), dest: join(dir, "clones", "adios") })).job?.stage).toBe("done");
     const { json } = await call<{ dir: string; sep: string }>("/api/clone-dir");
     expect(same(json.dir, join(dir, "clones"))).toBe(true);
-    const { status, json: p } = await call<Project>("/api/projects/clone", { url: join(dir, "tercero.git") });
-    expect(status).toBe(200);
+    const { job } = await clone({ url: join(dir, "tercero.git") });
+    const p = job!.project!;
     expect(same(p.repo_path, join(dir, "clones", "tercero"))).toBe(true);
   });
 });

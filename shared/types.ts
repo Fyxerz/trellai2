@@ -82,6 +82,16 @@ export interface GitHubRepos {
   error?: string;
 }
 
+/** A background "clone from GitHub" (GET /api/clone-jobs/:id). */
+export interface CloneJob {
+  stage: "cloning" | "creating" | "done" | "error";
+  /** 0–100 while cloning (git's "Receiving objects" / "Resolving deltas"). */
+  percent?: number;
+  /** What git is doing right now, or the error. */
+  message?: string;
+  project?: Project;
+}
+
 export interface Tag {
   id: string;
   name: string;
