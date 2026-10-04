@@ -45,7 +45,7 @@ export function Appearance() {
     return () => { media.removeEventListener("change", applyAppearance); window.removeEventListener("storage", applyAppearance); };
   }, []);
   return <>
-    <button className="rounded-lg p-2 text-zinc-400 hover:bg-ui-ink/5" title="Apariencia y teclado" aria-label="Apariencia y teclado" onClick={() => setOpen(true)}><Settings2 className="h-4 w-4" /></button>
+    <button className="inline-flex h-7 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs text-zinc-300 ring-1 ring-ui-ink/10 transition hover:bg-ui-ink/[0.06] hover:text-zinc-100" title="Ajustes globales: tema, densidad y teclado" aria-haspopup="dialog" onClick={() => setOpen(true)}><Settings2 className="h-4 w-4" />Ajustes globales</button>
     {open && <AppearanceDialog onClose={() => setOpen(false)} />}
   </>;
 }
@@ -62,7 +62,7 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
   }, [onClose]);
   return <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onClick={onClose}>
     <div ref={ref} role="dialog" aria-modal="true" aria-labelledby="appearance-title" className="w-full max-w-md space-y-6 rounded-2xl bg-zinc-900 p-6 shadow-[var(--shadow-pop)]" onClick={e => e.stopPropagation()}>
-      <div className="flex items-center justify-between"><h2 id="appearance-title" className="text-lg font-semibold">Tu espacio de trabajo</h2><button aria-label="Cerrar ajustes" onClick={onClose} className="rounded-lg p-2 hover:bg-ui-ink/5"><X className="h-4 w-4" /></button></div>
+      <div className="flex items-center justify-between"><h2 id="appearance-title" className="text-lg font-semibold">Ajustes globales</h2><button aria-label="Cerrar ajustes" onClick={onClose} className="rounded-lg p-2 hover:bg-ui-ink/5"><X className="h-4 w-4" /></button></div>
       <fieldset><legend className="mb-2 text-sm font-medium">Tema</legend><div className="grid grid-cols-3 gap-2">{([["light", "Claro", Sun], ["dark", "Oscuro", Moon], ["system", "Sistema", Monitor]] as const).map(([value, label, Icon]) => <button key={value as string} aria-pressed={theme === value} onClick={() => { setTheme(value as string); writePreference("theme", value as string); applyAppearance(); }} className={`flex flex-col items-center gap-2 rounded-xl border p-3 text-sm ${theme === value ? "border-indigo-400 bg-indigo-500/10 text-indigo-300" : "border-ui-ink/10 text-zinc-400"}`}><Icon className="h-5 w-5" />{label as string}</button>)}</div></fieldset>
       <label className="block text-sm font-medium">Densidad<select className="mt-2 w-full rounded-lg border border-ui-ink/10 bg-zinc-950 p-2" value={density} onChange={e => { setDensity(e.target.value); writePreference("density", e.target.value); applyAppearance(); }}><option value="comfortable">Cómoda</option><option value="compact">Compacta</option></select></label>
       <label className="block text-sm font-medium">Enviar mensajes<select className="mt-2 w-full rounded-lg border border-ui-ink/10 bg-zinc-950 p-2" value={send} onChange={e => { setSend(e.target.value); writePreference("send", e.target.value); window.dispatchEvent(new Event("trellai:preferences")); }}><option value="enter">Enter envía · Shift+Enter nueva línea</option><option value="mod">{MOD}+Enter envía · Enter nueva línea</option></select></label>
