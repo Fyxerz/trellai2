@@ -4,7 +4,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve } from "node:path";
 import { COLUMNS, isColumn, TAG_COLORS, type ServerEvent } from "../shared/types.js";
@@ -21,6 +21,7 @@ import * as remote from "./remote.js";
 import { startSync, syncStatus } from "./sync.js";
 import { assistantRunning, sendToAssistant, stopAssistant } from "./assistant.js";
 import { buildInfo, distDir, startSelfUpdate } from "./selfupdate.js";
+import { backgroundFile, backgroundStatus, generateBackground, imageMime, stopBackground } from "./background.js";
 
 const app = new Hono();
 
@@ -190,7 +191,29 @@ app.post("/api/projects/:id/pull", async (c) => {
 app.patch("/api/projects/:id", async (c) => {
   const body = await c.req.json<Record<string, string | null>>();
   if (!db.getProject(c.req.param("id"))) return c.json({ error: "Proyecto no encontrado" }, 404);
+  if (body.bg_mode !== undefined && !["none", "color", "image"].includes(body.bg_mode as string))
+    return c.json({ error: "Fondo no válido (none, color o image)" }, 400);
+  if (body.bg_color != null && !/^#[0-9a-f]{6}$/i.test(body.bg_color)) return c.json({ error: "Color no válido (#rrggbb)" }, 400);
+  delete body.bg_image; // only set by the generator
   return c.json(db.updateProject(c.req.param("id"), body));
+});
+
+// ---------- board background ----------
+
+/** The generated image (this computer's `.trellai/background.*`). Use ?v=<bg_image> to bust the cache. */
+app.get("/api/projects/:id/background", (c) => {
+  const p = db.getProject(c.req.param("id"));
+  const file = p?.repo_path ? backgroundFile(p.repo_path) : null;
+  if (!file) return c.json({ error: "Este proyecto no tiene imagen de fondo en este ordenador" }, 404);
+  const buf = readFileSync(file);
+  return c.body(buf, 200, { "content-type": imageMime(buf), "cache-control": "private, max-age=31536000, immutable" });
+});
+app.get("/api/projects/:id/background/status", (c) => c.json(backgroundStatus(c.req.param("id"))));
+/** Starts Codex (in the background); progress and the end arrive as "background" events. */
+app.post("/api/projects/:id/background/generate", async (c) => c.json(await generateBackground(c.req.param("id"))));
+app.post("/api/projects/:id/background/stop", (c) => {
+  stopBackground(c.req.param("id"));
+  return c.json(backgroundStatus(c.req.param("id")));
 });
 
 // ---------- engines / models ----------

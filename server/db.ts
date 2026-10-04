@@ -152,6 +152,10 @@ addColumn("messages", "head_ahead", "head_ahead INTEGER");
 addColumn("messages", "column_before", "column_before TEXT");
 /** 1 = undone by a rewind. */
 addColumn("messages", "undone", "undone INTEGER NOT NULL DEFAULT 0");
+/** Board background: 'none' | 'color' | 'image'; its color; and when the image was generated (per computer). */
+addColumn("projects", "bg_mode", "bg_mode TEXT NOT NULL DEFAULT 'none'");
+addColumn("projects", "bg_color", "bg_color TEXT");
+addColumn("projects", "bg_image", "bg_image TEXT");
 
 /** Tables whose rows use a local INTEGER id; `uid` identifies them across computers. */
 export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages", "attachments"] as const;
@@ -205,9 +209,9 @@ export function createProject(p: { name: string; repo_path: string; base_branch:
 
 export function updateProject(
   id: string,
-  patch: Partial<Pick<Project, "name" | "base_branch" | "repo_path" | "remote_url" | ModelRole>>,
+  patch: Partial<Pick<Project, "name" | "base_branch" | "repo_path" | "remote_url" | ModelRole | "bg_mode" | "bg_color" | "bg_image">>,
 ): Project {
-  const allowed = ["name", "base_branch", "repo_path", "remote_url", "model_prep", "model_dev", "model_plan", "model_do", "model_ui"];
+  const allowed = ["name", "base_branch", "repo_path", "remote_url", "model_prep", "model_dev", "model_plan", "model_do", "model_ui", "bg_mode", "bg_color", "bg_image"];
   const entries = Object.entries(patch).filter(([k, v]) => allowed.includes(k) && v !== undefined);
   if (entries.length) {
     const sets = entries.map(([k]) => `${k} = @${k}`).join(", ");

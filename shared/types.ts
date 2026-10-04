@@ -44,7 +44,23 @@ export interface Project {
   remote_url: string | null;
   /** tags you can put on this project's cards */
   tags: Tag[];
+  /** Board background */
+  bg_mode: BgMode;
+  /** hex color (bg_mode "color", and fallback when the image is missing) */
+  bg_color: string | null;
+  /** when this computer last generated `.trellai/background.*` (ms, as text; cache-buster) — null = no image */
+  bg_image: string | null;
   created_at: string;
+}
+
+export type BgMode = "none" | "color" | "image";
+
+/** Background image generation for a project (runs on this computer). */
+export interface BgStatus {
+  running: boolean;
+  error: string | null;
+  /** what the model is doing right now */
+  activity: string | null;
 }
 
 export interface Tag {
@@ -215,6 +231,8 @@ export type ServerEvent =
   | { type: "assistant_status"; mode: "plan" | "do"; running: boolean }
   | { type: "preview"; cardId: string | null }
   | { type: "tags"; tags: Tag[] }
+  /** background image generation started/progressed/finished */
+  | { type: "background"; status: BgStatus }
   /** another computer changed things: reload the board */
   | { type: "sync" }
   /** Trellai's own code changed (branch switch): a new UI build, or a restart pending */

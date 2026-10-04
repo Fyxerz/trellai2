@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { COLUMNS, describeClaim, type Column, type Project } from "../../shared/types";
 import { api, useBoard, useProjects, type Board as BoardState } from "./api";
 import { AssistantPanel, type AssistantMode } from "./Assistant";
-import { Board, CAN_ADD, columnCards, moveCard } from "./Board";
+import { Board, BoardBackground, boardBackground, CAN_ADD, columnCards, moveCard } from "./Board";
 import { CardPanel } from "./CardPanel";
 import { FolderPicker } from "./FolderPicker";
 import { Help } from "./Help";
@@ -103,7 +103,7 @@ export default function App() {
   // "Ver esta rama" changes live on the project row
   useEffect(() => {
     const off = board.on((e) => {
-      if (e.type === "preview" || e.type === "sync") reload();
+      if (e.type === "preview" || e.type === "sync" || (e.type === "background" && !e.status.running)) reload();
     });
     return () => void off();
   }, [projectId]);
@@ -458,7 +458,7 @@ export default function App() {
                 }}
               />
               <span className="mx-1 h-4 w-px bg-ui-ink/[0.08]" />
-              <IconButton title="Modelos del proyecto" onClick={() => setShowSettings(true)}>
+              <IconButton title="Ajustes del proyecto: modelos y fondo del tablero" onClick={() => setShowSettings(true)}>
                 <SlidersHorizontal className="h-4 w-4" />
               </IconButton>
             </>
@@ -498,7 +498,8 @@ export default function App() {
           {view === "home" && projects ? (
             <Home projects={projects} cursor={homeCursor} onOpen={openProject} onNew={() => setShowNew(true)} onRemoved={reload} />
           ) : projectId && project ? (
-            <div className="flex h-full flex-col">
+            <div className={`relative isolate flex h-full flex-col ${boardBackground(project).image ? "board-with-image" : ""}`}>
+            <BoardBackground project={project} />
             <div className="flex flex-wrap items-center gap-3 px-4 pb-3">
               <label className="flex min-w-48 max-w-sm flex-1 items-center gap-2 rounded-lg border border-ui-ink/10 bg-panel px-3 py-2"><Search className="h-4 w-4 text-zinc-500" /><input aria-label="Buscar tarjetas" placeholder="Buscar tarjetas…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); if (query) setQuery(""); else e.currentTarget.blur(); } }} className="min-w-0 flex-1 bg-transparent text-sm outline-none" />{query && <button aria-label="Limpiar búsqueda" className="text-zinc-500" onClick={() => setQuery("")}>×</button>}</label>
               <div role="group" aria-label="Filtrar tarjetas" className="flex flex-wrap gap-1">{[["all", "Todas"], ["waiting", "Te necesitan"], ["review", "Por revisar"], ["error", "Errores"]].map(([value, label]) => <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)} className={`rounded-lg px-3 py-2 text-sm transition ${filter === value ? "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}>{label}</button>)}</div>

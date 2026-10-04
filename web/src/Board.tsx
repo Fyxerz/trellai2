@@ -3,14 +3,14 @@ import { reportError } from "./notifications";
 import { DragDropContext, Draggable, Droppable, type DropResult } from "@hello-pangea/dnd";
 import { MachineChip } from "./SyncUI";
 import { useSync } from "./api";
-import { useEffect, useRef, useState } from "react";
-import { COLUMNS, COLUMN_LABELS, type Card, type Column, type Tag } from "../../shared/types";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { COLUMNS, COLUMN_LABELS, type Card, type Column, type Project, type Tag } from "../../shared/types";
 import { api, type Board as BoardState } from "./api";
 import { ArrowRight, Eye, GitBranch, GitMerge, ListChecks, Play, Plus, Trash2 } from "lucide-react";
 import { cardTags, TagChip, useProjectTags } from "./tags";
 import { confirmDeleteCard } from "./Confirm";
 import { Button, COLUMN_HEX, COLUMN_ICON, StatusBadge } from "./ui";
-import { modelLabel, useEngines } from "./models";
+import { backgroundUrl, modelLabel, useEngines } from "./models";
 import { prettyModel } from "../../shared/models";
 
 const HINTS: Record<Column, string> = {
@@ -70,6 +70,21 @@ export async function moveCard(board: BoardState, id: string, to: Column, index:
       if (cards) board.setCards(Object.fromEntries(cards.map(c => [c.id, c])));
     }
   });
+}
+
+/** The project's board background: its image (if this computer has it), else its color. */
+export function boardBackground(project: Project): { image: string | null; color: string | null } {
+  const image = project.bg_mode === "image" && project.bg_image ? backgroundUrl(project) : null;
+  const color = project.bg_mode !== "none" ? project.bg_color : null;
+  return { image, color };
+}
+
+/** Fills its (relative, isolated) parent behind the board; a veil keeps the columns readable in both themes. */
+export function BoardBackground({ project }: { project: Project }) {
+  const { image, color } = boardBackground(project);
+  if (!image && !color) return null;
+  const style = { "--board-bg": color ?? "transparent", backgroundImage: image ? `url("${image}")` : undefined } as CSSProperties;
+  return <div aria-hidden data-board-bg={image ? "image" : "color"} className={`board-bg ${image ? "has-image" : ""}`} style={style} />;
 }
 
 export function Board({

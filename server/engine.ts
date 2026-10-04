@@ -229,6 +229,12 @@ function codexBin(): string {
   return (codexBinCache = findCodexBin());
 }
 
+/** Command line for Codex; a .js/.mjs TRELLAI_CODEX_BIN runs with node (a simulated Codex in tests). */
+function codexCmd(args: string[]): [string, string[]] {
+  const bin = codexBin();
+  return /\.m?js$/.test(bin) ? [process.execPath, [bin, ...args]] : [bin, args];
+}
+
 function findCodexBin(): string {
   const works = (bin: string) => {
     try {
@@ -282,11 +288,11 @@ let codexInfo: { at: number; installed: boolean; version?: string; loggedIn: boo
 export function codexStatus(): Promise<{ installed: boolean; version?: string; loggedIn: boolean }> {
   if (codexInfo && Date.now() - codexInfo.at < 10_000) return Promise.resolve(codexInfo);
   return new Promise((res) =>
-    execFile(codexBin(), ["--version"], { timeout: 10_000 }, (err, out) => {
+    execFile(...codexCmd(["--version"]), { timeout: 10_000 }, (err, out) => {
       codexInfo = { at: Date.now(), installed: false, loggedIn: false };
       if (err) return res(codexInfo);
       const version = out.trim();
-      execFile(codexBin(), ["login", "status"], { timeout: 10_000 }, (err2, out2, errOut2) => {
+      execFile(...codexCmd(["login", "status"]), { timeout: 10_000 }, (err2, out2, errOut2) => {
         const text = `${out2}
 ${errOut2}`;
         const loggedIn = !err2 && !/not logged in/i.test(text);
@@ -458,7 +464,7 @@ async function runCodex(r: EngineRun, model: string | undefined, resume: string 
 
   try {
     await new Promise<void>((resolve) => {
-      const child = spawn(codexBin(), args, {
+      const child = spawn(...codexCmd(args), {
         cwd: r.cwd,
         stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, NO_PROXY: [process.env.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") },

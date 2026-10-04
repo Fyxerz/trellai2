@@ -60,6 +60,21 @@ button, select, input, textarea { font: inherit; }
 .surface { background: color-mix(in srgb, var(--color-ui-ink) 3%, transparent); border: 1px solid color-mix(in srgb, var(--color-ui-ink) 9%, transparent); }
 .glass { background: rgb(12 13 16 / 0.72); backdrop-filter: blur(14px) saturate(1.4); }
 
+/* Board background (project settings): a color tint, or an image under a veil of the page color */
+.board-bg {
+  position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background-color: color-mix(in srgb, var(--board-bg) 20%, transparent);
+  background-size: cover; background-position: center;
+}
+.board-bg.has-image::after {
+  content: ""; position: absolute; inset: 0;
+  background: color-mix(in srgb, var(--color-zinc-950) 58%, transparent);
+}
+.board-with-image section.surface {
+  background: color-mix(in srgb, var(--color-zinc-950) 62%, transparent);
+  backdrop-filter: blur(10px) saturate(1.2);
+}
+
 /* Card that an agent is working on: animated hairline */
 .working { position: relative; }
 .working::before {
