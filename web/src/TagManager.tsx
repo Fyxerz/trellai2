@@ -1,11 +1,19 @@
-import { useEffect, useState } from "react";
-import { Plus, Trash2, X } from "lucide-react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { createPortal } from "react-dom";
+import { GripVertical, Plus, Trash2, X } from "lucide-react";
 import { TAG_COLORS, TAG_PALETTE, type Tag } from "../../shared/types";
 import { api } from "./api";
 import { confirmDialog } from "./Confirm";
 import { ModelPicker } from "./models";
 import { reportError } from "./notifications";
 import { useDialogFocus } from "./preferences";
+import { setTagHover, tagLanded } from "./tagDrag";
+
+/** The board card under the pointer (cards carry data-card-id / data-card-tags). */
+function cardAt(x: number, y: number) {
+  const el = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-card-id]");
+  return el ? { id: el.dataset.cardId!, tags: (el.dataset.cardTags || "").split(",").filter(Boolean) } : null;
+}
 
 /** Modal to manage a project's tags: name, color (from a grid) and the model cards with that tag use. */
 export function TagManager({ projectId, onClose, onChanged }: { projectId: string; onClose: () => void; onChanged?: () => void }) {
@@ -13,6 +21,9 @@ export function TagManager({ projectId, onClose, onChanged }: { projectId: strin
   const [picking, setPicking] = useState<string | null>(null);
   const [name, setName] = useState("");
   const dialogRef = useDialogFocus();
+  /** the tag being dragged onto a card, and where the pointer is */
+  const [drag, setDrag] = useState<{ tag: Tag; x: number; y: number; over: boolean } | null>(null);
+  const dragging = useRef(false);
   const url = `/api/projects/${projectId}/tags`;
   const load = () => api<Tag[]>(url).then(setTags).catch(() => {});
   useEffect(() => void load(), [projectId]);
@@ -27,6 +38,61 @@ export function TagManager({ projectId, onClose, onChanged }: { projectId: strin
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose, picking]);
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      const t = e.target as Element;
+      if (dragging.current || dialogRef.current?.contains(t)) return;
+      if (t.closest?.("[data-modal]") && !t.closest("[data-tag-manager]")) return; // a confirm dialog on top
+      onClose();
+    };
+    document.addEventListener("pointerdown", away, true);
+    return () => document.removeEventListener("pointerdown", away, true);
+  }, [onClose]);
+
+  /** Press anywhere on a tag row and move: a block follows the pointer; drop it on a board card to tag it. */
+  const startDrag = (e: ReactPointerEvent, t: Tag) => {
+    if (e.button !== 0) return;
+    const x0 = e.clientX, y0 = e.clientY;
+    let active = false;
+    const move = (ev: PointerEvent) => {
+      if (!active) {
+        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+        active = dragging.current = true;
+        setPicking(null);
+        (document.activeElement as HTMLElement | null)?.blur();
+        window.getSelection()?.removeAllRanges();
+        document.body.style.cursor = "grabbing";
+      }
+      ev.preventDefault();
+      const card = cardAt(ev.clientX, ev.clientY);
+      setTagHover(card && !card.tags.includes(t.id) ? { tag: t, cardId: card.id } : null);
+      setDrag({ tag: t, x: ev.clientX, y: ev.clientY, over: !!card });
+    };
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      if (!active) return;
+      document.body.style.cursor = "";
+      setDrag(null);
+      setTagHover(null);
+      // the click that ends a drag must not open the card underneath
+      const swallow = (c: MouseEvent) => (c.stopPropagation(), c.preventDefault());
+      window.addEventListener("click", swallow, { capture: true, once: true });
+      setTimeout(() => {
+        window.removeEventListener("click", swallow, { capture: true });
+        dragging.current = false;
+      }, 0);
+      const card = ev.type === "pointerup" ? cardAt(ev.clientX, ev.clientY) : null;
+      if (!card) return;
+      tagLanded(t, card.id);
+      if (!card.tags.includes(t.id))
+        api(`/api/cards/${card.id}`, { tags: [...card.tags, t.id] }, "PATCH").catch((err) => reportError((err as Error).message));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
 
   const run = async (p: Promise<unknown>) => {
     try {
@@ -61,21 +127,24 @@ export function TagManager({ projectId, onClose, onChanged }: { projectId: strin
     await run(api(url, { name: v, color: TAG_COLORS[tags.length % TAG_COLORS.length] }));
   };
 
-  return (
-    <div data-modal className="ui-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={onClose}>
+  return createPortal(
+    <div
+      data-modal
+      data-tag-manager
+      className={`fixed inset-0 z-50 flex items-center justify-center p-4 transition-colors duration-200 ${drag ? "pointer-events-none bg-transparent" : "ui-backdrop"}`}
+    >
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Gestionar etiquetas"
-        onClick={(e) => e.stopPropagation()}
-        className="ui-dialog flex max-h-[85vh] w-full max-w-xl flex-col gap-4 rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]"
+        className={`ui-dialog flex max-h-[85vh] w-full max-w-xl flex-col gap-4 rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)] transition-opacity duration-200 ${drag ? "opacity-30" : ""}`}
       >
         <div className="flex items-start">
           <div>
             <h2 className="text-base font-semibold text-zinc-100">Etiquetas</h2>
             <p className="text-xs text-zinc-500">
-              Color y modelo de cada etiqueta. Al desarrollar, una tarjeta usa el modelo de su primera etiqueta con modelo (en este orden), salvo que la tarjeta elija el suyo.
+              Arrastra una etiqueta a una tarjeta del tablero para ponérsela. Color y modelo de cada etiqueta. Al desarrollar, una tarjeta usa el modelo de su primera etiqueta con modelo (en este orden), salvo que la tarjeta elija el suyo.
             </p>
           </div>
           <button onClick={onClose} aria-label="Cerrar" className="ml-auto rounded-lg p-1.5 text-zinc-500 hover:bg-ui-ink/5 hover:text-zinc-200">
@@ -85,8 +154,14 @@ export function TagManager({ projectId, onClose, onChanged }: { projectId: strin
 
         <ul className="-mx-1 space-y-1 overflow-y-auto px-1">
           {tags.map((t) => (
-            <li key={t.id} className="rounded-xl bg-zinc-950/60 p-2 ring-1 ring-ui-ink/[0.05]">
+            <li
+              key={t.id}
+              onPointerDown={(e) => startDrag(e, t)}
+              className={`cursor-grab rounded-xl bg-zinc-950/60 p-2 ring-1 ring-ui-ink/[0.05] transition ${drag?.tag.id === t.id ? "opacity-40" : ""}`}
+              title="Arrastra a una tarjeta para ponerle la etiqueta"
+            >
               <div className="tag-editor-row flex items-center gap-2">
+                <GripVertical className="-mr-1 h-3.5 w-3.5 shrink-0 text-zinc-600" aria-hidden />
                 <button
                   onClick={() => setPicking(picking === t.id ? null : t.id)}
                   className="h-6 w-6 shrink-0 rounded-md ring-1 ring-black/20 transition hover:scale-105"
@@ -167,6 +242,23 @@ export function TagManager({ projectId, onClose, onChanged }: { projectId: strin
           </button>
         </form>
       </div>
-    </div>
+      {drag && (
+        <div
+          className="pointer-events-none fixed z-[70] flex items-center gap-2 rounded-xl bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-100 ring-1 transition-transform duration-150"
+          style={{
+            left: drag.x,
+            top: drag.y,
+            transform: `translate(-30%, -50%) rotate(${drag.over ? 0 : -3}deg) scale(${drag.over ? 0.9 : 1})`,
+            boxShadow: `var(--shadow-pop), 0 0 0 1px ${drag.tag.color}55`,
+            ["--tw-ring-color" as string]: `${drag.tag.color}66`,
+          }}
+        >
+          <span className="h-3 w-3 rounded-full" style={{ background: drag.tag.color }} />
+          {drag.tag.name}
+          {drag.over && <span className="text-[11px] font-normal text-zinc-400">soltar para poner</span>}
+        </div>
+      )}
+    </div>,
+    document.body,
   );
 }

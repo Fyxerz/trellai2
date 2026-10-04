@@ -331,6 +331,10 @@ export interface BranchInfo {
   current: boolean;
   /** checked out in a worktree (a card's agent) */
   worktree: string | null;
+  /** that worktree has uncommitted changes */
+  dirty: boolean;
+  /** commits not in the base branch (0 when merged) */
+  unmerged: number;
   sha: string;
   subject: string;
   date: string;
@@ -357,19 +361,39 @@ export function listBranches(repo: string, base: string): { head: string; detach
     const isLocal = ref.startsWith("refs/heads/");
     const name = isLocal ? ref.slice(11) : ref.slice(`refs/remotes/${remote}/`.length);
     if (!isLocal && name === "HEAD") continue;
-    const b = byName.get(name) ?? { name, local: false, remote: false, ahead: 0, behind: 0, merged: true, current: false, worktree: worktrees.get(name) ?? null, sha, subject, date };
+    const b = byName.get(name) ?? { name, local: false, remote: false, ahead: 0, behind: 0, merged: true, current: false, worktree: worktrees.get(name) ?? null, dirty: false, unmerged: 0, sha, subject, date };
     if (isLocal) Object.assign(b, { local: true, sha, subject, date, current: !detached && name === head });
     else b.remote = true;
     b.merged &&= merged.has(ref);
     byName.set(name, b);
   }
   for (const b of byName.values()) {
+    if (!b.merged) {
+      const refs = [...(b.local ? [`refs/heads/${b.name}`] : []), ...(b.remote ? [`refs/remotes/${remote}/${b.name}`] : [])];
+      b.unmerged = Number(git(repo, ["rev-list", "--count", ...refs, "--not", base], { allowFail: true })) || 0;
+    }
+    if (b.worktree) b.dirty = existsSync(b.worktree) && git(b.worktree, ["status", "--porcelain"], { allowFail: true }).length > 0;
     if (!b.local || !b.remote) continue;
     const [ahead, behind] = git(repo, ["rev-list", "--left-right", "--count", `refs/heads/${b.name}...refs/remotes/${remote}/${b.name}`], { allowFail: true }).split(/\s+/).map(Number);
     b.ahead = ahead || 0;
     b.behind = behind || 0;
   }
   return { head: detached ? git(repo, ["rev-parse", "--short", "HEAD"], { allowFail: true }) : head, detached, remote, branches: [...byName.values()] };
+}
+
+/**
+ * Delete a local branch and the worktree it is checked out in (if any), from the branch menu.
+ * Callers have already checked it is merged into base or that the user accepted losing commits;
+ * uncommitted changes in the worktree are refused unless `force`.
+ */
+export function deleteLocalBranch(repo: string, branch: string, opts: { worktree: string | null; force: boolean }) {
+  if (opts.worktree && existsSync(opts.worktree)) {
+    if (!opts.force && git(opts.worktree, ["status", "--porcelain"], { allowFail: true }).length > 0)
+      throw new Error(`Su carpeta de trabajo (${opts.worktree}) tiene cambios sin commitear.`);
+    git(repo, ["worktree", "remove", "--force", opts.worktree]);
+  }
+  git(repo, ["worktree", "prune"], { allowFail: true });
+  if (shaOf(repo, `refs/heads/${branch}`)) git(repo, ["branch", "-D", branch]);
 }
 
 /** Diff of a branch vs base without a worktree (a card running on another computer). */

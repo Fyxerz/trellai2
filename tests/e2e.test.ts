@@ -50,7 +50,7 @@ beforeAll(async () => {
   writeFileSync(join(repo, "SHARED.md"), "# Shared\n");
   sh("git add -A && git commit -qm init");
 
-  server = spawn("npx", ["tsx", "server/index.ts"], {
+  server = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
     env: { ...process.env, PORT: String(PORT), TRELLAI_DB: join(dir, "t.db"), TRELLAI_FAKE_AGENT: "1", TRELLAI_FAKE_DELAY: "60" },
     stdio: "pipe",
   });
@@ -255,6 +255,63 @@ describe("board flow", () => {
     expect(by(done.branch!).worktree).toBeTruthy();
     expect(by("suelta-vieja")).toMatchObject({ merged: true, card: null });
     sh("git branch -D suelta-vieja");
+  });
+
+  it("deletes branches from the menu: protected ones, unmerged, worktrees, remote and per-branch errors", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Rama en curso", spec: "x", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    const active = await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    const tmp = mkdtempSync(join(tmpdir(), "trellai-ramas-"));
+    const origin = join(tmp, "origin.git");
+    sh(`git init -q --bare ${JSON.stringify(origin)}`, tmp);
+    sh(`git remote add origin ${JSON.stringify(origin)}`);
+    sh("git push -q origin main~1:refs/heads/remota-mergeada");
+    sh("git branch vieja-mergeada main~1");
+    const wtMerged = join(tmp, "wt-mergeada");
+    sh(`git worktree add -q -b con-worktree ${JSON.stringify(wtMerged)} main`);
+    const wtLoose = join(tmp, "wt-suelta");
+    sh(`git worktree add -q -b sin-mergear ${JSON.stringify(wtLoose)} main`);
+    for (const n of [1, 2]) sh(`git commit -q --allow-empty -m suelta${n}`, wtLoose);
+    writeFileSync(join(wtLoose, "SUCIO.md"), "sin commitear\n");
+    try {
+      const list = await api<any>(`/api/projects/${projectId}/branches`);
+      const by = (n: string) => list.branches.find((b: any) => b.name === n);
+      expect(by("main").locked).toMatch(/rama base/);
+      expect(by(active.branch!).locked).toMatch(/en curso/);
+      expect(by("remota-mergeada")).toMatchObject({ local: false, remote: true, merged: true, locked: null });
+      expect(by("con-worktree")).toMatchObject({ merged: true, worktree: expect.any(String), dirty: false });
+      expect(by("sin-mergear")).toMatchObject({ merged: false, unmerged: 2, dirty: true });
+
+      await expect(api(`/api/projects/${projectId}/branches/delete`, { name: "main", force: true })).rejects.toThrow(/rama base/);
+      await expect(api(`/api/projects/${projectId}/branches/delete`, { name: active.branch, force: true })).rejects.toThrow(/en curso/);
+      await expect(api(`/api/projects/${projectId}/branches/delete`, { name: "sin-mergear" })).rejects.toThrow(/2 commit/);
+
+      // GitHub unreachable: the remote one fails, the local ones are deleted anyway
+      sh(`git remote set-url origin ${JSON.stringify(join(tmp, "no-existe.git"))}`);
+      const r1 = await api<any>(`/api/projects/${projectId}/branches/cleanup`, {});
+      const res = (n: string) => r1.results.find((x: any) => x.name === n);
+      expect(res("vieja-mergeada")).toMatchObject({ ok: true });
+      expect(res("con-worktree")).toMatchObject({ ok: true });
+      expect(res("remota-mergeada")).toMatchObject({ ok: false, error: expect.stringMatching(/No pude borrarla/) });
+      expect(res("sin-mergear")).toBeUndefined();
+      expect(res("main")).toBeUndefined();
+      expect(existsSync(wtMerged)).toBe(false);
+      expect(sh("git branch --list vieja-mergeada con-worktree")).toBe("");
+
+      sh(`git remote set-url origin ${JSON.stringify(origin)}`);
+      const r2 = await api<any>(`/api/projects/${projectId}/branches/cleanup`, { names: ["remota-mergeada"] });
+      expect(r2.results).toEqual([{ name: "remota-mergeada", ok: true }]);
+      expect(sh("git ls-remote --heads origin")).not.toContain("remota-mergeada");
+
+      expect(await api(`/api/projects/${projectId}/branches/delete`, { name: "sin-mergear", force: true })).toMatchObject({ ok: true });
+      expect(existsSync(wtLoose)).toBe(false);
+      const after = await api<any>(`/api/projects/${projectId}/branches`);
+      const left = after.branches.map((b: any) => b.name);
+      expect(left).toEqual(expect.arrayContaining(["main", active.branch]));
+      for (const n of ["vieja-mergeada", "con-worktree", "remota-mergeada", "sin-mergear"]) expect(left).not.toContain(n);
+    } finally {
+      sh("git remote remove origin");
+    }
   });
 });
 
