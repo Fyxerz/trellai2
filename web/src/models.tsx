@@ -94,6 +94,8 @@ export function useEngines() {
     claude: engines?.claude.models ?? null,
     /** false = no Claude session; null while unknown */
     claudeLoggedIn: engines ? engines.claude.loggedIn !== false : null,
+    /** the running server predates connection status (Trellai has to be restarted) */
+    staleServer: !!engines && "installed" in engines.claude && !("loggedIn" in engines.claude),
   };
 }
 
@@ -269,7 +271,7 @@ export function ProjectSettings({
 
 /** Is each engine connected? Offers a button that opens its login page in the browser. */
 function EngineStatus() {
-  const { codex, claudeLoggedIn } = useEngines();
+  const { codex, claudeLoggedIn, staleServer } = useEngines();
   const [waiting, setWaiting] = useState<Record<"claude" | "codex", boolean>>({ claude: false, codex: false });
   const [errors, setErrors] = useState<Record<"claude" | "codex", string | null>>({ claude: null, codex: null });
 
@@ -314,6 +316,12 @@ function EngineStatus() {
   const waitingHint = <div className="text-[11px] text-zinc-500">Se ha abierto el navegador: inicia sesión allí y vuelve aquí.</div>;
   const error = (engine: "claude" | "codex") => errors[engine] && <div className="text-[11px] text-red-400">{errors[engine]}</div>;
   const codexOn = codex ? codex.installed && codex.loggedIn !== false : null;
+  if (staleServer)
+    return (
+      <div className="rounded-lg bg-zinc-950 p-3 text-xs text-amber-300 ring-1 ring-zinc-800">
+        Trellai se ha actualizado pero el servidor sigue con la versión anterior. Reinicia Trellai para ver si Claude y GPT están conectados.
+      </div>
+    );
 
   return (
     <div className="space-y-3 rounded-lg bg-zinc-950 p-3 text-xs text-zinc-400 ring-1 ring-zinc-800">
