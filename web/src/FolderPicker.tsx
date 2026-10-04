@@ -95,7 +95,7 @@ export function FolderPicker({ onPick, selected, start: startAt }: { onPick: (pa
           onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); if (!e.nativeEvent.isComposing) go(typed); } }}
           value={typed}
           onChange={(e) => setTyped(e.target.value)}
-          className="min-w-0 flex-1 bg-transparent px-1 font-mono text-xs text-zinc-300 outline-none"
+          className="ui-field min-w-0 flex-1 bg-transparent px-1 font-mono text-xs text-zinc-300 outline-none"
           spellCheck={false}
         />
         {loading && <Spinner className="h-3 w-3 text-zinc-500" />}
@@ -115,7 +115,7 @@ export function FolderPicker({ onPick, selected, start: startAt }: { onPick: (pa
           <button type="button" onClick={() => go("~")} className="hover:text-zinc-200">Inicio</button>
           <button type="button" onClick={() => go("~/code")} className="hover:text-zinc-200">~/code</button>
           <label className="flex cursor-pointer items-center gap-1 hover:text-zinc-200">
-            <input type="checkbox" checked={hidden} onChange={(e) => setHidden(e.target.checked)} className="accent-indigo-500" /> ocultas
+            <input type="checkbox" checked={hidden} onChange={(e) => setHidden(e.target.checked)} className="ui-field accent-indigo-500" /> ocultas
           </label>
         </span>
       </div>
@@ -130,18 +130,18 @@ export function FolderPicker({ onPick, selected, start: startAt }: { onPick: (pa
             setHighlighted(null);
           }}
           placeholder="Filtrar…"
-          className="w-full border-b border-zinc-800 bg-zinc-950 px-3 py-1.5 text-sm outline-none placeholder:text-zinc-600"
+          className="ui-field w-full border-b border-zinc-800 bg-zinc-950 px-3 py-1.5 text-sm outline-none placeholder:text-zinc-600"
         />
       )}
 
       {/* list */}
       <ul className="h-64 overflow-y-auto bg-zinc-950 py-1">
-        {error && <li className="px-3 py-2 text-sm text-red-300">{error}</li>}
+        {error && <li className="ui-alert m-2">{error}</li>}
         {!error && listing && entries.length === 0 && <li className="px-3 py-2 text-sm text-zinc-500">Sin subcarpetas.</li>}
         {entries.map((e) => (
           <li
             key={e.path}
-            className={`group flex items-center gap-2 px-3 py-1 ${
+            className={`folder-row group flex items-center gap-2 px-3 py-1 ${
               highlighted?.path === e.path ? "bg-indigo-500/25 ring-1 ring-inset ring-indigo-500/50" : selected === e.path ? "bg-indigo-500/10 hover:bg-zinc-800/70" : "hover:bg-zinc-800/70"
             }`}
           >
@@ -161,10 +161,10 @@ export function FolderPicker({ onPick, selected, start: startAt }: { onPick: (pa
             >
               <FolderIcon repo={e.isRepo} />
               <span className={`truncate ${e.isRepo ? "text-zinc-100" : "text-zinc-400"}`}>{e.name}</span>
-              {e.isRepo && <span className="rounded bg-emerald-500/15 px-1.5 py-px text-[10px] font-medium text-emerald-300">git</span>}
+              {e.isRepo && <span className="rounded bg-emerald-500/15 px-1.5 py-px text-[10px] font-medium text-success">git</span>}
             </button>
             {e.isRepo && (
-              <button type="button" onClick={() => onPick(e.path, true)} className="rounded px-2 py-0.5 text-xs text-indigo-400 opacity-0 group-hover:opacity-100 hover:bg-indigo-500/10">
+              <button type="button" onClick={() => onPick(e.path, true)} className="ui-reveal rounded px-2 py-0.5 text-xs text-accent opacity-0 group-hover:opacity-100 hover:bg-indigo-500/10">
                 Elegir
               </button>
             )}
@@ -178,7 +178,7 @@ export function FolderPicker({ onPick, selected, start: startAt }: { onPick: (pa
           <div className="min-w-0 flex-1 text-xs">
             {highlighted && <span className="mr-1.5 font-medium text-zinc-200">{highlighted.name}:</span>}
             {current.isRepo ? (
-              <span className="text-emerald-300">Repo git{current.branch ? ` · ${current.branch}` : ""}</span>
+              <span className="text-success">Repo git{current.branch ? ` · ${current.branch}` : ""}</span>
             ) : (
               <span className="text-zinc-500">No es un repo git</span>
             )}

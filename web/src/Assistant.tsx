@@ -104,12 +104,12 @@ export function AssistantPanel({
   const roleKey = mode === "plan" ? "model_plan" : "model_do";
   return (
     <aside className="work-panel flex h-full w-[min(480px,100vw)] shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel shadow-[-24px_0_48px_-24px_rgb(0_0_0/0.6)]">
-      <div className="flex gap-1 border-b border-zinc-800 px-3 pt-2">
+      <div className="ui-tabs flex-wrap border-b border-ui-ink/10 px-3 pt-2">
         {(["plan", "do"] as AssistantMode[]).map((m) => (
           <button
             key={m}
             onClick={() => setMode(m)}
-            className={`-mb-px border-b-2 px-3 py-1.5 text-sm ${mode === m ? "border-indigo-400 text-zinc-100" : "border-transparent text-zinc-500 hover:text-zinc-300"}`}
+            className={`ui-tab -mb-px border-b-2 px-3 py-1.5 text-sm ${mode === m ? "border-indigo-400 text-zinc-100" : "border-transparent text-zinc-500 hover:text-zinc-300"}`}
           >
             {COPY[m].title}
             <kbd className="ml-1.5 font-mono text-[10px] text-zinc-600">{m === "plan" ? "t" : "d"}</kbd>
@@ -117,7 +117,7 @@ export function AssistantPanel({
         ))}
         {project && (
           <ModelPicker
-            className="mb-1 ml-auto self-center"
+            className="mb-1 ml-auto min-w-0 max-w-full self-center"
             value={project[roleKey]}
             title="Modelo de esta pestaña (para este proyecto)"
             onChange={async (v) => {
@@ -204,7 +204,7 @@ function Chat({ projectId, board, onOpenCard, mode }: { projectId: string; board
           <Row key={m.id} m={m} onOpenCard={onOpenCard} />
         ))}
         {running && (
-          <div className="flex items-center gap-2 text-xs text-amber-300/80">
+          <div className="flex items-center gap-2 text-xs text-warning/80">
             <Spinner /> {mode === "do" ? "trabajando…" : "pensando…"}
             <button onClick={() => api(`/api/projects/${projectId}/assistant/stop?mode=${mode}`, {})} className="ml-2 text-zinc-500 hover:text-zinc-200">
               parar
@@ -214,7 +214,7 @@ function Chat({ projectId, board, onOpenCard, mode }: { projectId: string; board
         <div ref={scroll.end} />
       </div>
 
-      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300">Nuevos mensajes ↓</button>}
+      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-accent">Nuevos mensajes ↓</button>}
       <div className="border-t border-zinc-800 p-3">
         <div className={`flex items-end gap-2 rounded-lg bg-zinc-900 p-1.5 ring-1 ${dictation.listening ? "ring-red-500/60" : "ring-zinc-800 focus-within:ring-indigo-600"}`}>
           <textarea
@@ -225,19 +225,19 @@ function Chat({ projectId, board, onOpenCard, mode }: { projectId: string; board
             onKeyDown={(e) => chatKeyDown(e, send, setText)}
             rows={3}
             placeholder={running ? "Se lo paso en cuanto termine…" : copy.placeholder}
-            className="max-h-60 min-h-[3.5rem] flex-1 resize-y bg-transparent px-2 py-1 text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
+            className="ui-field max-h-60 min-h-[3.5rem] flex-1 resize-y bg-transparent px-2 py-1 text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
           />
           <div className="flex flex-col gap-1">
             {dictation.supported && (
               <button
                 onClick={() => (dictation.listening ? dictation.stop() : dictation.start(text))}
-                className={`rounded-md px-2 py-1.5 text-sm ${dictation.listening ? "bg-red-500/20 text-red-300" : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"}`}
+                className={`rounded-md px-2 py-1.5 text-sm ${dictation.listening ? "bg-red-500/20 text-danger" : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"}`}
                 title={dictation.listening ? "Parar dictado" : "Dictar"}
               >
                 {dictation.listening ? "■" : "🎙"}
               </button>
             )}
-            <Button variant="primary" onClick={send} disabled={!text.trim() || sending} className="!px-2.5 !py-1.5">
+            <Button aria-label="Enviar mensaje" variant="primary" onClick={send} disabled={!text.trim() || sending} className="!px-2.5 !py-1.5">
               ↑
             </Button>
           </div>
@@ -255,7 +255,7 @@ function Row({ m, onOpenCard }: { m: AssistantMessage; onOpenCard: (id: string) 
   if (m.role === "user")
     return (
       <div className="flex justify-end">
-        <div className="max-w-[88%] rounded-lg bg-indigo-500/15 px-3 py-2 text-sm whitespace-pre-wrap text-zinc-100 ring-1 ring-indigo-500/20">{m.content}</div>
+        <div className="ui-message max-w-[90%] rounded-2xl rounded-br-md bg-indigo-500/15 px-3 py-2 text-sm whitespace-pre-wrap text-zinc-100 ring-1 ring-indigo-500/20">{m.content}</div>
       </div>
     );
   if (m.role === "tool")
@@ -268,14 +268,14 @@ function Row({ m, onOpenCard }: { m: AssistantMessage; onOpenCard: (id: string) 
     return (
       <button
         onClick={() => onOpenCard(m.card_id!)}
-        className="block w-full rounded-md bg-violet-500/10 px-3 py-1.5 text-left text-xs text-violet-200 ring-1 ring-violet-500/20 hover:bg-violet-500/15"
+        className="block w-full rounded-md bg-violet-500/10 px-3 py-1.5 text-left text-xs text-waiting ring-1 ring-violet-500/20 hover:bg-violet-500/15"
       >
-        {m.content} <span className="text-violet-400/70">→ abrir</span>
+        {m.content} <span className="text-waiting/70">→ abrir</span>
       </button>
     );
   if (m.role === "system") return <div className="rounded-md bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-400">{m.content}</div>;
   return (
-    <div className="px-1 text-zinc-200">
+    <div className="ui-message px-1 text-zinc-200">
       <Markdown>{m.content}</Markdown>
     </div>
   );

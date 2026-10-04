@@ -87,7 +87,7 @@ export function Sidebar({
   }, [cursor, focused]);
 
   return (
-    <nav className="flex h-full w-[248px] shrink-0 flex-col border-r border-ui-ink/[0.06] bg-panel">
+    <nav className="app-sidebar flex h-full w-[248px] shrink-0 flex-col border-r border-ui-ink/[0.06] bg-panel">
       <div className="px-2 pt-1">
         <button
           onClick={onHome}
@@ -101,7 +101,7 @@ export function Sidebar({
         </button>
       </div>
       <div className="flex items-center px-4 pt-4 pb-1.5">
-        <span className="text-[10.5px] font-semibold tracking-[0.08em] text-zinc-500 uppercase">Proyectos</span>
+        <span className="ui-section-title">Proyectos</span>
         <span className="ml-auto flex items-center gap-1 text-zinc-600">
           <Kbd>{MOD}</Kbd>
           <Kbd>B</Kbd>
@@ -113,7 +113,7 @@ export function Sidebar({
           const active = p.id === currentId && !home;
           const hasCursor = focused && i === cursor;
           return (
-            <li key={p.id} data-idx={i} data-drop-project={p.id} className="group/row relative">
+            <li key={p.id} data-idx={i} data-drop-project={p.id} className="sidebar-row group/row relative">
               <button
                 onClick={() => onPick(p.id)}
                 className={`group flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm transition ${
@@ -124,29 +124,29 @@ export function Sidebar({
                 <span className="min-w-0 flex-1 truncate">{projectName(p.name)}</span>
                 <span className="flex items-center gap-1">
                   {dropTarget === p.id ? (
-                    <span className="text-[10.5px] font-medium text-indigo-300">Soltar para copiar</span>
+                    <span className="text-[10.5px] font-medium text-accent">Soltar para copiar</span>
                   ) : copied === p.id ? (
-                    <span className="text-[10.5px] font-medium text-emerald-300">Copiada ✓</span>
+                    <span className="text-[10.5px] font-medium text-success">Copiada ✓</span>
                   ) : null}
                   {s?.running ? (
-                    <span className="tabular flex items-center gap-1 text-[10.5px] text-amber-300" title="Agentes trabajando">
+                    <span className="tabular flex items-center gap-1 text-[10.5px] text-warning" title="Agentes trabajando">
                       <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
                       {s.running}
                     </span>
                   ) : null}
                   {s?.waiting ? (
-                    <span className="tabular rounded-full bg-violet-400/15 px-1.5 text-[10.5px] leading-4 text-violet-200" title="Esperando tu respuesta">
+                    <span className="tabular rounded-full bg-violet-400/15 px-1.5 text-[10.5px] leading-4 text-waiting" title="Esperando tu respuesta">
                       {s.waiting}
                     </span>
                   ) : null}
                   {s?.review ? (
-                    <span className="tabular rounded-full bg-emerald-400/12 px-1.5 text-[10.5px] leading-4 text-emerald-300" title="Para revisar">
+                    <span className="tabular rounded-full bg-emerald-400/12 px-1.5 text-[10.5px] leading-4 text-success" title="Para revisar">
                       {s.review}
                     </span>
                   ) : null}
                   {s?.errors ? <span className="h-1.5 w-1.5 rounded-full bg-red-400" title="Con errores" /> : null}
                   {!s?.running && !s?.waiting && !s?.review && !s?.errors && i < 9 && (
-                    <span className="font-mono text-[10px] text-zinc-600 opacity-0 group-hover:opacity-100">{i + 1}</span>
+                    <span className="ui-reveal font-mono text-[10px] text-zinc-600 opacity-0 group-hover:opacity-100">{i + 1}</span>
                   )}
                 </span>
               </button>
@@ -156,7 +156,7 @@ export function Sidebar({
                   await api(`/api/projects/${p.id}`, undefined, "DELETE");
                   onRemoved();
                 }}
-                className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded-md bg-zinc-900 p-1 text-zinc-500 opacity-0 ring-1 ring-ui-ink/[0.06] transition group-hover/row:opacity-100 hover:bg-red-500/15 hover:text-red-300"
+                className="ui-reveal absolute top-1/2 right-1.5 -translate-y-1/2 rounded-md bg-zinc-900 p-1 text-zinc-500 opacity-0 ring-1 ring-ui-ink/[0.06] transition group-hover/row:opacity-100 hover:bg-red-500/15 hover:text-danger"
                 title="Quitar de Trellai"
               >
                 <Trash2 className="h-3.5 w-3.5" />

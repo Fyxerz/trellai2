@@ -274,7 +274,7 @@ export function ModelPicker({
   const host = open ? (buttonRef.current?.closest<HTMLElement>('[aria-label="Detalle de tarjeta"], [role="dialog"]') ?? document.body) : null;
 
   return (
-    <span className={`flex min-w-0 items-center ${className}`}>
+    <span className={`model-picker flex min-w-0 items-center ${className}`}>
       <button
         ref={buttonRef}
         type="button"
@@ -405,14 +405,14 @@ export function ProjectSettings({
   };
   const dialogRef = useDialogFocus();
   return (
-    <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={onClose}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Ajustes del proyecto" onClick={(e) => e.stopPropagation()} className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-zinc-900 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]">
+    <div data-modal className="ui-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={onClose}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Ajustes del proyecto" onClick={(e) => e.stopPropagation()} className="ui-dialog flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-zinc-900 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]">
         <div className="flex items-center border-b border-ui-ink/[0.08] px-5 py-3.5">
           <h2 className="text-base font-semibold text-zinc-100">Ajustes · {projectName(project.name)}</h2>
           <button onClick={onClose} aria-label="Cerrar" className="ml-auto text-zinc-500 hover:text-zinc-200">✕</button>
         </div>
         <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
-          <nav role="tablist" aria-label="Secciones de ajustes" aria-orientation="vertical" className="flex shrink-0 gap-1 border-ui-ink/[0.08] p-2 max-sm:border-b sm:w-48 sm:flex-col sm:border-r">
+          <nav role="tablist" aria-label="Secciones de ajustes" aria-orientation="vertical" className="ui-tabs flex shrink-0 gap-1 border-ui-ink/[0.08] p-2 max-sm:border-b sm:w-48 sm:flex-col sm:border-r">
             {SETTINGS_TABS.map((t) => (
               <button
                 key={t.id}
@@ -430,7 +430,7 @@ export function ProjectSettings({
                   document.getElementById(`settings-tab-${next.id}`)?.focus();
                 }}
                 tabIndex={tab === t.id ? 0 : -1}
-                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${tab === t.id ? "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5 hover:text-zinc-200"}`}
+                className={`ui-tab flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${tab === t.id ? "bg-indigo-500/10 text-accent ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5 hover:text-zinc-200"}`}
               >
                 <t.icon className="h-4 w-4 shrink-0" />
                 {t.label}
@@ -470,7 +470,7 @@ function ModelSettings({ project, onSaved }: { project: Project; onSaved: () => 
       </div>
         <div className="space-y-3">
           {ROLES.map((r) => (
-            <div key={r.key} className="flex items-center gap-3">
+            <div key={r.key} className="model-row flex items-center gap-3">
               <div className="min-w-0 flex-1">
                 <div className="text-sm text-zinc-200">{r.label}</div>
                 <div className="text-[11px] text-zinc-500">{r.hint}</div>
@@ -479,6 +479,7 @@ function ModelSettings({ project, onSaved }: { project: Project; onSaved: () => 
                 value={(project[r.key] as string | null) ?? null}
                 inheritLabel={r.key === "model_ui" ? "Igual que desarrollo" : undefined}
                 onChange={(v) => save(r.key, v ?? (r.key === "model_ui" ? null : "claude"))}
+                className="model-picker w-72 max-w-full"
               />
             </div>
           ))}
@@ -533,11 +534,11 @@ function EngineStatus() {
   );
   const dot = (on: boolean | null) => <span className={`h-2 w-2 shrink-0 rounded-full ${on === null ? "bg-zinc-600" : on ? "bg-emerald-500" : "bg-amber-500"}`} />;
   const waitingHint = <div className="text-[11px] text-zinc-500">Se ha abierto el navegador: inicia sesión allí y vuelve aquí.</div>;
-  const error = (engine: "claude" | "codex") => errors[engine] && <div className="text-[11px] text-red-400">{errors[engine]}</div>;
+  const error = (engine: "claude" | "codex") => errors[engine] && <div className="text-[11px] text-danger">{errors[engine]}</div>;
   const codexOn = codex ? codex.installed && codex.loggedIn !== false : null;
   if (staleServer)
     return (
-      <div className="rounded-lg bg-zinc-950 p-3 text-xs text-amber-300 ring-1 ring-zinc-800">
+      <div className="rounded-lg bg-zinc-950 p-3 text-xs text-warning ring-1 ring-zinc-800">
         Trellai se ha actualizado pero el servidor sigue con la versión anterior. Reinicia Trellai para ver si Claude y GPT están conectados.
       </div>
     );
@@ -647,7 +648,7 @@ function BackgroundSettings({ project, codexReady, onSaved }: { project: Project
         <p className="text-[11px] text-zinc-500">Para distinguir los proyectos de un vistazo.</p>
       </div>
       {outdated && (
-        <p role="alert" className="rounded-lg bg-amber-400/10 p-3 text-xs text-amber-300 ring-1 ring-amber-400/30">
+        <p role="alert" className="rounded-lg bg-amber-400/10 p-3 text-xs text-warning ring-1 ring-amber-400/30">
           El servidor de Trellai que está corriendo aún no tiene esta función, así que no se guarda. Se reinicia solo cuando ningún agente está trabajando
           (o reinícialo desde Maitre); después vuelve a elegir el fondo.
         </p>
@@ -661,7 +662,7 @@ function BackgroundSettings({ project, codexReady, onSaved }: { project: Project
             onClick={() =>
               local.bg_mode !== m.value && save(m.value === "color" && !local.bg_color ? { bg_mode: m.value, bg_color: color } : { bg_mode: m.value })
             }
-            className={`rounded-lg px-3 py-1.5 text-sm transition ${local.bg_mode === m.value ? "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}
+            className={`rounded-lg px-3 py-1.5 text-sm transition ${local.bg_mode === m.value ? "bg-indigo-500/10 text-accent ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}
           >
             {m.label}
           </button>
@@ -682,7 +683,7 @@ function BackgroundSettings({ project, codexReady, onSaved }: { project: Project
             />
           ))}
           <label className="ml-1 flex items-center gap-1.5 text-xs text-zinc-400" title="Elegir otro color">
-            <input type="color" value={color} onChange={(e) => save({ bg_color: e.target.value })} className="h-6 w-8 cursor-pointer rounded bg-transparent" />
+            <input type="color" value={color} onChange={(e) => save({ bg_color: e.target.value })} className="ui-field h-6 w-8 cursor-pointer rounded bg-transparent" />
             Otro
           </label>
         </div>
@@ -705,7 +706,7 @@ function BackgroundSettings({ project, codexReady, onSaved }: { project: Project
               </p>
               {status.running ? (
                 <div className="flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-indigo-300" />
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-accent" />
                   <span className="min-w-0 flex-1 truncate text-xs text-zinc-300" title={status.activity ?? ""}>
                     {status.activity ?? "Generando…"}
                   </span>
@@ -722,12 +723,12 @@ function BackgroundSettings({ project, codexReady, onSaved }: { project: Project
             </div>
           </div>
           {codexReady === false && (
-            <p className="text-xs text-amber-300">
+            <p className="text-xs text-warning">
               Hace falta Codex conectado a tu cuenta de ChatGPT: instálalo y conéctalo en la pestaña «Modelos».
             </p>
           )}
           {status.error && !status.running && (
-            <p role="alert" className="text-xs text-red-300">
+            <p role="alert" className="text-xs text-danger">
               {status.error}
             </p>
           )}

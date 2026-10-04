@@ -170,7 +170,7 @@ export function SpecImages({ card, board }: { card: Card; board: Board }) {
       <div className="mb-2 flex items-center gap-2">
         <h3 className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">Imágenes</h3>
         {uploading > 0 && <Spinner />}
-        <button onClick={() => input.current?.click()} className="ml-auto flex items-center gap-1 text-xs text-indigo-400 hover:underline">
+        <button onClick={() => input.current?.click()} className="ml-auto flex items-center gap-1 text-xs text-accent hover:underline">
           <ImagePlus className="h-3.5 w-3.5" /> Añadir
         </button>
         <input
@@ -207,7 +207,7 @@ export function SpecImages({ card, board }: { card: Card; board: Board }) {
             <button
               onClick={() => void remove(a)}
               aria-label={`Borrar ${a.name}`}
-              className="absolute top-1 right-1 rounded bg-black/70 p-1 text-zinc-300 opacity-0 transition group-hover:opacity-100 hover:text-red-300 focus:opacity-100"
+              className="ui-reveal absolute top-1 right-1 rounded bg-zinc-900/95 p-1 text-zinc-300 opacity-0 transition group-hover:opacity-100 hover:text-danger focus:opacity-100"
             >
               <Trash2 className="h-3 w-3" />
             </button>
@@ -301,8 +301,8 @@ export function ImageEditor({ attachment, onClose, onSaved }: { attachment: Atta
   });
 
   return (
-    <div data-modal className="fixed inset-0 z-50 flex bg-black/80 backdrop-blur-[2px]" role="dialog" aria-label={`Editar ${attachment.name}`}>
-      <div className="flex min-w-0 flex-1 items-center justify-center p-6">
+    <div data-modal className="image-editor fixed inset-0 z-50 flex bg-black/80 backdrop-blur-[2px]" role="dialog" aria-label={`Editar ${attachment.name}`}>
+      <div className="image-editor-canvas flex min-w-0 flex-1 items-center justify-center p-6">
         <div
           ref={area}
           className="relative max-h-full max-w-full cursor-crosshair touch-none select-none"
@@ -354,7 +354,7 @@ export function ImageEditor({ attachment, onClose, onSaved }: { attachment: Atta
         </div>
       </div>
 
-      <aside className="flex w-80 shrink-0 flex-col border-l border-ui-ink/[0.08] bg-panel">
+      <aside className="image-editor-controls flex w-80 shrink-0 flex-col border-l border-ui-ink/[0.08] bg-panel">
         <header className="flex items-center gap-2 border-b border-ui-ink/[0.06] px-4 py-3">
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-100" title={attachment.name}>
             {attachment.name}
@@ -373,7 +373,7 @@ export function ImageEditor({ attachment, onClose, onSaved }: { attachment: Atta
             >
               <div className="mb-1 flex items-center gap-2">
                 <span className={`rounded px-1.5 text-[11px] font-bold text-white ${selected === r.key ? "bg-amber-500" : "bg-rose-500"}`}>{i + 1}</span>
-                <button onClick={() => removeRegion(r.key)} aria-label={`Borrar zona ${i + 1}`} className="ml-auto text-zinc-500 hover:text-red-300">
+                <button onClick={() => removeRegion(r.key)} aria-label={`Borrar zona ${i + 1}`} className="ml-auto text-zinc-500 hover:text-danger">
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
               </div>
@@ -390,7 +390,7 @@ export function ImageEditor({ attachment, onClose, onSaved }: { attachment: Atta
                 }}
                 placeholder="¿Qué hay que cambiar aquí?"
                 rows={3}
-                className="w-full resize-y rounded-md bg-zinc-900 p-2 text-sm text-zinc-200 ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
+                className="ui-field ui-control w-full resize-y rounded-md bg-zinc-900 p-2 text-sm text-zinc-200 ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
               />
             </div>
           ))}
@@ -469,7 +469,7 @@ export function useChatImages(card: Card) {
             <button
               onClick={() => remove(a)}
               aria-label={`Quitar ${a.name}`}
-              className="absolute -top-1.5 -right-1.5 rounded-full bg-zinc-800 p-0.5 text-zinc-300 ring-1 ring-zinc-700 hover:text-red-300"
+              className="absolute -top-1.5 -right-1.5 rounded-full bg-zinc-800 p-0.5 text-zinc-300 ring-1 ring-zinc-700 hover:text-danger"
             >
               <X className="h-3 w-3" />
             </button>

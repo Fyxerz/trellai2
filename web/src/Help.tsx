@@ -54,11 +54,11 @@ const groups = (): { title: string; keys: [string, string][] }[] => [
 export function Help({ onClose }: { onClose: () => void }) {
   const ref = useDialogFocus();
   return (
-    <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={onClose}>
-      <div ref={ref} role="dialog" aria-modal="true" aria-label="Atajos de teclado" onClick={(e) => e.stopPropagation()} className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]">
+    <div data-modal className="ui-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={onClose}>
+      <div ref={ref} role="dialog" aria-modal="true" aria-label="Atajos de teclado" onClick={(e) => e.stopPropagation()} className="ui-dialog max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]">
         <div className="mb-4 flex items-center">
           <h2 className="text-base font-semibold text-zinc-100">Atajos de teclado</h2>
-          <button onClick={onClose} className="ml-auto text-zinc-500 hover:text-zinc-200">✕</button>
+          <button onClick={onClose} aria-label="Cerrar atajos" className="ml-auto rounded-lg p-2 text-zinc-500 hover:text-zinc-200">✕</button>
         </div>
         <div className="grid gap-5 sm:grid-cols-2">
           {groups().map((g) => (
@@ -67,7 +67,7 @@ export function Help({ onClose }: { onClose: () => void }) {
               <ul className="space-y-1.5">
                 {g.keys.map(([k, d]) => (
                   <li key={k} className="flex items-baseline gap-3 text-sm">
-                    <kbd className="w-20 shrink-0 font-mono text-xs text-indigo-300">{k}</kbd>
+                    <kbd className="w-20 shrink-0 font-mono text-xs text-accent">{k}</kbd>
                     <span className="text-zinc-300">{d}</span>
                   </li>
                 ))}

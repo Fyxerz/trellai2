@@ -66,19 +66,19 @@ export const COLUMN_ICON: Record<Column, LucideIcon> = {
 export function StatusBadge({ card }: { card: Card }) {
   if (card.status === "running")
     return (
-      <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11px] font-medium text-amber-300">
+      <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-amber-500/12 px-2 py-0.5 text-xs font-medium text-warning ring-1 ring-amber-400/25">
         <Spinner /> {card.column === "preparation" ? "Preparando" : "Trabajando"}
       </span>
     );
   if (card.status === "waiting")
     return (
-      <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-violet-500/12 px-2 py-0.5 text-[11px] font-medium text-violet-200 ring-1 ring-violet-400/25">
+      <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-violet-500/12 px-2 py-0.5 text-xs font-medium text-waiting ring-1 ring-violet-400/25">
         <MessageCircleQuestion className="h-3 w-3" /> Te necesita
       </span>
     );
   if (card.status === "error")
     return (
-      <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-red-500/12 px-2 py-0.5 text-[11px] font-medium text-red-200 ring-1 ring-red-400/25">
+      <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-red-500/12 px-2 py-0.5 text-xs font-medium text-danger ring-1 ring-red-400/25">
         <TriangleAlert className="h-3 w-3" /> Error
       </span>
     );
@@ -87,7 +87,7 @@ export function StatusBadge({ card }: { card: Card }) {
 
 export function Spinner({ className = "h-3 w-3" }: { className?: string }) {
   return (
-    <svg className={`animate-spin ${className}`} viewBox="0 0 24 24" fill="none">
+    <svg aria-hidden="true" className={`animate-spin ${className}`} viewBox="0 0 24 24" fill="none">
       <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity=".25" strokeWidth="3" />
       <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
     </svg>
@@ -99,20 +99,20 @@ export function Button({
   size = "md",
   className = "",
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "default" | "primary" | "danger" | "ghost"; size?: "sm" | "md" }) {
+}: React.ComponentProps<"button"> & { variant?: "default" | "primary" | "danger" | "ghost"; size?: "sm" | "md" }) {
   const styles = {
     default: "bg-ui-ink/[0.05] hover:bg-ui-ink/[0.09] text-zinc-100 ring-1 ring-ui-ink/[0.08] hover:ring-ui-ink/[0.14]",
     primary:
-      "bg-gradient-to-b from-indigo-400 to-indigo-500 hover:from-indigo-300 hover:to-indigo-500 text-white font-medium shadow-[0_1px_0_0_rgb(255_255_255/0.25)_inset,0_1px_2px_rgb(0_0_0/0.4)]",
-    danger: "bg-transparent hover:bg-red-500/10 text-red-300 ring-1 ring-red-400/25",
+      "bg-indigo-600 hover:bg-indigo-500 text-white font-medium shadow-[0_1px_0_0_rgb(255_255_255/0.25)_inset,0_1px_2px_rgb(0_0_0/0.4)]",
+    danger: "bg-transparent hover:bg-red-500/10 text-danger ring-1 ring-red-400/25",
     ghost: "bg-transparent hover:bg-ui-ink/[0.06] text-zinc-300 hover:text-zinc-100",
   }[variant];
-  const sizes = { sm: "h-7 px-2.5 text-xs", md: "h-9 px-3.5 text-sm" }[size];
+  const sizes = { sm: "h-8 px-2.5 text-xs", md: "h-9 px-3.5 text-sm" }[size];
   return (
     <button
       type="button"
       {...props}
-      className={`inline-flex items-center justify-center gap-1.5 rounded-lg transition-all disabled:pointer-events-none disabled:opacity-40 ${sizes} ${styles} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-lg transition-colors disabled:pointer-events-none disabled:opacity-45 ${sizes} ${styles} ${className}`}
     />
   );
 }

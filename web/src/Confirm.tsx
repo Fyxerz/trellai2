@@ -1,3 +1,4 @@
+import { Button } from "./ui";
 import { TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
@@ -73,18 +74,18 @@ export function ConfirmHost() {
 
   if (!req) return null;
   return (
-    <div data-modal className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={() => close(false)}>
+    <div data-modal className="ui-backdrop fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={() => close(false)}>
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-title"
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-sm rounded-2xl bg-zinc-900 p-5 shadow-[var(--shadow-pop)] ring-1 ring-ui-ink/[0.08]"
+        className="ui-dialog w-full max-w-sm rounded-2xl bg-zinc-900 p-5 shadow-[var(--shadow-pop)] ring-1 ring-ui-ink/[0.08]"
       >
         <div className="flex items-start gap-3">
           {req.danger && (
-            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-500/12 text-red-300 ring-1 ring-red-400/20">
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-500/12 text-danger ring-1 ring-red-400/20">
               <TriangleAlert className="h-4 w-4" />
             </span>
           )}
@@ -95,19 +96,17 @@ export function ConfirmHost() {
         </div>
         <div className="mt-5 flex justify-end gap-2">
           {!req.notice && (
-            <button ref={cancelRef} className="rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-ui-ink/5" onClick={() => close(false)}>
+            <Button ref={cancelRef} variant="ghost" onClick={() => close(false)}>
               Cancelar <span className="ml-1 font-mono text-[10px] text-zinc-500">esc</span>
-            </button>
+            </Button>
           )}
-          <button
+          <Button
             ref={okRef}
             onClick={() => close(true)}
-            className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] font-medium text-white transition ${
-              req.danger ? "bg-red-500/90 hover:bg-red-500" : "bg-indigo-500 hover:bg-indigo-400"
-            }`}
+            variant={req.danger ? "danger" : "primary"}
           >
-            {req.confirmLabel ?? "Confirmar"} <span className="font-mono text-[10px] text-white/60">↵</span>
-          </button>
+            {req.confirmLabel ?? "Confirmar"} <span className="font-mono text-[10px] opacity-70">↵</span>
+          </Button>
         </div>
       </div>
     </div>
