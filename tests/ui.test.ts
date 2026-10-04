@@ -110,3 +110,24 @@ describe("previewed card pinned on top", async () => {
     expect(storedIndex(cards, "doing", "p", "a", 3)).toBe(3);
   });
 });
+
+describe("merging cards on top of merged", async () => {
+  const { columnCards, mergedDays, storedIndex, MERGING } = await import("../web/src/Board");
+  const mk = (id: string, day: number, status = "idle") =>
+    ({ id, column: "merged", position: 0, status, merged_at: `2026-10-0${day}T12:00:00`, updated_at: "" }) as unknown as import("../shared/types").Card;
+  const cards = Object.fromEntries([mk("a", 4), mk("b", 3), mk("m", 2, "running"), mk("c", 2), mk("n", 1, "running")].map((c) => [c.id, c]));
+  const ids = (l: { id: string }[]) => l.map((c) => c.id).join("");
+
+  it("shows every card being merged first, then the rest newest first", () => {
+    expect(ids(columnCards(cards, "merged"))).toBe("mnabc");
+    expect(mergedDays(columnCards(cards, "merged")).map((g) => g.day === MERGING ? `*${ids(g.cards)}` : ids(g.cards)).join(" ")).toBe("*mn a b c");
+    // once the merge is over the card is back in its usual place
+    expect(ids(columnCards({ ...cards, m: { ...cards.m, status: "idle" } }, "merged"))).toBe("nabmc");
+  });
+
+  it("drops next to the same neighbour", () => {
+    // screen without "c": m n a b → before a (index 2)
+    expect(storedIndex(cards, "merged", null, "c", 2)).toBe(2);
+    expect(storedIndex(cards, "merged", null, "c", 4)).toBe(4);
+  });
+});
