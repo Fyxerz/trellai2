@@ -555,7 +555,7 @@ function MessageRow({ m, card }: { m: Message; card: Card }) {
     );
   if (m.role === "system")
     return (
-      <div className="flex items-start gap-2 border-l-2 border-ui-ink/[0.08] py-0.5 pl-2.5 text-[12px] whitespace-pre-wrap text-zinc-400">
+      <div className="border-l-2 border-ui-ink/[0.08] py-0.5 pl-2.5 text-[12px] break-words whitespace-pre-wrap text-zinc-400">
         <InlineCode text={m.content} />
       </div>
     );
