@@ -18,7 +18,19 @@ import type { Card, Column } from "../../shared/types";
 export function Markdown({ children }: { children: string }) {
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          // Wide tables scroll inside their own box instead of squeezing columns or overflowing the panel.
+          table: ({ node: _node, ...props }) => (
+            <div className="md-table">
+              <table {...props} />
+            </div>
+          ),
+        }}
+      >
+        {children}
+      </ReactMarkdown>
     </div>
   );
 }
