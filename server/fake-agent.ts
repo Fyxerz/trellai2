@@ -62,6 +62,12 @@ export async function runFakeAgent(o: FakeOpts): Promise<string> {
     mkdirSync(join(o.cwd, "features"), { recursive: true });
     writeFileSync(join(o.cwd, "features", `${slug}.md`), `# ${o.card.title}\n\n${o.card.spec}\n`);
     o.log("tool", `Write · features/${slug}.md`);
+    // Requested changes leave their own trace (and commit).
+    const change = o.prompt.match(/requests changes:\n\n([^\n]+)/)?.[1];
+    if (change) {
+      writeFileSync(join(o.cwd, "features", `${slugify(change)}.md`), `${change}\n`);
+      o.log("tool", `Write · features/${slugify(change)}.md`);
+    }
     if (shared) {
       appendFileSync(join(o.cwd, "SHARED.md"), `- ${o.card.title}\n`);
       o.log("tool", "Edit · SHARED.md");

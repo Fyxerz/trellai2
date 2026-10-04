@@ -187,7 +187,9 @@ export function useCardDetail(board: Board, cardId: string | null) {
     loadC();
     const off = board.on((e) => {
       if (e.type === "message" && e.message.card_id === cardId)
-        setMessages((prev) => (prev.some((m) => m.id === e.message.id) ? prev : [...prev, e.message]));
+        setMessages((prev) =>
+          prev.some((m) => m.id === e.message.id) ? prev.map((m) => (m.id === e.message.id ? e.message : m)) : [...prev, e.message],
+        );
       if (e.type === "questions" && e.cardId === cardId) loadQ();
       if (e.type === "checkpoints" && e.cardId === cardId) loadC();
       if (e.type === "card" && e.card.id === cardId) loadQ();

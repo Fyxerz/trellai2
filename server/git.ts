@@ -381,3 +381,19 @@ export function diffBranch(repo: string, base: string, branch: string): { diff: 
     files: git(repo, ["diff", "--name-only", mb, branch], { allowFail: true }).split("\n").filter(Boolean),
   };
 }
+
+/** `ancestor` is reachable from `ref` (or is it). */
+export function isAncestor(cwd: string, ancestor: string, ref = "HEAD"): boolean {
+  return gitOk(cwd, ["merge-base", "--is-ancestor", ancestor, ref]);
+}
+
+/** Subjects of the commits in `from..to`, newest first. */
+export function commitSubjects(cwd: string, from: string, to = "HEAD"): string[] {
+  return git(cwd, ["log", "--format=%s", `${from}..${to}`], { allowFail: true }).split("\n").filter(Boolean);
+}
+
+/** Put the worktree exactly at `ref`: drops later commits, uncommitted edits and untracked (non-ignored) files. */
+export function resetHard(cwd: string, ref: string) {
+  git(cwd, ["reset", "--hard", "-q", ref]);
+  git(cwd, ["clean", "-fdq"]);
+}

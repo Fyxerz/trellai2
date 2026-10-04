@@ -46,6 +46,8 @@ Usa tu sesión de Claude Code: si `claude` funciona en tu terminal, Trellai tamb
 
 **En cualquier momento** puedes escribir al agente desde Actividad. Si está en mitad de un paso, recibe el mensaje en cuanto lo termina. También puedes **pararlo** o **reintentar**.
 
+**Retroceder (↶).** Cada petición que le haces a una tarjeta en Doing o To Review guarda dónde estaba su rama en ese momento. Pasa el ratón por tu mensaje en Actividad y pulsa ↶: te dice cuántos commits se pierden y, si confirmas, para el agente, hace `git reset --hard` del worktree a ese punto (también descarta lo que no esté commiteado), hace push forzado de la rama y devuelve la tarjeta a la columna en la que estaba (normalmente To Review) sin relanzar el agente. Ese mensaje y los posteriores quedan marcados como deshechos, los checkpoints de los commits borrados vuelven a quedar pendientes y el siguiente mensaje arranca un agente nuevo que mira el `git log`. Solo desde el ordenador que tiene el worktree de la tarjeta; si el rebase final reescribió los commits, cuenta hacia atrás los commits que llevaba por delante de la rama base.
+
 ## GitHub: pull antes de trabajar, push al mergear
 
 Si el repo tiene remoto (`origin`), Trellai lo usa con tus credenciales de siempre (ssh, credential helper o `gh`); nunca te pide contraseña:

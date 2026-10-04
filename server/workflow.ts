@@ -11,7 +11,7 @@ import { COLUMN_LABELS, describeClaim, type Card, type Column, type Project } fr
 import { attachmentsBlock, messageImageMarkdown, removeAttachmentFiles, withMessageImages } from "./attachments.js";
 import * as claims from "./claims.js";
 import * as db from "./db.js";
-import { emitCard, emitMessage } from "./events.js";
+import { emitCard, emitCheckpoints, emitMessage } from "./events.js";
 import * as git from "./git.js";
 import { isRunning, runAgent, stopAgent, type AgentKind, type RunResult } from "./agents.js";
 import { assistantRunning } from "./assistant.js";
@@ -512,7 +512,9 @@ export function sendMessage(cardId: string, said: string, attachmentIds: number[
   // Images go in the message as Markdown (Pedro sees them in the chat); the agent gets their files too.
   const images = attachmentIds.map((id) => db.getAttachment(id)).filter((a) => !!a).map(messageImageMarkdown);
   const shown = [said, images.join("\n")].filter(Boolean).join("\n\n");
-  log(card, "user", shown);
+  const head = branchHead(card);
+  const m = db.addMessage(card.id, "user", shown);
+  emitMessage(card.project_id, head ? db.setMessageHead(m.id, head) : m);
   const text = withMessageImages(card, projectOf(card).repo_path, shown);
 
   if (runningElsewhere(card)) {
@@ -545,6 +547,97 @@ export function sendMessage(cardId: string, said: string, attachmentIds: number[
       // backlog / plan / merged: it's just a comment.
       return;
   }
+}
+
+/** Where the card's branch is right now, if its worktree is on this computer (Doing / To Review only). */
+function branchHead(card: Card): { sha: string; ahead: number; column: Column } | null {
+  if (card.column !== "doing" && card.column !== "review") return null;
+  if (!card.worktree || !existsSync(card.worktree) || (card.machine && card.machine !== MACHINE)) return null;
+  const project = db.getProject(card.project_id);
+  if (!project?.repo_path) return null;
+  const sha = git.shaOf(card.worktree, "HEAD");
+  return sha ? { sha, ahead: git.commitsAhead(card.worktree, project.base_branch), column: card.column } : null;
+}
+
+/** The commit ↶ on this message goes back to, checking it can be done from here. */
+function rewindTarget(cardId: string, messageId: number) {
+  const card = db.getCard(cardId);
+  if (!card) throw new Error("Tarjeta no encontrada");
+  const msg = db.getMessage(messageId);
+  if (!msg || msg.card_id !== cardId || msg.role !== "user" || !msg.head_sha) throw new Error("Ese mensaje no tiene un punto al que volver.");
+  if (msg.undone) throw new Error("Ese mensaje ya está deshecho.");
+  if (card.column === "merged") throw new Error("La tarjeta ya está mergeada.");
+  if (runningElsewhere(card)) throw new Error(`Un agente está trabajando en esta tarjeta en ${card.machine}. Páralo primero.`);
+  if (!card.worktree || !existsSync(card.worktree) || (card.machine && card.machine !== MACHINE)) {
+    throw new Error(`La rama de esta tarjeta no está en este ordenador${card.machine ? ` (la tiene ${card.machine})` : ""}: retrocede desde allí.`);
+  }
+  const project = projectOf(card);
+  const wt = card.worktree;
+  if (git.isAncestor(wt, msg.head_sha)) return { card, msg, target: msg.head_sha };
+  // Rebasing when the agent finished rewrote the commits: count back from HEAD instead.
+  const drop = git.commitsAhead(wt, project.base_branch) - (msg.head_ahead ?? Number.MAX_SAFE_INTEGER);
+  const target = drop >= 0 ? git.shaOf(wt, `HEAD~${drop}`) : null;
+  if (!target) throw new Error("La rama ha cambiado demasiado desde ese mensaje: no sé a qué commit volver.");
+  return { card, msg, target };
+}
+
+/** What ↶ would throw away: commit subjects (newest first) and whether there are uncommitted edits. */
+export function rewindPreview(cardId: string, messageId: number) {
+  const { card, target } = rewindTarget(cardId, messageId);
+  return { commits: git.commitSubjects(card.worktree!, target), dirty: git.hasChanges(card.worktree!) };
+}
+
+/**
+ * ↶ on one of your requests: the card's branch goes back to where it was when you sent it
+ * (later commits and uncommitted edits are dropped, also on the remote) and the card to the
+ * column it was in, with no agent running. The next message starts a fresh agent session.
+ */
+export async function rewindTo(cardId: string, messageId: number) {
+  let { card } = rewindTarget(cardId, messageId);
+  if (isRunning(card.id)) {
+    db.clearPendingInput(card.id);
+    stopAgent(card.id);
+    await waitUntilStopped(card.id);
+  }
+  // Stopping commits its work in progress: work out the target again.
+  const r = rewindTarget(cardId, messageId);
+  const { msg, target } = r;
+  card = r.card;
+  const wt = card.worktree!;
+  const lost = git.commitSubjects(wt, target);
+  const kept = new Set(git.commitSubjects(wt, projectOf(card).base_branch, target));
+  const dirty = git.hasChanges(wt);
+  git.resetHard(wt, target);
+  db.clearPendingInput(card.id);
+  rebaseAttempts.delete(card.id);
+  if (card.branch) await remote.pushCardBranch(wt, card.branch);
+
+  // Checkpoints whose commit is gone (and not also kept from earlier) are pending again.
+  const subjects = new Set(lost.filter((s) => !kept.has(s)));
+  const undone = db.listCheckpoints(card.id).filter((c) => c.done && subjects.has(c.text.split("\n")[0].trim()));
+  for (const c of undone) db.updateCheckpoint(c.id, { done: false });
+  if (undone.length) emitCheckpoints(card.project_id, card.id);
+
+  for (const m of db.markUndoneFrom(card.id, msg)) emitMessage(card.project_id, m);
+
+  const to = msg.column_before && msg.column_before !== card.column ? msg.column_before : null;
+  if (to) {
+    const moved = db.placeCard(card.id, to, Number.MAX_SAFE_INTEGER);
+    emitColumn(moved.project_id, to);
+    emitColumn(moved.project_id, card.column);
+    logMove(moved, card.column, to, "has retrocedido");
+    if (card.column === "doing") claims.sweep(card.project_id);
+  }
+  const what = [
+    lost.length ? `${lost.length} commit(s) eliminados` : "sin commits que quitar",
+    dirty ? "cambios sin commitear descartados" : "",
+    undone.length ? `${undone.length} checkpoint(s) desmarcados` : "",
+  ].filter(Boolean).join(", ");
+  const quote = msg.content.replace(/\s+/g, " ").slice(0, 60);
+  log(card, "system", `↶ Retrocedido a antes de «${quote}${msg.content.length > 60 ? "…" : ""}» (\`${target.slice(0, 7)}\`): ${what}.`);
+  set(card.id, { status: "idle", status_text: `↶ Retrocedido (${lost.length} commit(s) menos)`, session_id: null });
+  followPreview(db.getCard(card.id)!);
+  return { commits: lost.length };
 }
 
 export function answerQuestions(cardId: string, answers: Record<string, string>) {

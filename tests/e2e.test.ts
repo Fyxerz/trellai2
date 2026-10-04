@@ -145,6 +145,38 @@ describe("board flow", () => {
     expect(msgs.some((m) => m.role === "user" && m.content === "Cambia el título")).toBe(true);
   });
 
+  it("↶ rewinds the branch to before a requested change", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Retroceso", spec: "x", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    const first = await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    const before = sh("git rev-parse HEAD", first.worktree!);
+
+    await api(`/api/cards/${c.id}/message`, { text: "Añade un botón" });
+    await waitFor(c.id, (x) => x.column === "doing");
+    const after = await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    expect(sh("git rev-parse HEAD", after.worktree!)).not.toBe(before);
+    expect(existsSync(join(after.worktree!, "features", "anade-un-boton.md"))).toBe(true);
+
+    const request = (await api<any[]>(`/api/cards/${c.id}/messages`)).find((m) => m.role === "user" && m.content === "Añade un botón");
+    expect(request).toMatchObject({ head_sha: before, column_before: "review", undone: false });
+    const preview = await api(`/api/cards/${c.id}/messages/${request.id}/rewind`);
+    expect(preview.commits.length).toBeGreaterThan(0);
+
+    writeFileSync(join(after.worktree!, "basura.txt"), "sin commitear\n");
+    const r = await api(`/api/cards/${c.id}/messages/${request.id}/rewind`, {});
+    expect(r.commits).toBe(preview.commits.length);
+
+    const back = await card(c.id);
+    expect(back).toMatchObject({ column: "review", status: "idle", session_id: null });
+    expect(sh("git rev-parse HEAD", back.worktree!)).toBe(before);
+    expect(sh("git status --porcelain", back.worktree!)).toBe("");
+    expect(existsSync(join(back.worktree!, "features", "anade-un-boton.md"))).toBe(false);
+    const msgs = await api<any[]>(`/api/cards/${c.id}/messages`);
+    expect(msgs.find((m) => m.id === request.id).undone).toBe(true);
+    expect(msgs.filter((m) => m.created_at > request.created_at && !m.undone).some((m) => m.content.startsWith("↶ Retrocedido"))).toBe(true);
+    await expect(api(`/api/cards/${c.id}/messages/${request.id}/rewind`, {})).rejects.toThrow(/deshecho/);
+  });
+
   it("assistant turns a message into cards", async () => {
     await api(`/api/projects/${projectId}/assistant`, { text: "Ideas:\n- dividir la cuenta\n- cierre de caja en PDF" });
     const t0 = Date.now();
