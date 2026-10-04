@@ -1,7 +1,7 @@
 import { projectName, useDialogFocus } from "./preferences";
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import { Loader2, RefreshCw, Sparkles, X } from "lucide-react";
+import { Cpu, Image as ImageIcon, Loader2, RefreshCw, Sparkles, X } from "lucide-react";
 import { TAG_PALETTE, type BgMode, type BgStatus, type Project } from "../../shared/types";
 import { reportError } from "./notifications";
 import { CODEX_EFFORTS, EFFORT_LABELS, EFFORTS, prettyModel, splitEffort, withEffort, type Effort } from "../../shared/models";
@@ -235,21 +235,89 @@ export function ProjectSettings({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const save = async (key: string, value: string | null) => {
-    await api(`/api/projects/${project.id}`, { [key]: value }, "PATCH");
-    onSaved();
+  const { codex } = useEngines();
+  const [tab, setTab] = useState<SettingsTab>(() => {
+    try {
+      const t = localStorage.getItem(SETTINGS_TAB);
+      if (SETTINGS_TABS.some((x) => x.id === t)) return t as SettingsTab;
+    } catch {
+      /* optional storage */
+    }
+    return "models";
+  });
+  const pick = (t: SettingsTab) => {
+    setTab(t);
+    try {
+      localStorage.setItem(SETTINGS_TAB, t);
+    } catch {
+      /* optional storage */
+    }
   };
   const dialogRef = useDialogFocus();
   return (
     <div data-modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]" onClick={onClose}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Ajustes del proyecto" onClick={(e) => e.stopPropagation()} className="max-h-[90vh] w-full max-w-lg space-y-4 overflow-y-auto rounded-2xl bg-zinc-900 p-5 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]">
-        <div className="flex items-center">
-          <div>
-            <h2 className="text-base font-semibold text-zinc-100">Ajustes · {projectName(project.name)}</h2>
-            <p className="text-xs text-zinc-500">Por defecto para este proyecto. Cada tarjeta puede elegir el suyo.</p>
-          </div>
-          <button onClick={onClose} className="ml-auto text-zinc-500 hover:text-zinc-200">✕</button>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Ajustes del proyecto" onClick={(e) => e.stopPropagation()} className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-zinc-900 ring-1 ring-ui-ink/[0.08] shadow-[var(--shadow-pop)]">
+        <div className="flex items-center border-b border-ui-ink/[0.08] px-5 py-3.5">
+          <h2 className="text-base font-semibold text-zinc-100">Ajustes · {projectName(project.name)}</h2>
+          <button onClick={onClose} aria-label="Cerrar" className="ml-auto text-zinc-500 hover:text-zinc-200">✕</button>
         </div>
+        <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
+          <nav role="tablist" aria-label="Secciones de ajustes" aria-orientation="vertical" className="flex shrink-0 gap-1 border-ui-ink/[0.08] p-2 max-sm:border-b sm:w-48 sm:flex-col sm:border-r">
+            {SETTINGS_TABS.map((t) => (
+              <button
+                key={t.id}
+                role="tab"
+                id={`settings-tab-${t.id}`}
+                aria-selected={tab === t.id}
+                aria-controls={`settings-panel-${t.id}`}
+                onClick={() => pick(t.id)}
+                onKeyDown={(e) => {
+                  if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
+                  e.preventDefault();
+                  const i = SETTINGS_TABS.findIndex((x) => x.id === tab);
+                  const next = SETTINGS_TABS[(i + (e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : SETTINGS_TABS.length - 1)) % SETTINGS_TABS.length];
+                  pick(next.id);
+                  document.getElementById(`settings-tab-${next.id}`)?.focus();
+                }}
+                tabIndex={tab === t.id ? 0 : -1}
+                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${tab === t.id ? "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5 hover:text-zinc-200"}`}
+              >
+                <t.icon className="h-4 w-4 shrink-0" />
+                {t.label}
+              </button>
+            ))}
+          </nav>
+          <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`} className="min-w-0 flex-1 overflow-y-auto p-5">
+            {tab === "models" ? (
+              <ModelSettings project={project} onSaved={onSaved} />
+            ) : (
+              <BackgroundSettings project={project} codexInstalled={codex?.installed ?? null} onSaved={onSaved} />
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type SettingsTab = "models" | "background";
+const SETTINGS_TAB = "trellai:settings-tab";
+const SETTINGS_TABS: { id: SettingsTab; label: string; icon: typeof Cpu }[] = [
+  { id: "models", label: "Modelos", icon: Cpu },
+  { id: "background", label: "Fondo del tablero", icon: ImageIcon },
+];
+
+function ModelSettings({ project, onSaved }: { project: Project; onSaved: () => void }) {
+  const save = async (key: string, value: string | null) => {
+    await api(`/api/projects/${project.id}`, { [key]: value }, "PATCH");
+    onSaved();
+  };
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold text-zinc-100">Modelos</h3>
+        <p className="text-[11px] text-zinc-500">Por defecto para este proyecto. Cada tarjeta puede elegir el suyo.</p>
+      </div>
         <div className="space-y-3">
           {ROLES.map((r) => (
             <div key={r.key} className="flex items-center gap-3">
@@ -267,8 +335,6 @@ export function ProjectSettings({
           ))}
         </div>
         <EngineStatus />
-        <BackgroundSettings project={project} codexInstalled={null} onSaved={onSaved} />
-      </div>
     </div>
   );
 }
@@ -373,9 +439,21 @@ const BG_MODES: { value: BgMode; label: string }[] = [
 /** "Fondo del tablero": none, a color, or an image Codex draws from what the repo is about. */
 function BackgroundSettings({ project, codexInstalled, onSaved }: { project: Project; codexInstalled: boolean | null; onSaved: () => void }) {
   const [status, setStatus] = useState<BgStatus>({ running: false, error: null, activity: null });
+  // Shown at once; the server's answer (and the projects reload) confirms it.
+  const [local, setLocal] = useState<{ bg_mode: BgMode; bg_color: string | null }>({ bg_mode: project.bg_mode ?? "none", bg_color: project.bg_color ?? null });
+  useEffect(() => setLocal({ bg_mode: project.bg_mode ?? "none", bg_color: project.bg_color ?? null }), [project.bg_mode, project.bg_color]);
+  /** The running server predates this feature (Trellai restarts by itself once no agent is working). */
+  const [outdated, setOutdated] = useState(false);
   const url = `/api/projects/${project.id}/background`;
-  const save = (patch: Partial<Pick<Project, "bg_mode" | "bg_color">>) =>
-    api(`/api/projects/${project.id}`, patch, "PATCH").then(onSaved).catch((e) => reportError(e.message));
+  const save = (patch: Partial<Pick<Project, "bg_mode" | "bg_color">>) => {
+    setLocal((l) => ({ ...l, ...patch }));
+    api<Project>(`/api/projects/${project.id}`, patch, "PATCH")
+      .then((p) => {
+        if (p.bg_mode === undefined) setOutdated(true);
+        onSaved();
+      })
+      .catch((e) => reportError(e.message));
+  };
 
   // Generation runs on the server; follow it while it lasts.
   useEffect(() => {
@@ -391,7 +469,11 @@ function BackgroundSettings({ project, codexInstalled, onSaved }: { project: Pro
           setStatus(s);
           t = setTimeout(poll, s.running ? 1500 : 4000);
         })
-        .catch(() => !stop && (t = setTimeout(poll, 4000)));
+        .catch((e) => {
+          if (stop) return;
+          if (/Respuesta inesperada/.test((e as Error).message)) setOutdated(true);
+          t = setTimeout(poll, 4000);
+        });
     poll();
     return () => {
       stop = true;
@@ -406,32 +488,38 @@ function BackgroundSettings({ project, codexInstalled, onSaved }: { project: Pro
       .catch((e) => setStatus({ running: false, error: (e as Error).message, activity: null }));
   };
   const cancel = () => api<BgStatus>(`${url}/stop`, {}).then(setStatus).catch(() => {});
-  const color = project.bg_color ?? "#2563eb";
+  const color = local.bg_color ?? "#2563eb";
   const btn = "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-zinc-300 ring-1 ring-ui-ink/10 transition hover:bg-ui-ink/5 disabled:opacity-50";
 
   return (
-    <section className="space-y-3 border-t border-ui-ink/[0.08] pt-4" aria-label="Fondo del tablero">
+    <section className="space-y-3" aria-label="Fondo del tablero">
       <div>
         <h3 className="text-sm font-semibold text-zinc-100">Fondo del tablero</h3>
         <p className="text-[11px] text-zinc-500">Para distinguir los proyectos de un vistazo.</p>
       </div>
+      {outdated && (
+        <p role="alert" className="rounded-lg bg-amber-400/10 p-3 text-xs text-amber-300 ring-1 ring-amber-400/30">
+          El servidor de Trellai que está corriendo aún no tiene esta función, así que no se guarda. Se reinicia solo cuando ningún agente está trabajando
+          (o reinícialo desde Maitre); después vuelve a elegir el fondo.
+        </p>
+      )}
       <div role="radiogroup" aria-label="Tipo de fondo" className="flex gap-1">
         {BG_MODES.map((m) => (
           <button
             key={m.value}
             role="radio"
-            aria-checked={project.bg_mode === m.value}
+            aria-checked={local.bg_mode === m.value}
             onClick={() =>
-              project.bg_mode !== m.value && save(m.value === "color" && !project.bg_color ? { bg_mode: m.value, bg_color: color } : { bg_mode: m.value })
+              local.bg_mode !== m.value && save(m.value === "color" && !local.bg_color ? { bg_mode: m.value, bg_color: color } : { bg_mode: m.value })
             }
-            className={`rounded-lg px-3 py-1.5 text-sm transition ${project.bg_mode === m.value ? "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}
+            className={`rounded-lg px-3 py-1.5 text-sm transition ${local.bg_mode === m.value ? "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}
           >
             {m.label}
           </button>
         ))}
       </div>
 
-      {project.bg_mode === "color" && (
+      {local.bg_mode === "color" && (
         <div className="flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label="Color de fondo">
           {TAG_PALETTE.map((c) => (
             <button
@@ -451,7 +539,7 @@ function BackgroundSettings({ project, codexInstalled, onSaved }: { project: Pro
         </div>
       )}
 
-      {project.bg_mode === "image" && (
+      {local.bg_mode === "image" && (
         <div className="space-y-2">
           <div className="flex items-start gap-3">
             <div className="aspect-video w-40 shrink-0 overflow-hidden rounded-lg bg-zinc-950 ring-1 ring-zinc-800">
