@@ -3,7 +3,8 @@ import { reportError } from "./notifications";
 import { DragDropContext, Draggable, Droppable, type DropResult } from "@hello-pangea/dnd";
 import { MachineChip } from "./SyncUI";
 import { useSync } from "./api";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from "react";
+import { createPortal } from "react-dom";
 import { COLUMNS, COLUMN_LABELS, type Card, type Column, type Project, type Tag } from "../../shared/types";
 import { api, type Board as BoardState } from "./api";
 import { ArrowRight, Eye, EyeOff, GitBranch, GitMerge, ListChecks, Play, Plus, Trash2 } from "lucide-react";
@@ -216,7 +217,7 @@ export function Board({
                   >
                     {cards.map((card, i) => (
                       <Draggable key={card.id} draggableId={card.id} index={i}>
-                        {(dp, ds) => (
+                        {(dp, ds) => inBody(ds.isDragging, (
                           <div ref={dp.innerRef} {...dp.draggableProps} {...dp.dragHandleProps} data-card className="board-card cursor-pointer" onKeyDown={e => { if (e.target === e.currentTarget && e.key === "Enter") { e.preventDefault(); e.stopPropagation(); onCursor(col, card.id); onOpen(card.id); } }}>
                             <CardItem
                               card={card}
@@ -237,7 +238,7 @@ export function Board({
                               }}
                             />
                           </div>
-                        )}
+                        ))}
                       </Draggable>
                     ))}
                     {p.placeholder}
@@ -272,6 +273,15 @@ const EMPTY: Record<Column, string> = {
   review: "Nada pendiente de revisar",
   merged: "Aún no hay nada mergeado",
 };
+
+/**
+ * The dragged card is `position: fixed`, but the columns' `backdrop-filter` (board with a background image)
+ * makes them its containing block, so it was drawn off by the column's offset — away from the pointer or
+ * out of sight. While dragging, render it on <body>.
+ */
+function inBody(dragging: boolean, el: ReactElement) {
+  return dragging ? createPortal(el, document.body) : el;
+}
 
 /**
  * Scroll just the card's column and the board so the card shows. Not `scrollIntoView`: that also scrolls
