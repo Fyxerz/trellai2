@@ -2,7 +2,7 @@ import { Notifications, reportError } from "./notifications";
 import { useMessageDraft, useChatScroll } from "./chat";
 import { projectName, MOD, Appearance, useDialogFocus } from "./preferences";
 import { useEffect, useRef, useState } from "react";
-import { COLUMNS, type Column, type Project } from "../../shared/types";
+import { COLUMNS, describeClaim, type Column, type Project } from "../../shared/types";
 import { api, useBoard, useProjects, type Board as BoardState } from "./api";
 import { AssistantPanel, type AssistantMode } from "./Assistant";
 import { Board, CAN_ADD, columnCards, moveCard } from "./Board";
@@ -12,6 +12,7 @@ import { Help } from "./Help";
 import { ConfirmHost, confirmDeleteCard, togglePreview } from "./Confirm";
 import { Home } from "./Home";
 import {
+  Archive,
   ChevronRight,
   Eye,
   Keyboard,
@@ -74,6 +75,7 @@ export default function App() {
   const [view, setView] = useState<"home" | "board">(() => (store.get(VIEW) === "home" ? "home" : "board"));
   const [homeCursor, setHomeCursor] = useState(0);
   const board = useBoard(projectId);
+  const liveNotes = board.notes.filter((n) => !n.archived).length;
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const visibleBoard = { ...board, cards: Object.fromEntries(Object.entries(board.cards).filter(([, c]) =>
@@ -444,7 +446,7 @@ export default function App() {
               <HeaderButton
                 active={showNotes && !card}
                 icon={<Radio className="h-3.5 w-3.5" />}
-                label={`Canal${board.notes.length ? ` · ${board.notes.length}` : ""}`}
+                label={`Canal${liveNotes ? ` · ${liveNotes}` : ""}`}
                 kbd="a"
                 onClick={() => {
                   setShowAssistant(false);
@@ -462,8 +464,15 @@ export default function App() {
             <Keyboard className="h-4 w-4" />
           </IconButton>
           <span
-            className={`ml-1 h-1.5 w-1.5 rounded-full ${board.connected || view === "home" ? "bg-emerald-400" : "bg-red-500"}`}
-            title={board.connected ? "Conectado" : "Desconectado"}
+            className={`ml-1 h-1.5 w-1.5 rounded-full ${board.connected || view === "home" ? (board.build?.restartPending ? "bg-amber-400" : "bg-emerald-400") : "bg-red-500"}`}
+            title={
+              !board.connected ? "Desconectado"
+              : board.build?.restartPending
+                ? board.build.autoRestart
+                  ? "Código nuevo del servidor: Maitre reinicia Trellai en cuanto no haya agentes trabajando"
+                  : "Código nuevo del servidor: reinicia Trellai para cargarlo"
+              : "Conectado"
+            }
           />
         </div>
       </header>
@@ -550,7 +559,12 @@ export default function App() {
 
 function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; board: BoardState; onOpen: (id: string) => void; onClose: () => void }) {
   const { text, setText, current } = useMessageDraft(`notes-draft:${projectId}`);
-  const scroll = useChatScroll(board.notes.length);
+  const live = board.notes.filter((n) => !n.archived);
+  const old = board.notes.filter((n) => n.archived);
+  const [history, setHistory] = useState(false);
+  const scroll = useChatScroll(live.length);
+  const working = Object.values(board.cards).filter((c) => c.column === "doing").sort((a, b) => a.position - b.position);
+  const archive = (id: number) => api(`/api/notes/${id}/archive`, {}).catch((e) => reportError((e as Error).message));
   const busy = useRef(false);
   const [sending, setSending] = useState(false);
   const send = async () => {
@@ -565,13 +579,42 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
     <aside className="work-panel flex h-full w-[360px] shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel shadow-[-24px_0_48px_-24px_rgb(0_0_0/0.6)]">
       <div className="border-b border-zinc-800 px-4 py-3">
         <div className="flex items-center justify-between"><h2 className="text-sm font-semibold text-zinc-100">Canal de agentes</h2><button aria-label="Cerrar canal" onClick={onClose} className="rounded-lg p-2 text-zinc-400 hover:bg-ui-ink/5"><X className="h-4 w-4" /></button></div>
-        <p className="text-xs text-zinc-500">Lo que se cuentan entre ellos mientras trabajan en paralelo.</p>
+        <p className="text-xs text-zinc-500">Qué toca cada agente ahora y lo que se cuentan. Cada uno solo recibe lo que afecta a sus ficheros; al salir de Doing se borra lo suyo.</p>
       </div>
+      {working.length > 0 && (
+        <section aria-label="En uso ahora" className="max-h-56 overflow-y-auto border-b border-zinc-800 px-4 py-3">
+          <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">En uso ahora</h3>
+          <ul className="space-y-2">
+            {working.map((c) => (
+              <li key={c.id} className="text-sm">
+                <button onClick={() => onOpen(c.id)} className="font-medium text-zinc-300 hover:underline">{c.title}</button>
+                {(c.claims ?? []).length ? (
+                  <ul className="mt-0.5 space-y-0.5">
+                    {c.claims.map((cl) => (
+                      <li key={cl.file} className="text-xs text-zinc-500">
+                        <span className="font-mono text-zinc-400">{cl.file}</span> · {describeClaim(cl)}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-zinc-500">Sin ficheros todavía.</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
-        {board.notes.length === 0 && <p className="text-sm text-zinc-500">Todavía nada.</p>}
-        {board.notes.map((n) => (
-          <div key={n.id} className="text-sm">
-            <div className="mb-0.5 flex items-center gap-2 text-[11px] text-zinc-500">
+        {old.length > 0 && (
+          <button onClick={() => setHistory(!history)} aria-expanded={history} className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300">
+            <ChevronRight className={`h-3 w-3 transition ${history ? "rotate-90" : ""}`} />
+            Historial · {old.length}
+          </button>
+        )}
+        {live.length === 0 && !history && <p className="text-sm text-zinc-500">Nada pendiente.</p>}
+        {[...(history ? old : []), ...live].map((n) => (
+          <div key={n.id} className={`group text-sm ${n.archived ? "opacity-50" : ""}`}>
+            <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-zinc-500">
               {n.card_id ? (
                 <button onClick={() => onOpen(n.card_id!)} className="font-medium text-zinc-300 hover:underline">
                   {n.card_title}
@@ -580,8 +623,20 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
                 <span className="font-medium text-zinc-400">Trellai</span>
               )}
               <span>{timeAgo(n.created_at)}</span>
+              {n.targets.length > 0 && <span>para {n.targets.map((t) => board.cards[t]?.title ?? "una tarjeta").join(" y ")}</span>}
+              {!n.archived && (
+                <button
+                  title="Archivar: los agentes dejan de verla"
+                  aria-label="Archivar nota"
+                  onClick={() => archive(n.id)}
+                  className="ml-auto rounded p-0.5 text-zinc-500 opacity-0 hover:text-zinc-300 focus:opacity-100 group-hover:opacity-100"
+                >
+                  <Archive className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
-            <div className="text-zinc-300">{n.content}</div>
+            {n.files.length > 0 && <div className="mb-0.5 font-mono text-[11px] text-zinc-500">{n.files.join(", ")}</div>}
+            <div className="whitespace-pre-wrap text-zinc-300">{n.content}</div>
           </div>
         ))}
         <div ref={scroll.end} />

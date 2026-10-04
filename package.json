@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently -k -n server,web -c blue,green \"tsx watch server/index.ts\" \"vite\"",
     "build": "vite build",
-    "start": "vite build && NODE_ENV=production tsx server/index.ts",
+    "start": "vite build && tsx server/index.ts --production",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

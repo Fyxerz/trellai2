@@ -7,9 +7,10 @@
  *                      or auto-moves)  parallel)
  */
 import { existsSync } from "node:fs";
-import { COLUMN_LABELS, type Card, type Column, type Project } from "../shared/types.js";
+import { COLUMN_LABELS, describeClaim, type Card, type Column, type Project } from "../shared/types.js";
+import * as claims from "./claims.js";
 import * as db from "./db.js";
-import { emitCard, emitMessage, emitNote } from "./events.js";
+import { emitCard, emitMessage } from "./events.js";
 import * as git from "./git.js";
 import { isRunning, runAgent, stopAgent, type AgentKind, type RunResult } from "./agents.js";
 import { assistantRunning } from "./assistant.js";
@@ -84,6 +85,7 @@ export function moveCard(cardId: string, column: Column, index = Number.MAX_SAFE
   emitColumn(card.project_id, column);
   if (before.column !== column) {
     logMove(card, before.column, column, why);
+    if (before.column === "doing") claims.sweep(card.project_id);
     emitColumn(card.project_id, before.column);
     bg(onEnter(card, before.column), card);
   }
@@ -165,6 +167,7 @@ async function launch(card: Card, kind: AgentKind, prompt: string, resume: strin
 
   const now = db.getCard(card.id);
   if (!now) return; // deleted meanwhile
+  if (kind === "dev") claims.refreshClaims(now); // lines as the agent left them
   if (res.sessionId) set(card.id, kind === "prep" ? { prep_session_id: res.sessionId } : { session_id: res.sessionId });
   if (res.aborted) {
     // Leave the work where another computer can pick it up.
@@ -244,40 +247,6 @@ async function afterPrep(card: Card, res: RunResult): Promise<void> {
   set(card.id, { status: "waiting", status_text: "Te ha respondido — contesta en el chat" });
 }
 
-function otherAgentsContext(card: Card): string {
-  const others = db.cardsInColumn(card.project_id, "doing").filter((c) => c.id !== card.id);
-  if (!others.length) return "None — you're the only agent right now.";
-  return others
-    .map((c) => `- "${c.title}" (branch ${c.branch ?? "?"}; expected files: ${c.files.join(", ") || "unknown"})`)
-    .join("\n");
-}
-
-/** Warn both agents (via the shared channel) when their predicted/actual files overlap. */
-function announceOverlaps(card: Card) {
-  const project = projectOf(card);
-  const mine = new Set(card.files);
-  for (const other of db.cardsInColumn(card.project_id, "doing")) {
-    if (other.id === card.id) continue;
-    let theirs = other.files;
-    if (other.worktree) {
-      try {
-        theirs = [...new Set([...theirs, ...git.changedFiles(other.worktree, project.base_branch)])];
-      } catch {
-        /* ignore */
-      }
-    }
-    const overlap = theirs.filter((f) => mine.has(f));
-    if (overlap.length) {
-      const note = db.addNote(
-        card.project_id,
-        null,
-        `⚠️ "${card.title}" y "${other.title}" pueden tocar los mismos ficheros: ${overlap.join(", ")}. Coordinaos con post_note.`,
-      );
-      emitNote(note);
-    }
-  }
-}
-
 /**
  * The card's worktree on THIS computer: created from an up-to-date base branch, or — if the
  * card already has a branch from another computer — checked out from the remote.
@@ -309,7 +278,7 @@ async function ensureWorktree(card: Card): Promise<Card> {
 
 async function startDev(card: Card, message?: string): Promise<void> {
   card = await ensureWorktree(card);
-  announceOverlaps(card);
+  card = claims.startClaims(card);
 
   if (message && card.session_id) return launch(card, "dev", message, card.session_id);
   const prompt = [devBrief(card), message ? `## Note\n\n${message}` : ""].filter(Boolean).join("\n\n");
@@ -324,7 +293,8 @@ function devBrief(card: Card): string {
     checkpointsBlock(card, true),
     card.plan ? `## Notes from preparation\n\n${card.plan}` : "",
     answered.length ? `## Pedro's answers\n\n${answered.map((q) => `- ${q.question} → ${q.answer}`).join("\n")}` : "",
-    `## Other agents working in parallel right now\n\n${otherAgentsContext(card)}`,
+    `## What the other agents working in parallel are touching right now\n\n${claims.othersWork(card)}`,
+    card.claims.length ? `## Files claimed for you so far\n\n${card.claims.map((c) => `- ${c.file}: ${describeClaim(c)}`).join("\n")}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -625,6 +595,7 @@ export async function removeCard(cardId: string) {
     git.removeWorktree(project.repo_path, card.worktree, card.branch);
     if (card.branch) remote.deleteRemoteBranch(project.repo_path, card.branch);
   }
+  claims.sweep(card.project_id, card.id); // before its notes lose their author
   db.deleteCard(card.id);
 }
 
@@ -664,6 +635,7 @@ onSync({
         }
       }
     }
+    if (before?.column === "doing" && after?.column !== "doing") claims.sweep(before.project_id);
     if (!after) return;
     // Another computer pressed "Parar" on our agent.
     if (after.stop_req === MACHINE) {

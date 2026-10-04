@@ -54,13 +54,18 @@ export async function runFakeAgent(o: FakeOpts): Promise<string> {
     o.log("tool", "Bash · git rebase");
     rebaseResolvingConflicts(o.cwd, o.prompt.match(/onto "([^"]+)"/)?.[1] ?? "main");
   } else {
+    const shared = o.card.spec.includes("shared");
+    o.log("system", o.kit.claimFiles([
+      { file: `features/${slug}.md`, area: "documento", purpose: o.card.title },
+      ...(shared ? [{ file: "SHARED.md", area: "lista", purpose: `añadir "${o.card.title}"` }] : []),
+    ]));
     mkdirSync(join(o.cwd, "features"), { recursive: true });
     writeFileSync(join(o.cwd, "features", `${slug}.md`), `# ${o.card.title}\n\n${o.card.spec}\n`);
     o.log("tool", `Write · features/${slug}.md`);
-    if (o.card.spec.includes("shared")) {
+    if (shared) {
       appendFileSync(join(o.cwd, "SHARED.md"), `- ${o.card.title}\n`);
       o.log("tool", "Edit · SHARED.md");
-      o.kit.postNote(`He tocado SHARED.md (${o.card.title})`);
+      o.kit.postNote(`He tocado SHARED.md (${o.card.title})`, ["SHARED.md"]);
     }
   }
   await delay(600, o.signal);
