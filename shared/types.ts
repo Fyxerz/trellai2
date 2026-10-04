@@ -87,6 +87,8 @@ export interface Card {
   tags: string[];
   checkpoints_total: number;
   checkpoints_done: number;
+  /** when it entered Merged (null outside Merged) */
+  merged_at: string | null;
   created_at: string;
   updated_at: string;
 }
