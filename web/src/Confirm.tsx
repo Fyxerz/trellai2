@@ -5,7 +5,7 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 /**
  * In-app confirmation dialog.
  *   if (await confirmDialog({ title: "¿Eliminar?", body: "…", danger: true })) …
- * Enter activates the focused button; destructive dialogs start on Cancelar.
+ * Enter activates the focused button, which starts on the confirm button (Tab to Cancelar).
  */
 interface Request {
   title: string;
@@ -51,7 +51,7 @@ export function ConfirmHost() {
   useEffect(() => {
     if (!req) return;
     const previous = document.activeElement as HTMLElement | null;
-    (req.danger && !req.notice ? cancelRef : okRef).current?.focus();
+    okRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -104,6 +104,8 @@ export function ConfirmHost() {
             ref={okRef}
             onClick={() => close(true)}
             variant={req.danger ? "danger" : "primary"}
+            // a mouse-opened dialog gets no :focus-visible, so mark the default button explicitly
+            className={req.danger ? "focus:bg-red-500/10 focus:ring-red-400/60" : ""}
           >
             {req.confirmLabel ?? "Confirmar"} <span className="font-mono text-[10px] opacity-70">↵</span>
           </Button>
