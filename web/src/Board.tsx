@@ -318,31 +318,27 @@ function CardItem({
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
-      {tags.length > 0 && (
-        <div className="mb-1.5 flex flex-wrap gap-1">
+      {(tags.length > 0 || previewing || (modelChip && !merged)) && (
+        <div className="mb-1.5 flex flex-wrap items-center gap-1">
           {tags.map((t) => (
             <TagChip key={t.id} tag={t} />
           ))}
+          {previewing && (
+            <span className="flex shrink-0 items-center gap-1 rounded-md bg-teal-400/12 px-1.5 text-[10px] leading-[16px] font-semibold text-teal-200" title="Esta rama está puesta en tu repo">
+              <Eye className="h-3 w-3" /> en tu repo
+            </span>
+          )}
+          {modelChip && !merged && (
+            <span
+              className={`shrink-0 rounded-md px-1.5 text-[10px] leading-[16px] font-semibold ${modelChip.codex ? "bg-emerald-400/10 text-emerald-300" : "bg-orange-400/10 text-orange-300"}`}
+              title={modelChip.title}
+            >
+              {modelChip.label}
+            </span>
+          )}
         </div>
       )}
-      <div className="flex items-start gap-2">
-        <div className={`min-w-0 flex-1 text-sm leading-snug font-medium ${merged ? "text-zinc-400 line-through decoration-zinc-600" : "text-zinc-100"}`}>
-          {card.title}
-        </div>
-        {previewing && (
-          <span className="mt-0.5 flex shrink-0 items-center gap-1 rounded-md bg-teal-400/12 px-1.5 text-[10px] leading-[16px] font-semibold text-teal-200" title="Esta rama está puesta en tu repo">
-            <Eye className="h-3 w-3" /> en tu repo
-          </span>
-        )}
-        {modelChip && !merged && (
-          <span
-            className={`mt-0.5 shrink-0 rounded-md px-1.5 text-[10px] leading-[16px] font-semibold ${modelChip.codex ? "bg-emerald-400/10 text-emerald-300" : "bg-orange-400/10 text-orange-300"}`}
-            title={modelChip.title}
-          >
-            {modelChip.label}
-          </span>
-        )}
-      </div>
+      <div className={`text-sm leading-snug font-medium ${merged ? "text-zinc-400 line-through decoration-zinc-600" : "text-zinc-100"}`}>{card.title}</div>
       {card.spec && !merged && <div className="mt-1 line-clamp-2 text-sm leading-relaxed text-zinc-500">{specPreview(card.spec)}</div>}
 
       {(card.status !== "idle" || (card.status_text && !merged) || elsewhere) && (
