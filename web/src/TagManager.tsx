@@ -37,7 +37,15 @@ export function TagManager({ projectId, onClose, onChanged }: { projectId: strin
     await load();
     onChanged?.();
   };
-  const patch = (t: Tag, body: Partial<Tag>) => run(api(`${url}/${t.id}`, body, "PATCH"));
+  const patch = (t: Tag, body: Partial<Tag>) =>
+    run(
+      api<Tag | null>(`${url}/${t.id}`, body, "PATCH").then((saved) => {
+        // A server that predates tag models answers without `model`: the UI was updated but the server wasn't restarted yet.
+        if ("model" in body && saved && (saved.model ?? null) !== (body.model ?? null)) {
+          throw new Error("El servidor aún no tiene esta versión y no ha guardado el modelo. Se reinicia solo cuando no haya agentes trabajando; vuelve a probar entonces.");
+        }
+      }),
+    );
   const rename = (t: Tag, value: string) => {
     const v = value.trim();
     if (v && v !== t.name) void patch(t, { name: v });
