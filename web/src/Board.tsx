@@ -6,9 +6,9 @@ import { useSync } from "./api";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { COLUMNS, COLUMN_LABELS, type Card, type Column, type Project, type Tag } from "../../shared/types";
 import { api, type Board as BoardState } from "./api";
-import { ArrowRight, Eye, GitBranch, GitMerge, ListChecks, Play, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, GitBranch, GitMerge, ListChecks, Play, Plus, Trash2 } from "lucide-react";
 import { cardTags, TagChip, useProjectTags } from "./tags";
-import { confirmDeleteCard } from "./Confirm";
+import { confirmDeleteCard, togglePreview } from "./Confirm";
 import { Button, COLUMN_HEX, COLUMN_ICON, StatusBadge } from "./ui";
 import { backgroundUrl, modelLabel, useEngines } from "./models";
 import { prettyModel } from "../../shared/models";
@@ -310,6 +310,23 @@ function CardItem({
     >
       {accent && <span className="absolute inset-y-2 left-0 w-[2px] rounded-full" style={{ background: accent }} />}
       <div className="card-actions absolute top-1.5 right-1.5 z-10 flex items-center gap-1">
+        {card.column === "review" && card.branch && card.status !== "running" && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePreview(card, previewing);
+            }}
+            className={[
+              "flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] leading-none font-medium shadow-sm ring-1 transition",
+              previewing
+                ? "bg-teal-500/15 text-teal-200 ring-teal-400/30 hover:bg-teal-500/25"
+                : "ui-reveal bg-zinc-900/90 text-zinc-300 opacity-0 ring-ui-ink/[0.08] group-hover/card:visible group-hover/card:opacity-100 hover:bg-zinc-800 hover:text-zinc-100",
+            ].join(" ")}
+            title={previewing ? "Devolver tu repo a su rama" : "Poner esta rama en tu repo"}
+          >
+            {previewing ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />} {previewing ? "Dejar de ver" : "Ver rama"}
+          </button>
+        )}
         {next && (
           <button
             onClick={(e) => {
