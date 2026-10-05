@@ -24,6 +24,7 @@ import * as autoshare from "./autoshare.js";
 import { cachedInvite, createInvite, inviteProblem, joinWithCode, removeMember, shareOf, startSync, stopSharing, syncStatus } from "./sync.js";
 import { assistantRunning, sendToAssistant, stopAssistant } from "./assistant.js";
 import { buildInfo, distDir, startSelfUpdate } from "./selfupdate.js";
+import { startAutoPull } from "./autopull.js";
 import { backgroundFile, backgroundStatus, generateBackground, imageMime, stopBackground } from "./background.js";
 
 const app = new Hono();
@@ -1007,6 +1008,7 @@ db.registerMachine(MACHINE);
 startSync();
 autoshare.startAutoShare();
 startSelfUpdate();
+startAutoPull();
 
 const port = Number(process.env.PORT ?? 4317);
 const hostname = process.env.HOST ?? "127.0.0.1";

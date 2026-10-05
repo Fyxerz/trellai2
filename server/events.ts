@@ -74,6 +74,11 @@ export function emitSync(projectId: string) {
   emit(projectId, { type: "sync" });
 }
 
+/** The base branch moved (automatic pull): refresh the header's ahead/behind. */
+export function emitGit(projectId: string) {
+  emit(projectId, { type: "git" });
+}
+
 /** For every open board, whatever the project. */
 export function emitAll(e: ServerEvent) {
   bus.emit(ALL, e);

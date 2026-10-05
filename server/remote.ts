@@ -11,6 +11,8 @@
  * it uses the credentials you already have (ssh keys, credential helper, gh).
  */
 import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import * as git from "./git.js";
 import * as github from "./github.js";
 import { repoLock } from "./lock.js";
@@ -131,11 +133,26 @@ const refExists = async (repo: string, ref: string) => (await run(repo, ["rev-pa
  * Never loses work: if it can't fast-forward or rebase cleanly it leaves things as they are
  * and explains why.
  */
-export function syncBranch(repo: string, branch: string, opts: { maxAgeMs?: number } = {}): Promise<SyncResult> {
+export function syncBranch(repo: string, branch: string, opts: SyncOptions = {}): Promise<SyncResult> {
   return repoLock(repo, () => syncBranchUnlocked(repo, branch, opts));
 }
 
-async function syncBranchUnlocked(repo: string, branch: string, opts: { maxAgeMs?: number }): Promise<SyncResult> {
+interface SyncOptions {
+  maxAgeMs?: number;
+  /** only fast-forward (never rebase local commits) and skip repos in the middle of a merge/rebase: the automatic pull */
+  ffOnly?: boolean;
+}
+
+/** A merge, rebase, cherry-pick… stopped halfway in the main checkout. */
+async function midOperation(repo: string) {
+  for (const p of ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"]) {
+    const r = await run(repo, ["rev-parse", "--git-path", p]);
+    if (r.ok && existsSync(resolve(repo, r.out))) return true;
+  }
+  return false;
+}
+
+async function syncBranchUnlocked(repo: string, branch: string, opts: SyncOptions): Promise<SyncResult> {
   const f = await fetchRemote(repo, opts.maxAgeMs);
   if (!f.remote) return { remote: false, ok: true, pulled: 0, ahead: 0, behind: 0 };
   if (!f.ok) return { remote: true, ok: false, offline: true, pulled: 0, ahead: 0, behind: 0, message: f.message };
@@ -148,6 +165,7 @@ async function syncBranchUnlocked(repo: string, branch: string, opts: { maxAgeMs
   const c = await counts(repo, branch, remote);
   if (!c) return { remote: true, ok: true, pulled: 0, ahead: 0, behind: 0 };
   if (c.behind === 0) return { remote: true, ok: true, pulled: 0, ahead: c.ahead, behind: 0 };
+  if (opts.ffOnly && (c.ahead > 0 || (await midOperation(repo)))) return { remote: true, ok: false, pulled: 0, ...c };
 
   const checkedOut = git.currentBranch(repo) === branch;
   if (checkedOut) {
