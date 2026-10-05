@@ -1,7 +1,7 @@
 /**
  * Images on a card: validation, and the "Imágenes" block the agents get in their prompt.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -113,5 +113,34 @@ describe("images in a chat message", () => {
     expect(text).toContain("1. x 0%, y 0%, 100% × 50% — arriba");
     expect(text).not.toContain(old.name);
     expect(att.withMessageImages(card, repo, "Sin imágenes")).toBe("Sin imágenes");
+  });
+});
+
+describe("images for Codex", () => {
+  it("lists the files the prompt mentions and drops the Read instructions", () => {
+    const card = db.createCard({ project_id: projectId, title: "Con GPT" });
+    db.addAttachment(card.id, { name: "a.png", mime: "image/png", data: PNG, annotated: PNG });
+    const block = att.attachmentsBlock(card, repo);
+    const folder = att.attachmentsDir(repo, card.id);
+
+    const { prompt, images } = att.forCodex(`# Card\n\n${block}`, repo, card.id);
+    expect(images.sort()).toEqual([join(folder, "1-a.anotada.png"), join(folder, "1-a.png")]);
+    expect(prompt).not.toContain("Read tool");
+    expect(prompt).toContain("attached to this message");
+    expect(prompt).toContain(join(folder, "1-a.png"));
+
+    expect(att.forCodex("Sin imágenes", repo, card.id)).toEqual({ prompt: "Sin imágenes", images: [] });
+  });
+
+  it("doesn't rewrite unchanged files (another agent may be reading them)", () => {
+    const card = db.createCard({ project_id: projectId, title: "Dos agentes" });
+    db.addAttachment(card.id, { name: "a.png", mime: "image/png", data: PNG });
+    att.attachmentsBlock(card, repo);
+    const file = join(att.attachmentsDir(repo, card.id), "1-a.png");
+    const before = statSync(file).mtimeMs;
+    const t = Date.now();
+    while (Date.now() - t < 20);
+    att.attachmentsBlock(card, repo);
+    expect(statSync(file).mtimeMs).toBe(before);
   });
 });

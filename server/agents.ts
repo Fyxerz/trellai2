@@ -8,7 +8,8 @@ import { runFakeAgent } from "./fake-agent.js";
 import { commitAll } from "./git.js";
 import { followPreview } from "./preview.js";
 import { pushCardBranch } from "./remote.js";
-import { runEngine, type ToolSpec } from "./engine.js";
+import { forCodex } from "./attachments.js";
+import { parseModel, runEngine, type ToolSpec } from "./engine.js";
 
 export type AgentKind = "prep" | "dev";
 
@@ -443,12 +444,16 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       return { ok: true, aborted: abort.signal.aborted, sessionId, signals };
     }
 
+    const model = cardModel(card, kind);
+    // Codex can't open the image files itself: they go attached to the message
+    const codex = parseModel(model).engine === "codex" ? forCodex(opts.prompt, opts.repo, card.id) : null;
     const res = await runEngine({
-      model: cardModel(card, kind),
+      model,
       cwd: opts.cwd,
       configRoot: opts.repo,
       instructions: kind === "prep" ? PREP_PROMPT : DEV_PROMPT,
-      prompt: opts.prompt,
+      prompt: codex?.prompt ?? opts.prompt,
+      images: codex?.images,
       resume: opts.resume,
       contextIfFresh: cardContext(card, kind),
       access: kind === "prep" ? "read" : "write",
