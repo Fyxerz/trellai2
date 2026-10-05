@@ -138,6 +138,8 @@ export interface EngineRun {
   /** Role instructions (appended to Claude's system prompt; prepended to Codex's first prompt). */
   instructions: string;
   prompt: string;
+  /** Image files sent along with the prompt (Codex: `-i`; Claude ignores them and opens the paths in the prompt with Read). */
+  images?: string[];
   /** Stored session from a previous run (any engine). */
   resume?: string | null;
   /** Prepended to the prompt when the stored session can't be resumed (e.g. the model changed engine). */
@@ -479,13 +481,18 @@ async function runCodex(r: EngineRun, model: string | undefined, resume: string 
     r.access === "write" ? ["--dangerously-bypass-approvals-and-sandbox"] : ["-c", 'sandbox_mode="read-only"'];
   const modelArgs = [...(model ? ["-m", model] : []), ...(effort ? ["-c", `model_reasoning_effort=${toml(effort)}`] : [])];
   const prompt = resume ? r.prompt : `<instructions>\n${r.instructions}\n</instructions>\n\n${r.prompt}`;
+  const images = (r.images ?? []).filter((f) => existsSync(f)).flatMap((f) => ["-i", f]);
+  // `--` ends the options: `-i` takes several files and would swallow the session id and the prompt
   const args = resume
-    ? ["exec", "resume", "--json", "--skip-git-repo-check", ...access, ...modelArgs, ...config, resume, prompt]
-    : ["exec", "--json", "--skip-git-repo-check", ...access, ...modelArgs, ...config, "-C", r.cwd, prompt];
+    ? ["exec", "resume", "--json", "--skip-git-repo-check", ...access, ...modelArgs, ...config, ...images, "--", resume, prompt]
+    : ["exec", "--json", "--skip-git-repo-check", ...access, ...modelArgs, ...config, "-C", r.cwd, ...images, "--", prompt];
 
   let sessionId: string | null = resume ? `codex:${resume}` : null;
   let error: string | undefined;
   const stderr: string[] = [];
+  // what Codex said besides its events, and its last error item: the reason when it dies without stderr
+  const stdoutTail: string[] = [];
+  let lastErrorItem: string | undefined;
   r.onModel?.(`codex:${model ?? codexDefaultModel() ?? "default"}`);
 
   try {
@@ -509,18 +516,20 @@ async function runCodex(r: EngineRun, model: string | undefined, resume: string 
         try {
           ev = JSON.parse(line);
         } catch {
+          if (line.trim() && stdoutTail.push(line.trim()) > 4) stdoutTail.shift();
           return;
         }
         if (ev.type === "thread.started" && ev.thread_id) sessionId = `codex:${ev.thread_id}`;
         else if (ev.type === "turn.failed") error = ev.error?.message ?? "Codex falló";
         else if (ev.type === "error") error = ev.message ?? "Codex falló";
-        else if (ev.type === "item.completed" && ev.item) handleItem(ev.item, r);
-      });
-      child.on("close", (code) => {
-        r.signal.removeEventListener("abort", onAbort);
-        if (code && code !== 0 && !error && !r.signal.aborted) {
-          error = `codex terminó con código ${code}: ${stderr.join("").trim().split("\n").slice(-3).join(" ")}`;
+        else if (ev.type === "item.completed" && ev.item) {
+          if (ev.item.type === "error" && ev.item.message) lastErrorItem = ev.item.message;
+          handleItem(ev.item, r);
         }
+      });
+      child.on("close", (code, signal) => {
+        r.signal.removeEventListener("abort", onAbort);
+        if ((code || signal) && !error && !r.signal.aborted) error = codexExitError(code, signal, stderr.join(""), stdoutTail, lastErrorItem);
         resolve();
       });
     });
@@ -528,6 +537,20 @@ async function runCodex(r: EngineRun, model: string | undefined, resume: string 
     toolRuns.delete(token);
   }
   return { sessionId, error: r.signal.aborted ? undefined : error };
+}
+
+/** Why `codex exec` died, for Pedro: stderr, else what it printed on stdout, else its last error item. */
+export function codexExitError(code: number | null, signal: string | null, stderr: string, stdoutTail: string[], lastErrorItem?: string): string {
+  const clean = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim();
+  const errLines = clean(stderr).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const reason =
+    errLines.slice(-3).join(" ") ||
+    stdoutTail.map(clean).filter(Boolean).slice(-3).join(" ") ||
+    lastErrorItem ||
+    (code === 15 || signal === "SIGTERM"
+      ? "Codex se cerró sin decir por qué; parece que algo externo lo terminó (código 15 = terminado). Vuelve a intentarlo."
+      : "Codex se cerró sin decir por qué. Vuelve a intentarlo.");
+  return `codex terminó con ${code !== null ? `código ${code}` : `la señal ${signal}`}: ${reason}`;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

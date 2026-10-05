@@ -1,9 +1,10 @@
 /**
  * Images attached to a card. They live in the DB (base64, so they travel with the sync);
  * before an agent starts we write them to `<repo>/.trellai/attachments/<cardId>/` so it
- * can open them with Read, and list them — with Pedro's marked regions — in its prompt.
+ * can open them with Read (Codex gets them attached instead, see `forCodex`), and list them —
+ * with Pedro's marked regions — in its prompt.
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Annotation, Card } from "../shared/types.js";
 import * as db from "./db.js";
@@ -49,30 +50,48 @@ export const attachmentsDir = (repo: string, cardId: string) => join(repo, ".tre
 const slug = (name: string) => git.slugify(name.replace(/\.[a-z0-9]+$/i, "")) || "imagen";
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 
-/** Write the card's images where the agent can read them; one prompt entry per image. Rewrites the folder, so deleted images go away. */
+/** Writes a file only if it's missing or different, so an agent reading it right now isn't disturbed. */
+function writeIfChanged(file: string, data: Buffer) {
+  try {
+    if (readFileSync(file).equals(data)) return;
+  } catch {
+    /* missing */
+  }
+  writeFileSync(file, data);
+}
+
+/**
+ * Write the card's images where the agent can read them; one prompt entry per image. Only
+ * missing or changed files are written and leftovers removed (another agent of the card may be reading them).
+ */
 function writeAll(card: Card, repo: string): { id: number; text: string }[] {
   const list = db.listAttachments(card.id);
   if (!repo) return [];
   const dir = attachmentsDir(repo, card.id);
-  rmSync(dir, { recursive: true, force: true });
-  if (!list.length) return [];
+  if (!list.length) {
+    rmSync(dir, { recursive: true, force: true });
+    return [];
+  }
   try {
     git.ensureExcluded(repo);
   } catch {
     /* not a repo (tests) — the folder is still fine */
   }
   mkdirSync(dir, { recursive: true });
+  const keep = new Set<string>();
 
-  return list.map((a, i) => {
+  const parts = list.map((a, i) => {
     const ext = IMAGE_MIMES[a.mime] ?? "png";
     const base = `${i + 1}-${slug(a.name)}`;
     const file = join(dir, `${base}.${ext}`);
-    writeFileSync(file, Buffer.from(db.attachmentData(a.id) ?? "", "base64"));
+    writeIfChanged(file, Buffer.from(db.attachmentData(a.id) ?? "", "base64"));
+    keep.add(`${base}.${ext}`);
     const lines = [`### Imagen ${i + 1}: ${a.name}`, `- Original: \`${file}\``];
     const drawn = a.has_annotated ? db.attachmentData(a.id, true) : null;
     if (drawn) {
       const marked = join(dir, `${base}.anotada.${ext}`);
-      writeFileSync(marked, Buffer.from(drawn, "base64"));
+      writeIfChanged(marked, Buffer.from(drawn, "base64"));
+      keep.add(`${base}.anotada.${ext}`);
       lines.push(`- With Pedro's regions drawn as numbered boxes: \`${marked}\``);
     }
     if (a.annotations.length) {
@@ -83,7 +102,18 @@ function writeAll(card: Card, repo: string): { id: number; text: string }[] {
     }
     return { id: a.id, text: lines.join("\n") };
   });
+  for (const f of readdirSync(dir)) if (!keep.has(f)) rmSync(join(dir, f), { recursive: true, force: true });
+  return parts;
 }
+
+// How the agent is told to look at the images. Claude opens them with Read; Codex has no Read tool,
+// so `forCodex` swaps these sentences and attaches the files to the message itself (`codex exec -i`).
+const READ_ALL =
+  "Open each one with the Read tool before starting — they show what Pedro means (usually the part of the interface to change). Don't add these files to the repo.";
+const READ_MESSAGE = "Images attached to this message — open them with the Read tool:";
+const CODEX_ALL =
+  "They are attached to this message (the files listed below are the same images) — look at them before starting: they show what Pedro means (usually the part of the interface to change). Don't add these files to the repo.";
+const CODEX_MESSAGE = "Images attached to this message (they come with it; the files listed below are the same images):";
 
 /** The prompt section with all the card's images ("" when it has none). */
 export function attachmentsBlock(card: Card, repo: string): string {
@@ -91,7 +121,7 @@ export function attachmentsBlock(card: Card, repo: string): string {
   if (!parts.length) return "";
   return [
     "## Imágenes (adjuntadas por Pedro)",
-    "Open each one with the Read tool before starting — they show what Pedro means (usually the part of the interface to change). Don't add these files to the repo.",
+    READ_ALL,
     ...parts.map((p) => p.text),
   ].join("\n\n");
 }
@@ -101,7 +131,7 @@ export function messageImagesBlock(card: Card, repo: string, ids: number[]): str
   const parts = writeAll(card, repo).filter((p) => ids.includes(p.id));
   if (!parts.length) return "";
   return [
-    "Images attached to this message — open them with the Read tool:",
+    READ_MESSAGE,
     ...parts.map((p) => p.text),
   ].join("\n\n");
 }
@@ -120,4 +150,21 @@ export function withMessageImages(card: Card, repo: string, content: string): st
   const ids = uids.map((u) => db.getAttachmentByUid(u)?.id).filter((id): id is number => id !== undefined);
   const block = ids.length ? messageImagesBlock(card, repo, ids) : "";
   return block ? `${content}\n\n${block}` : content;
+}
+
+/**
+ * A prompt for Codex: the card's image files it mentions (to attach with `codex exec -i`), and the text
+ * without the "open them with Read" instructions. Prompts without images come back unchanged.
+ */
+export function forCodex(prompt: string, repo: string, cardId: string): { prompt: string; images: string[] } {
+  const dir = repo ? attachmentsDir(repo, cardId) : "";
+  let files: string[] = [];
+  try {
+    files = dir ? readdirSync(dir).map((f) => join(dir, f)) : [];
+  } catch {
+    /* no images */
+  }
+  const images = files.filter((f) => prompt.includes(`\`${f}\``));
+  if (!images.length) return { prompt, images };
+  return { prompt: prompt.replaceAll(READ_ALL, CODEX_ALL).replaceAll(READ_MESSAGE, CODEX_MESSAGE), images };
 }

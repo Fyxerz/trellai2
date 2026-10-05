@@ -1,5 +1,6 @@
 // A stand-in for `codex` (TRELLAI_CODEX_BIN): writes a tiny PNG where the prompt asks,
 // unless the repo has a NO_IMAGE file (simulates a Codex without image generation).
+// FAKE_CODEX_ARGS=<file> records its arguments there; a prompt with DIE_SILENTLY exits 15 with nothing on stderr.
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -12,8 +13,14 @@ if (args[0] === "login" && args[1] === "status") {
   console.log("Logged in using ChatGPT");
   process.exit(0);
 }
-const cwd = args[args.indexOf("-C") + 1];
+if (process.env.FAKE_CODEX_ARGS) writeFileSync(process.env.FAKE_CODEX_ARGS, JSON.stringify(args));
+const cwd = args.includes("-C") ? args[args.indexOf("-C") + 1] : process.cwd();
 const prompt = args[args.length - 1];
+if (prompt.includes("DIE_SILENTLY")) {
+  console.log(JSON.stringify({ type: "thread.started", thread_id: "fake-thread" }));
+  console.log("Error: no se pudo abrir la imagen");
+  process.exit(15);
+}
 const target = prompt.match(/exactly this path[^\n]*\n\s*(.+)/)?.[1].trim();
 const out = (e) => console.log(JSON.stringify(e));
 out({ type: "thread.started", thread_id: "fake-thread" });
