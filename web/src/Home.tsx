@@ -173,12 +173,12 @@ function ProjectCard({
             ) : (
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ background: a.status === "waiting" ? "#a78bfa" : a.status === "error" ? "#f87171" : COLUMN_HEX[a.column] }}
+                style={{ background: a.status === "waiting" ? "#a78bfa" : a.status === "ready" ? "#71717a" : a.status === "error" ? "#f87171" : COLUMN_HEX[a.column] }}
               />
             )}
             <span className="min-w-0 flex-1 truncate text-zinc-300">{a.title}</span>
             <span className={`shrink-0 text-[11px] ${a.status === "waiting" ? "text-waiting" : a.status === "error" ? "text-danger" : "text-zinc-600"}`}>
-              {a.status === "waiting" ? "te necesita" : a.status === "error" ? "error" : a.status === "running" ? COLUMN_LABELS[a.column] : "por revisar"}
+              {a.status === "waiting" ? "te necesita" : a.status === "ready" ? "en espera" : a.status === "error" ? "error" : a.status === "running" ? COLUMN_LABELS[a.column] : "por revisar"}
             </span>
           </div>
         ))}

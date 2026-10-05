@@ -22,9 +22,10 @@ export const COLUMN_LABELS: Record<Column, string> = {
  * idle     – nothing happening
  * running  – an agent is working on the card
  * waiting  – the agent needs something from you (questions / a reply)
+ * ready    – prepared and waiting to be moved to Doing (nothing needed from you)
  * error    – something failed; see status_text
  */
-export type CardStatus = "idle" | "running" | "waiting" | "error";
+export type CardStatus = "idle" | "running" | "waiting" | "ready" | "error";
 
 export interface Project {
   id: string;

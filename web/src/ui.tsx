@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import {
   Eye,
   GitMerge,
+  Hourglass,
   Hammer,
   Inbox,
   MessageCircleQuestion,
@@ -74,6 +75,12 @@ export function StatusBadge({ card }: { card: Card }) {
     return (
       <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-violet-500/12 px-2 py-0.5 text-xs font-medium text-waiting ring-1 ring-violet-400/25">
         <MessageCircleQuestion className="h-3 w-3" /> Te necesita
+      </span>
+    );
+  if (card.status === "ready")
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-sky-400/10 px-2 py-0.5 text-xs font-medium text-info ring-1 ring-sky-300/20">
+        <Hourglass className="h-3 w-3" /> En espera
       </span>
     );
   if (card.status === "error")

@@ -74,7 +74,7 @@ describe("board flow", () => {
   it("by default a prepared card waits in preparation until moved to doing", async () => {
     const c = await api<Card>("/api/cards", { project_id: projectId, title: "Perfil", spec: "Página de perfil", column: "plan" });
     await api(`/api/cards/${c.id}/move`, { column: "preparation" });
-    const ready = await waitFor(c.id, (x) => x.status === "waiting");
+    const ready = await waitFor(c.id, (x) => x.status === "ready");
     expect(ready.column).toBe("preparation");
     expect((await api<any[]>(`/api/cards/${c.id}/checkpoints`)).length).toBeGreaterThan(0);
     await api(`/api/cards/${c.id}/move`, { column: "doing" });

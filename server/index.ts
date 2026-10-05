@@ -464,7 +464,7 @@ app.get("/api/projects/summary", (c) => {
       const cards = db.listCards(p.id);
       const columns = Object.fromEntries(COLUMNS.map((col) => [col, cards.filter((x) => x.column === col).length]));
       const active = cards
-        .filter((x) => x.status === "running" || x.status === "waiting" || x.status === "error" || x.column === "review")
+        .filter((x) => x.status === "running" || x.status === "waiting" || x.status === "ready" || x.status === "error" || x.column === "review")
         .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
         .slice(0, 4)
         .map((x) => ({ id: x.id, title: x.title, column: x.column, status: x.status }));
