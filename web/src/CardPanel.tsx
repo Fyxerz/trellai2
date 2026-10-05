@@ -138,6 +138,11 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
               </Button>
             </>
           )}
+          {card.column === "preparation" && card.status !== "running" && (
+            <Button variant={card.status === "ready" ? "primary" : undefined} onClick={() => move("doing")}>
+              <Hammer className="h-3.5 w-3.5" /> Pasar a Doing
+            </Button>
+          )}
           {card.column === "review" && (
             <Button variant="primary" onClick={() => move("merged")}>
               <GitMerge className="h-3.5 w-3.5" /> Mergear

@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactElement } fr
 import { createPortal } from "react-dom";
 import { COLUMNS, COLUMN_LABELS, type Card, type Column, type Project, type Tag } from "../../shared/types";
 import { api, type Board as BoardState } from "./api";
-import { ArrowRight, ChevronRight, Eye, EyeOff, GitBranch, GitMerge, ListChecks, Play, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, ChevronRight, Eye, EyeOff, GitBranch, GitMerge, Hammer, ListChecks, Play, Plus, Trash2 } from "lucide-react";
 import { cardTags, TagChip, useProjectTags } from "./tags";
 import { useTagDrag } from "./tagDrag";
 import { confirmDeleteCard, togglePreview } from "./Confirm";
@@ -32,6 +32,7 @@ export const CARD_COPIED = "trellai:card-copied";
 const NEXT: Partial<Record<Column, { to: Column; label: string; Icon: typeof Play }>> = {
   backlog: { to: "plan", label: "Pasar a Plan", Icon: ArrowRight },
   plan: { to: "preparation", label: "Preparar", Icon: Play },
+  preparation: { to: "doing", label: "Pasar a Doing", Icon: Hammer },
   review: { to: "merged", label: "Mergear", Icon: GitMerge },
 };
 
@@ -406,7 +407,8 @@ function CardItem({
   onAdvance: (to: Column) => void;
   onClick: () => void;
 }) {
-  const next = card.status === "running" ? undefined : NEXT[card.column];
+  // In preparation, only once the agent marked it ready (pending questions still go through the panel or a drag).
+  const next = card.status === "running" || (card.column === "preparation" && card.status !== "ready") ? undefined : NEXT[card.column];
   // While an agent works on it: the exact model it runs. Otherwise the card's own choice, if any.
   const agentShown = !!card.agent_model && ["preparation", "doing", "review"].includes(card.column);
   const modelChip = agentShown
