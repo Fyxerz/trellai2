@@ -1,5 +1,5 @@
 import { projectName, useDialogFocus } from "./preferences";
-import { useEffect, useId, useRef, useState } from "react";
+import { Component, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api";
 import { Check, ChevronDown, Cpu, Image as ImageIcon, Loader2, RefreshCw, Share2, Sparkles, Workflow, X } from "lucide-react";
@@ -439,6 +439,7 @@ export function ProjectSettings({
             ))}
           </nav>
           <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`} className="min-w-0 flex-1 overflow-y-auto p-5">
+            <PanelGuard key={tab}>
             {tab === "models" ? (
               <ModelSettings project={project} onSaved={onSaved} />
             ) : tab === "flow" ? (
@@ -448,11 +449,29 @@ export function ProjectSettings({
             ) : (
               <BackgroundSettings project={project} codexReady={codex ? codex.installed && codex.loggedIn !== false : null} onSaved={onSaved} />
             )}
+            </PanelGuard>
           </div>
         </div>
       </div>
     </div>
   );
+}
+
+/** A section that fails to draw shows why, instead of taking the whole app down with it (blank grey screen). */
+class PanelGuard extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="rounded-lg bg-red-400/10 px-3 py-2.5 text-[12.5px] text-danger">
+        Esta sección no se pudo mostrar: {this.state.error.message}
+        <div className="mt-1 text-[11.5px] text-zinc-400">Si acabas de actualizar Trellai, reinícialo para que el servidor esté al día.</div>
+      </div>
+    );
+  }
 }
 
 type SettingsTab = "models" | "flow" | "background" | "sharing";

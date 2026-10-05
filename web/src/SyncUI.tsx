@@ -662,7 +662,8 @@ function BranchItem({ b, remote, base, busy, failed, onDelete, onOpenCard }: { b
 export function SyncIndicator() {
   const s = useSync();
   if (!s?.active) return null;
-  const broken = s.shares.filter((x) => !x.ok && x.error);
+  const shares = s.shares ?? [];
+  const broken = shares.filter((x) => !x.ok && x.error);
   const ok = (!s.enabled || s.ok) && !broken.length;
   const Icon = ok ? Cloud : CloudOff;
   const lines = [
@@ -671,7 +672,7 @@ export function SyncIndicator() {
         ? `Tablero compartido entre tus ordenadores. Este es "${s.machine}".${s.last_sync ? ` Última sincronización: hace ${timeAgo(s.last_sync)}.` : ""}`
         : `Sin conexión con la base de datos de tus ordenadores: ${s.error}. Sigues trabajando en local; se sincroniza al volver.${s.pending ? ` (${s.pending} cambios pendientes)` : ""}`
       : `Este ordenador es "${s.machine}".`,
-    ...(s.shares.length ? [`${s.shares.length} proyecto(s) compartido(s) con otras personas.`] : []),
+    ...(shares.length ? [`${shares.length} proyecto(s) compartido(s) con otras personas.`] : []),
     ...broken.map((x) => `Sin conexión con ${x.host}: ${x.error}`),
   ];
   return (

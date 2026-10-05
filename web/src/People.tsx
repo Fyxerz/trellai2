@@ -334,7 +334,7 @@ export function SharingSettings({ project }: { project: Project }) {
 
   const members = (data?.members ?? []).filter((m) => !m.left_at);
   const shared = members.some((m) => m.person_id !== meId);
-  const shareStatus = sync?.shares.find((s) => s.project_id === project.id);
+  const shareStatus = sync?.shares?.find((s) => s.project_id === project.id);
 
   /** No database of your own: the invitation needs one. */
   const inviteWithDb = async () => {
@@ -396,10 +396,11 @@ export function SharingSettings({ project }: { project: Project }) {
         <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-100">
           <Users className="h-4 w-4" /> Quién lo comparte
         </h3>
-        {!data ? (
+        {!data ? (error ? null : (
           <div className="mt-2 flex items-center gap-2 text-[12px] text-zinc-500">
             <Spinner className="h-3.5 w-3.5" /> Cargando…
           </div>
+        )
         ) : !shared ? (
           <p className="mt-1 text-[12.5px] text-zinc-500">Solo tú, de momento.</p>
         ) : (
@@ -443,16 +444,16 @@ export function SharingSettings({ project }: { project: Project }) {
             <FolderGit2 className="h-4 w-4" /> Con quien tenga el repo
           </h3>
           <label className="mt-1.5 flex items-start gap-2 text-[12.5px] text-zinc-300">
-            <input type="checkbox" className="mt-0.5" checked={data.auto.enabled} disabled={autoBusy} onChange={(e) => setAuto(e.target.checked)} />
+            <input type="checkbox" className="mt-0.5" checked={data.auto?.enabled ?? false} disabled={autoBusy} onChange={(e) => setAuto(e.target.checked)} />
             <span>
               Compartir el tablero automáticamente con quien abra este repo de GitHub en su Trellai
               <span className="block text-[11.5px] text-zinc-500">
                 {autoBusy ? (
                   "Comprobando…"
-                ) : data.auto.on ? (
+                ) : data.auto?.on ? (
                   <span className="text-success">✓ Activo: quien tenga acceso al repo y lo añada a su Trellai verá este tablero sin hacer nada más.</span>
                 ) : (
-                  data.auto.reason
+                  data.auto?.reason
                 )}
               </span>
             </span>
@@ -509,7 +510,7 @@ export function SharingSettings({ project }: { project: Project }) {
         {error && <div className="mt-2 text-[12px] text-danger">{error}</div>}
       </section>
 
-      {(shared || data?.share || data?.auto.on) && (
+      {(shared || data?.share || data?.auto?.on) && (
         <section>
           <Button variant="danger" onClick={unshare}>
             Dejar de compartir
