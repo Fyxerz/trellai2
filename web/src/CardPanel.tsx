@@ -34,7 +34,7 @@ import {
   X,
 } from "lucide-react";
 import { api, useCardDetail, type Board } from "./api";
-import { Button, ChatHint, chatKeyDown, COLUMN_HEX, COLUMN_ICON, Markdown, Spinner, StatusBadge } from "./ui";
+import { Button, ChatHint, chatKeyDown, COLUMN_HEX, COLUMN_ICON, Markdown, runningLabel, Spinner, StatusBadge } from "./ui";
 
 type Tab = "spec" | "activity" | "diff";
 
@@ -506,7 +506,7 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
         ))}
         {card.status === "running" && (
           <div className="flex items-center gap-2 pt-1 text-xs text-warning/80">
-            <Spinner /> trabajando…
+            <Spinner /> {runningLabel(card).toLowerCase()}…
           </div>
         )}
         <div ref={scroll.end} />
