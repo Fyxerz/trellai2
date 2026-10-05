@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactElement } fr
 import { createPortal } from "react-dom";
 import { COLUMNS, COLUMN_LABELS, type Card, type Column, type Project, type Tag } from "../../shared/types";
 import { api, type Board as BoardState } from "./api";
-import { ArrowRight, ChevronRight, Eye, EyeOff, GitBranch, GitMerge, Hammer, ListChecks, Play, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, ChevronRight, CornerLeftUp, Eye, EyeOff, GitBranch, GitMerge, Hammer, ListChecks, Network, Play, Plus, Trash2 } from "lucide-react";
 import { cardTags, TagChip, useProjectTags } from "./tags";
 import { useTagDrag } from "./tagDrag";
 import { confirmDeleteCard, togglePreview } from "./Confirm";
@@ -35,6 +35,8 @@ const NEXT: Partial<Record<Column, { to: Column; label: string; Icon: typeof Pla
   preparation: { to: "doing", label: "Pasar a Doing", Icon: Hammer },
   review: { to: "merged", label: "Mergear", Icon: GitMerge },
 };
+
+const NONE: Card[] = [];
 
 /** Columns where you can create cards (the rest are driven by the workflow). */
 export const CAN_ADD = new Set<Column>(["backlog", "plan"]);
@@ -184,6 +186,10 @@ export function Board({
     if (cursorDay && !isOpen(cursorDay)) setOpenDays((o) => ({ ...o, [cursorDay]: true }));
   }, [cursorDay, cursor.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Sub-cards of each card that preparation split.
+  const subcardsOf = new Map<string, Card[]>();
+  for (const c of Object.values(board.cards)) if (c.parent_id) subcardsOf.set(c.parent_id, [...(subcardsOf.get(c.parent_id) ?? []), c]);
+
   const renderCard = (card: Card, i: number) => (
     <Draggable key={card.id} draggableId={card.id} index={i}>
       {(dp, ds) => inBody(ds.isDragging, (
@@ -197,6 +203,8 @@ export function Board({
             index={i}
             previewing={previewCardId === card.id}
             tags={cardTags(card, tags)}
+            subcards={subcardsOf.get(card.id) ?? NONE}
+            mother={card.parent_id ? board.cards[card.parent_id] : undefined}
             onAdvance={(to) => {
               moveCard(board, card.id, to, Number.MAX_SAFE_INTEGER);
               onCursor(to, card.id);
@@ -392,6 +400,8 @@ function CardItem({
   index,
   previewing,
   tags,
+  subcards,
+  mother,
   onAdvance,
   onClick,
 }: {
@@ -404,11 +414,18 @@ function CardItem({
   index: number;
   previewing: boolean;
   tags: Tag[];
+  /** cards preparation split this one into */
+  subcards: Card[];
+  /** card this one was split from */
+  mother?: Card;
   onAdvance: (to: Column) => void;
   onClick: () => void;
 }) {
   // In preparation, only once the agent marked it ready (pending questions still go through the panel or a drag).
-  const next = card.status === "running" || (card.column === "preparation" && card.status !== "ready") ? undefined : NEXT[card.column];
+  // A card split into sub-cards moves by itself (it closes when they're all merged).
+  const next =
+    card.status === "running" || subcards.length || (card.column === "preparation" && card.status !== "ready") ? undefined : NEXT[card.column];
+  const subcardsMerged = subcards.filter((c) => c.column === "merged").length;
   // While an agent works on it: the exact model it runs. Otherwise the card's own choice, if any.
   const agentShown = !!card.agent_model && ["preparation", "doing", "review"].includes(card.column);
   const modelChip = agentShown
@@ -510,7 +527,7 @@ function CardItem({
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
-      {(shownTags.length > 0 || previewing || (modelChip && !merged)) && (
+      {(shownTags.length > 0 || previewing || (modelChip && !merged) || subcards.length > 0 || mother) && (
         <div className="mb-1.5 flex flex-wrap items-center gap-1">
           {shownTags.map((t) => (
             <TagChip
@@ -522,6 +539,20 @@ function CardItem({
           {previewing && (
             <span className="flex shrink-0 items-center gap-1 rounded-md bg-teal-400/12 px-1.5 text-[10px] leading-[16px] font-semibold text-success" title="Esta rama está puesta en tu repo">
               <Eye className="h-3 w-3" /> en tu repo
+            </span>
+          )}
+          {subcards.length > 0 && (
+            <span
+              className={`flex shrink-0 items-center gap-1 rounded-md px-1.5 text-[10px] leading-[16px] font-semibold ${subcardsMerged === subcards.length ? "bg-emerald-400/10 text-success" : "bg-sky-400/10 text-sky-300"}`}
+              title={`Dividida en ${subcards.length} sub-tarjetas: ${subcardsMerged} mergeadas`}
+            >
+              <Network className="h-3 w-3" /> {subcardsMerged}/{subcards.length} hijas
+            </span>
+          )}
+          {mother && (
+            <span className="flex max-w-full min-w-0 items-center gap-1 rounded-md bg-sky-400/10 px-1.5 text-[10px] leading-[16px] font-medium text-sky-300" title={`Sub-tarjeta de «${mother.title}»`}>
+              <CornerLeftUp className="h-3 w-3 shrink-0" />
+              <span className="truncate">{mother.title}</span>
             </span>
           )}
           {modelChip && !merged && (
