@@ -155,6 +155,8 @@ export interface Card {
   checkpoints_done: number;
   /** when it entered Merged (null outside Merged) */
   merged_at: string | null;
+  /** card it was split from in Preparation (null = not a sub-card) */
+  parent_id: string | null;
   created_at: string;
   updated_at: string;
 }

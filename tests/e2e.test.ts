@@ -113,6 +113,57 @@ describe("board flow", () => {
     await waitFor(c.id, (x) => x.column === "review");
   });
 
+  it("medium card: preparation plans parts for parallel subagents", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Informe", spec: "parallel", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "preparation" });
+    const done = await waitFor(c.id, (x) => x.column === "review");
+    expect(done.plan).toContain("## Reparto en paralelo");
+    expect(done.plan).toContain("**Backend**");
+    expect(done.parent_id).toBeNull();
+  });
+
+  it("big card: split into sub-cards that run at once, mother closes when all are merged", async () => {
+    const m = await api<Card>("/api/cards", { project_id: projectId, title: "Tienda", spec: "split en dos", column: "plan" });
+    await api(`/api/cards/${m.id}/move`, { column: "preparation" });
+    const mother = await waitFor(m.id, (x) => x.status === "ready");
+    expect(mother.column).toBe("preparation");
+    expect(mother.status_text).toMatch(/2 sub-tarjetas/);
+    const kids = (await api<Card[]>(`/api/projects/${projectId}/cards`)).filter((x) => x.parent_id === m.id);
+    expect(kids.map((k) => k.title).sort()).toEqual(["Tienda A", "Tienda B"]);
+    // auto_doing is on: both go to Doing by themselves and end in review
+    const done = await Promise.all(kids.map((k) => waitFor(k.id, (x) => x.column === "review" && x.status === "idle", 15000)));
+    for (const k of done) {
+      expect(k.plan).toContain("Sub-tarjetas hermanas");
+      expect(k.checkpoints_total).toBe(1);
+    }
+    expect(done[0].plan).toContain(done[1].title);
+    // the mother runs no agent, even when moved to Doing by hand
+    await api(`/api/cards/${m.id}/move`, { column: "doing" });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(await card(m.id)).toMatchObject({ column: "doing", status: "ready", branch: null });
+
+    await api(`/api/cards/${kids[0].id}/move`, { column: "merged" });
+    await waitFor(kids[0].id, (x) => x.status_text.startsWith("Merge "));
+    expect((await card(m.id)).column).toBe("doing");
+    await api(`/api/cards/${kids[1].id}/move`, { column: "merged" });
+    await waitFor(kids[1].id, (x) => x.status_text.startsWith("Merge "));
+    await waitFor(m.id, (x) => x.column === "merged" && x.status === "idle");
+  }, 30000);
+
+  it("without the automatic move, sub-cards wait in preparation", async () => {
+    await api(`/api/projects/${projectId}`, { auto_doing: false }, "PATCH");
+    try {
+      const m = await api<Card>("/api/cards", { project_id: projectId, title: "Panel", spec: "split", column: "plan" });
+      await api(`/api/cards/${m.id}/move`, { column: "preparation" });
+      await waitFor(m.id, (x) => x.status === "ready");
+      const kids = (await api<Card[]>(`/api/projects/${projectId}/cards`)).filter((x) => x.parent_id === m.id);
+      expect(kids).toHaveLength(2);
+      expect(kids.every((k) => k.column === "preparation" && k.status === "ready")).toBe(true);
+    } finally {
+      await api(`/api/projects/${projectId}`, { auto_doing: true }, "PATCH");
+    }
+  });
+
   it("parallel agents, notes, merge, and conflict resolution", async () => {
     const a = await api<Card>("/api/cards", { project_id: projectId, title: "Feature A", spec: "toca shared", column: "plan" });
     const b = await api<Card>("/api/cards", { project_id: projectId, title: "Feature B", spec: "toca shared", column: "plan" });

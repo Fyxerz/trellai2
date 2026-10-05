@@ -103,6 +103,7 @@ async function onEnter(card: Card, from: Column) {
     case "preparation":
       if (isRunning(card.id)) stopAgent(card.id);
       await waitUntilStopped(card.id);
+      if (holdMother(card)) return;
       return startPrep(card, card.prep_session_id ? `Pedro moved the card back to PREPARATION. Current spec:\n\n${card.spec}` : undefined);
     case "doing":
       if (from === "preparation" && isRunning(card.id)) {
@@ -110,6 +111,7 @@ async function onEnter(card: Card, from: Column) {
         await waitUntilStopped(card.id);
       }
       if (isRunning(card.id)) return;
+      if (holdMother(card)) return;
       return startDev(card, card.session_id
         ? `Pedro moved this card back to DOING (from ${from}). Read the notes, check your work is complete, fix anything pending and call report_done.`
         : undefined);
@@ -236,6 +238,7 @@ function startPrep(card: Card, message?: string) {
 }
 
 async function afterPrep(card: Card, res: RunResult): Promise<void> {
+  if (res.signals.split) return splitCard(card, res.signals.split);
   if (res.signals.ready) {
     const { plan, files } = res.signals.ready;
     if (!projectOf(card).auto_doing) {
@@ -254,6 +257,88 @@ async function afterPrep(card: Card, res: RunResult): Promise<void> {
     return;
   }
   set(card.id, { status: "waiting", status_text: "Te ha respondido — contesta en el chat" });
+}
+
+// ---------------------------------------------------------------------------
+// Sub-cards: preparation split a card into several that run in parallel
+// ---------------------------------------------------------------------------
+
+const MOTHER_TEXT = (n: number) => `Dividida en ${n} sub-tarjetas — se cierra sola cuando estén todas mergeadas`;
+
+/**
+ * The card becomes a "mother": it runs no agent of its own and waits while its sub-cards
+ * (created in Preparation, with the mother's model and tags) go through the board in parallel.
+ */
+async function splitCard(card: Card, split: NonNullable<RunResult["signals"]["split"]>): Promise<void> {
+  const project = projectOf(card);
+  const subs = split.subcards;
+  const sisters = (self: number) =>
+    subs
+      .map((s, i) => (i === self ? null : `- «${s.title}»${s.files.length ? `: ${s.files.map((f) => `\`${f}\``).join(", ")}` : ""}`))
+      .filter(Boolean)
+      .join("\n");
+  const children: Card[] = [];
+  for (const [i, s] of subs.entries()) {
+    let child = db.createCard({ project_id: card.project_id, title: s.title.trim(), spec: s.spec ?? "", column: "preparation", parent_id: card.id });
+    for (const t of s.checkpoints ?? []) if (t.trim()) db.addCheckpoint(child.id, t.trim(), "agent");
+    const plan = [
+      `Sub-tarjeta de «${card.title}» (preparación la dividió en ${subs.length} que se hacen a la vez, cada una en su rama).`,
+      split.plan.trim(),
+      `## Sub-tarjetas hermanas (trabajan EN PARALELO contigo)\n\n${sisters(i)}\n\nNo toques sus ficheros salvo que sea imprescindible; si cambias algo que ellas usan (tipos, endpoints, esquema, componentes compartidos), avísales con \`post_note\` pasando los ficheros.`,
+      `## Spec de la tarjeta madre (contexto)\n\n${card.spec || "(vacía)"}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    child = db.updateCard(child.id, { plan, files: s.files ?? [], tags: card.tags, model: card.model });
+    emitCard(child);
+    log(child, "system", `🧩 Sub-tarjeta de «${card.title}»`);
+    children.push(child);
+  }
+  set(card.id, {
+    plan: [split.plan.trim(), `## Sub-tarjetas\n\n${subs.map((s) => `- ${s.title}`).join("\n")}`].filter(Boolean).join("\n\n"),
+    files: [...new Set(subs.flatMap((s) => s.files ?? []))],
+    status: "ready",
+    status_text: MOTHER_TEXT(subs.length),
+  });
+  log(card, "system", `🧩 Dividida en ${subs.length} sub-tarjetas: ${subs.map((s) => `«${s.title}»`).join(", ")}.`);
+  if (!project.auto_doing) {
+    for (const c of children) set(c.id, { status: "ready", status_text: "Lista — muévela a Doing cuando quieras" });
+    log(card, "system", "✅ Sub-tarjetas listas para Doing: muévelas cuando quieras.");
+    return;
+  }
+  log(card, "system", "✅ Las sub-tarjetas pasan a Doing automáticamente y arrancan a la vez.");
+  for (const c of children) moveCard(c.id, "doing", Number.MAX_SAFE_INTEGER, `automático: sub-tarjeta de «${card.title}»`);
+}
+
+/** A mother card (split into sub-cards) never runs an agent itself. */
+function holdMother(card: Card): boolean {
+  const kids = db.childCards(card.id);
+  if (!kids.length) return false;
+  if (isRunning(card.id)) stopAgent(card.id);
+  const merged = kids.filter((k) => k.column === "merged").length;
+  set(card.id, { status: "ready", status_text: `${MOTHER_TEXT(kids.length)} (${merged}/${kids.length})` });
+  return true;
+}
+
+/** A sub-card was merged (or deleted): when every sister is merged, the mother closes too. */
+function closeMotherIfDone(child: Pick<Card, "parent_id" | "title">, justMerged = true) {
+  const mother = child.parent_id ? db.getCard(child.parent_id) : undefined;
+  if (!mother || mother.column === "merged") return;
+  const kids = db.childCards(mother.id);
+  const merged = kids.filter((k) => k.column === "merged").length;
+  if (!kids.length || merged < kids.length) {
+    if (kids.length) {
+      if (justMerged) log(mother, "system", `✅ «${child.title}» mergeada (${merged}/${kids.length}).`);
+      set(mother.id, { status_text: `${MOTHER_TEXT(kids.length)} (${merged}/${kids.length})` });
+    }
+    return;
+  }
+  const from = mother.column;
+  const moved = db.placeCard(mother.id, "merged", Number.MAX_SAFE_INTEGER);
+  emitColumn(moved.project_id, "merged");
+  emitColumn(moved.project_id, from);
+  logMove(moved, from, "merged", "automático: todas sus sub-tarjetas están mergeadas");
+  set(moved.id, { status: "idle", status_text: `Sub-tarjetas mergeadas (${kids.length}/${kids.length})` });
 }
 
 /**
@@ -498,6 +583,7 @@ async function mergeClean(card: Card, project: Project, bounce: (msg: string) =>
       worktree: null,
       branch: null,
     });
+    closeMotherIfDone(card);
     return;
   }
   if (r.reason === "conflict") {
@@ -532,6 +618,10 @@ export function sendMessage(cardId: string, said: string, attachmentIds: number[
   if (isRunning(card.id)) {
     db.pushPendingInput(card.id, text);
     log(card, "system", "Se lo paso al agente en cuanto termine el paso actual.");
+    return;
+  }
+  if (card.column !== "merged" && db.childCards(card.id).length) {
+    log(card, "system", "Esta tarjeta está dividida en sub-tarjetas y no tiene agente propio: escribe en la sub-tarjeta que quieras cambiar.");
     return;
   }
   switch (card.column) {
@@ -704,7 +794,10 @@ export async function removeCard(cardId: string) {
   }
   if (project?.repo_path) removeAttachmentFiles(project.repo_path, card.id);
   claims.sweep(card.project_id, card.id); // before its notes lose their author
+  // Its sub-cards carry on as normal cards.
+  for (const k of db.childCards(card.id)) emitCard(db.updateCard(k.id, { parent_id: null }));
   db.deleteCard(card.id);
+  closeMotherIfDone(card, false); // it may have been the last unmerged sub-card
 }
 
 /** After a restart nothing is actually running anymore. */

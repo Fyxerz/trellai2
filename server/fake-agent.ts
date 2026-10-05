@@ -6,6 +6,8 @@
  * Spec conventions:
  *   contains "?"       → preparation asks a question first
  *   contains "shared"  → writes to SHARED.md (to provoke merge conflicts)
+ *   contains "split"   → preparation splits the card into two sub-cards
+ *   contains "parallel"→ preparation plans two parts for parallel subagents
  */
 import { execSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -40,8 +42,27 @@ export async function runFakeAgent(o: FakeOpts): Promise<string> {
       o.kit.askQuestions([{ question: "¿Qué enfoque prefieres?", options: ["Simple", "Completo"] }]);
       return sessionId;
     }
+    if (o.card.spec.includes("split")) {
+      o.log("assistant", "Son dos features independientes: la divido en sub-tarjetas.");
+      o.kit.splitCard(
+        ["A", "B"].map((part) => ({
+          title: `${o.card.title} ${part}`,
+          spec: `Parte ${part}`,
+          checkpoints: [`Parte ${part} hecha`],
+          files: [`features/${slug}-${part.toLowerCase()}.md`],
+        })),
+        "Cada parte en su fichero.",
+      );
+      return sessionId;
+    }
     o.log("assistant", "La spec está clara. Paso a desarrollo.");
-    o.kit.markReady("", [`features/${slug}.md`], [`Crear features/${slug}.md`, "Verificar que existe"]);
+    const parallel = o.card.spec.includes("parallel")
+      ? [
+          { name: "Backend", scope: "la API", files: ["server/api.ts"] },
+          { name: "Interfaz", scope: "la pantalla", files: ["web/screen.tsx"] },
+        ]
+      : [];
+    o.kit.markReady("", [`features/${slug}.md`], [`Crear features/${slug}.md`, "Verificar que existe"], parallel);
     return sessionId;
   }
 
