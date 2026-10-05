@@ -107,9 +107,10 @@ export function BranchStatus({
     const load = () => api<GitStatus>(`/api/projects/${project.id}/git`).then((s) => alive && setSt(s)).catch(() => {});
     load();
     const t = setInterval(load, 60_000);
-    // a merge here or on another computer moves things
+    // a merge here or on another computer moves things; "git": pulled automatically
     const off = board.on((e) => {
-      if (e.type === "sync" || (e.type === "card" && e.card.column === "merged")) setTimeout(load, 1500);
+      if (e.type === "git") load();
+      else if (e.type === "sync" || (e.type === "card" && e.card.column === "merged")) setTimeout(load, 1500);
     });
     return () => {
       alive = false;
@@ -287,7 +288,7 @@ function BranchMenu({
       t = setTimeout(load, 800);
     };
     const off = board.on((e) => {
-      if (e.type === "sync") soon();
+      if (e.type === "sync" || e.type === "git") soon();
       else if (e.type === "card") {
         const key = `${e.card.branch}|${e.card.column}`;
         if (seen.has(e.card.id) && seen.get(e.card.id) !== key) soon();

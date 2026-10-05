@@ -11,7 +11,7 @@ import { AVATAR_COLORS, COLUMNS, isColumn, TAG_COLORS, type CloneJob, type Proje
 import { sweepAll } from "./claims.js";
 import * as db from "./db.js";
 import { cleanAnnotations, parseImage } from "./attachments.js";
-import { emitAttachments, emitCard, emitCardDeleted, emitCheckpoints, emitMessage, emitNote, emitTags, subscribe } from "./events.js";
+import { emitAttachments, emitCard, emitCardDeleted, emitCheckpoints, emitGit, emitMessage, emitNote, emitTags, subscribe } from "./events.js";
 import * as git from "./git.js";
 import * as wf from "./workflow.js";
 import { claudeLoggedIn, claudeModels, codexDefaultModel, codexModels, codexStatus, loginState, mcpCallTool, mcpListTools, startLogin } from "./engine.js";
@@ -24,6 +24,7 @@ import * as autoshare from "./autoshare.js";
 import { cachedInvite, createInvite, inviteProblem, joinWithCode, removeMember, shareOf, startSync, stopSharing, syncStatus } from "./sync.js";
 import { assistantRunning, sendToAssistant, stopAssistant } from "./assistant.js";
 import { buildInfo, distDir, startSelfUpdate } from "./selfupdate.js";
+import { startAutoPull } from "./autopull.js";
 import { backgroundFile, backgroundStatus, generateBackground, imageMime, stopBackground } from "./background.js";
 
 const app = new Hono();
@@ -371,6 +372,12 @@ app.get("/api/projects/:id/docs", (c) => {
 app.get("/api/projects/:id/git", async (c) => {
   const project = db.getProject(c.req.param("id"));
   if (!project?.repo_path) return c.json({ remote: null, ahead: 0, behind: 0, ok: true });
+  const st = await remote.baseStatus(project.repo_path, project.base_branch);
+  if (!st.behind) return c.json(st);
+  // a new merge on the remote: pull it right away
+  const r = await remote.syncBranch(project.repo_path, project.base_branch).catch(() => null);
+  if (!r?.pulled) return c.json(st);
+  emitGit(project.id);
   return c.json(await remote.baseStatus(project.repo_path, project.base_branch));
 });
 
@@ -1007,6 +1014,7 @@ db.registerMachine(MACHINE);
 startSync();
 autoshare.startAutoShare();
 startSelfUpdate();
+startAutoPull();
 
 const port = Number(process.env.PORT ?? 4317);
 const hostname = process.env.HOST ?? "127.0.0.1";

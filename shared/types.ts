@@ -320,6 +320,8 @@ export type ServerEvent =
   | { type: "background"; status: BgStatus }
   /** another computer changed things: reload the board */
   | { type: "sync" }
+  /** the base branch was pulled automatically: refresh ahead/behind */
+  | { type: "git" }
   /** Trellai's own code changed (branch switch): a new UI build, or a restart pending */
   | { type: "build"; id: string };
 
