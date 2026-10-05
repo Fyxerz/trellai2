@@ -5,6 +5,7 @@ import { cardTags, TagPicker, useProjectTags } from "./tags";
 import { reportError } from "./notifications";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MachineChip } from "./SyncUI";
+import { Avatar, Byline, usePeople } from "./People";
 import { COLUMN_LABELS, type Card, type Checkpoint, type Column, type Message, type Project, type Question, type Tag } from "../../shared/types";
 import { ModelPicker, modelLabel } from "./models";
 import { AddImageButton, SpecImages, useChatImages } from "./ImageEditor";
@@ -103,6 +104,7 @@ export function CardPanel({
           <ColumnChip column={card.column} />
           <StatusBadge card={card} />
           <MachineChip machine={card.machine} />
+          {card.author && <CreatedBy id={card.author} />}
           {card.agent_model && (
             <span
               className="flex items-center gap-1 rounded-md bg-ui-ink/[0.05] px-1.5 py-0.5 text-[11px] text-zinc-300"
@@ -553,6 +555,20 @@ async function rewind(card: Card, m: Message) {
   }
 }
 
+/** "creada por Ana" in the card header (only once there's more than one person). */
+function CreatedBy({ id }: { id: string }) {
+  const { byId, people } = usePeople();
+  if (people.length < 2 || !byId[id]) return null;
+  return <span className="text-[11px] text-zinc-500" title={`Creada por ${byId[id].name}`}>creada por <Byline id={id} /></span>;
+}
+
+/** Who sent a request, next to their bubble (only once there's more than one person). */
+function MessageAuthor({ id }: { id: string | null }) {
+  const { people } = usePeople();
+  if (!id || people.length < 2) return null;
+  return <Avatar id={id} size={20} className="mt-1" />;
+}
+
 function MessageRow({ m, card }: { m: Message; card: Card }) {
   if (m.role === "tool")
     return (
@@ -584,6 +600,7 @@ function MessageRow({ m, card }: { m: Message; card: Card }) {
           <Markdown>{m.content}</Markdown>
           {m.undone && <div className="mt-1 text-[11px] text-zinc-400">↶ deshecho</div>}
         </div>
+        <MessageAuthor id={m.author} />
       </div>
     );
   return (

@@ -58,12 +58,17 @@ export function useProjects() {
 }
 
 export interface SyncStatus {
+  /** TRELLAI_DATABASE_URL: the board is shared between your computers */
   enabled: boolean;
+  /** any sync at all (your computers, or projects shared with you through a code) */
+  active: boolean;
   machine: string;
   ok: boolean;
   error: string | null;
   last_sync: string | null;
   pending: number;
+  /** projects synced through an invitation code */
+  shares: { id: string; project_id: string; host: string; ok: boolean; error: string | null; last_sync: string | null }[];
 }
 
 /** Board sync status + this computer's name (shared by every component). */

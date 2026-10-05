@@ -2,7 +2,8 @@ import { projectName, useDialogFocus } from "./preferences";
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api";
-import { Check, ChevronDown, Cpu, Image as ImageIcon, Loader2, RefreshCw, Sparkles, Workflow, X } from "lucide-react";
+import { Check, ChevronDown, Cpu, Image as ImageIcon, Loader2, RefreshCw, Share2, Sparkles, Workflow, X } from "lucide-react";
+import { SharingSettings } from "./People";
 import { TAG_PALETTE, type BgMode, type BgStatus, type Project } from "../../shared/types";
 import { reportError } from "./notifications";
 import { CODEX_EFFORTS, EFFORT_LABELS, EFFORTS, prettyModel, splitEffort, withEffort, type Effort } from "../../shared/models";
@@ -442,6 +443,8 @@ export function ProjectSettings({
               <ModelSettings project={project} onSaved={onSaved} />
             ) : tab === "flow" ? (
               <FlowSettings project={project} onSaved={onSaved} />
+            ) : tab === "sharing" ? (
+              <SharingSettings project={project} />
             ) : (
               <BackgroundSettings project={project} codexReady={codex ? codex.installed && codex.loggedIn !== false : null} onSaved={onSaved} />
             )}
@@ -452,12 +455,13 @@ export function ProjectSettings({
   );
 }
 
-type SettingsTab = "models" | "flow" | "background";
+type SettingsTab = "models" | "flow" | "background" | "sharing";
 const SETTINGS_TAB = "trellai:settings-tab";
 const SETTINGS_TABS: { id: SettingsTab; label: string; icon: typeof Cpu }[] = [
   { id: "models", label: "Modelos", icon: Cpu },
   { id: "flow", label: "Flujo", icon: Workflow },
   { id: "background", label: "Fondo del tablero", icon: ImageIcon },
+  { id: "sharing", label: "Compartir", icon: Share2 },
 ];
 
 function ModelSettings({ project, onSaved }: { project: Project; onSaved: () => void }) {

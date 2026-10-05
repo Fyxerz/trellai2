@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
-import { COLUMNS, isColumn, TAG_COLORS, type CloneJob, type Project, type ServerEvent } from "../shared/types.js";
+import { AVATAR_COLORS, COLUMNS, isColumn, TAG_COLORS, type CloneJob, type Project, type ServerEvent, type Sharing } from "../shared/types.js";
 import { sweepAll } from "./claims.js";
 import * as db from "./db.js";
 import { cleanAnnotations, parseImage } from "./attachments.js";
@@ -20,7 +20,7 @@ import { MACHINE } from "./machine.js";
 import * as remote from "./remote.js";
 import { repoLock } from "./lock.js";
 import * as github from "./github.js";
-import { startSync, syncStatus } from "./sync.js";
+import { createInvite, inviteProblem, joinWithCode, removeMember, shareOf, startSync, stopSharing, syncStatus } from "./sync.js";
 import { assistantRunning, sendToAssistant, stopAssistant } from "./assistant.js";
 import { buildInfo, distDir, startSelfUpdate } from "./selfupdate.js";
 import { backgroundFile, backgroundStatus, generateBackground, imageMime, stopBackground } from "./background.js";
@@ -213,6 +213,63 @@ app.get("/api/clone-jobs/:id", (c) => {
 // ---------- other computers / GitHub ----------
 
 app.get("/api/sync", (c) => c.json(syncStatus()));
+
+// ---------- people and sharing projects with them ----------
+
+/** Everyone this Trellai knows (yours and the people you share projects with) + who you are here. */
+app.get("/api/people", (c) => c.json({ me: db.meId(), machine: MACHINE, people: db.listPeople() }));
+
+/** Your name and avatar color (`adopt`: you're already this person on another computer). */
+app.post("/api/me", async (c) => {
+  const body = await c.req.json<{ name?: string; color?: string; adopt?: string }>();
+  const adopted = body.adopt ? db.getPerson(body.adopt) : undefined;
+  const name = (body.name ?? adopted?.name ?? "").trim().slice(0, 40);
+  if (!name) return c.json({ error: "Escribe tu nombre." }, 400);
+  const color = /^#[0-9a-f]{6}$/i.test(body.color ?? "") ? body.color! : (adopted?.color ?? AVATAR_COLORS[0]);
+  return c.json(db.setMe({ name, color, adopt: adopted?.id }, MACHINE));
+});
+
+app.get("/api/projects/:id/sharing", (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project) return c.json({ error: "Proyecto no encontrado" }, 404);
+  const sharing: Sharing = {
+    members: db.listMembers(project.id),
+    share: shareOf(project.id),
+    ownDb: syncStatus().enabled,
+    problem: inviteProblem(project),
+  };
+  return c.json(sharing);
+});
+
+/** Invitation code for a project (`db`: a Postgres URL other than TRELLAI_DATABASE_URL). */
+app.post("/api/projects/:id/invite", async (c) => {
+  const body = await c.req.json<{ db?: string }>().catch(() => ({}) as { db?: string });
+  try {
+    return c.json({ code: await createInvite(c.req.param("id"), body.db) });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 400);
+  }
+});
+
+/** Paste an invitation code: the project shows up here and syncs from now on. */
+app.post("/api/shares", async (c) => {
+  const { code } = await c.req.json<{ code?: string }>();
+  try {
+    return c.json(await joinWithCode(String(code ?? "")));
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 400);
+  }
+});
+
+app.post("/api/projects/:id/members/:person/remove", async (c) => {
+  await removeMember(c.req.param("id"), c.req.param("person"));
+  return c.json({ ok: true });
+});
+
+app.post("/api/projects/:id/unshare", async (c) => {
+  await stopSharing(c.req.param("id"));
+  return c.json({ ok: true });
+});
 
 /** Link a project that came from another computer to a folder on this one. */
 app.post("/api/projects/:id/link", async (c) => {
@@ -573,7 +630,7 @@ app.get("/api/projects/:id/notes", (c) => c.json(db.listNotes(c.req.param("id"))
 
 app.post("/api/projects/:id/notes", async (c) => {
   const { content, files } = await c.req.json<{ content: string; files?: string[] }>();
-  const note = db.addNote(c.req.param("id"), null, `Pedro: ${content}`, { files: (files ?? []).map((f) => f.trim()).filter(Boolean) });
+  const note = db.addNote(c.req.param("id"), null, `${db.me()?.name ?? "Pedro"}: ${content}`, { files: (files ?? []).map((f) => f.trim()).filter(Boolean) });
   emitNote(note);
   return c.json(note);
 });
@@ -908,6 +965,7 @@ for (const p of db.listProjects()) {
     if (url) db.updateProject(p.id, { remote_url: url });
   }
 }
+db.registerMachine(MACHINE);
 startSync();
 startSelfUpdate();
 

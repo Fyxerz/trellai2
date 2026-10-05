@@ -176,7 +176,9 @@ export function othersWork(card: Card): string {
       const claims = o.claims.length
         ? o.claims.map((c) => `  - ${c.file}: ${describeClaim(c)}${mine.has(c.file) ? " ⚠️ you're on it too" : ""}`).join("\n")
         : "  - (no files claimed yet)";
-      return `- "${o.title}" (branch ${o.branch ?? "?"})\n${claims}`;
+      const who = db.personOnMachine(o.machine);
+      const by = who && who.id !== db.meId() ? `, agent of ${who.name} on ${o.machine}` : "";
+      return `- "${o.title}" (branch ${o.branch ?? "?"}${by})\n${claims}`;
     })
     .join("\n");
 }
