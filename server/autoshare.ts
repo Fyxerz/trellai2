@@ -13,7 +13,7 @@
 import { execFile } from "node:child_process";
 import type { Project } from "../shared/types.js";
 import * as db from "./db.js";
-import { cachedInvite, createInvite, decodeInvite, joinWithCode, leftShare, repoSlug, shareOf, syncStatus } from "./sync.js";
+import { cachedInvite, createInvite, decodeInvite, joinWithCode, leftShare, repoSlug, shareOf, staleInvite, syncStatus } from "./sync.js";
 
 const REF = "refs/trellai/board";
 const OFF = process.env.TRELLAI_AUTOSHARE === "0";
@@ -53,15 +53,15 @@ async function readRemote(repo: string): Promise<string | null> {
 }
 
 /** Publish an invitation; false if someone else got there first (or it can't be pushed). */
-async function publish(repo: string, code: string): Promise<boolean> {
+async function publish(repo: string, code: string, replace = false): Promise<boolean> {
   const blob = await git(repo, ["hash-object", "-w", "--stdin"], code + "\n");
   if (!blob.ok) return false;
   const tree = await git(repo, ["mktree"], `100644 blob ${blob.out}\tinvite\n`);
   if (!tree.ok) return false;
   const commit = await git(repo, ["commit-tree", tree.out, "-m", "Trellai: tablero compartido"]);
   if (!commit.ok) return false;
-  // never forced: the first one to publish wins, the others join it
-  const push = await git(repo, ["push", "--quiet", "origin", `${commit.out}:${REF}`]);
+  // never forced (unless it's our own, outdated one): the first one to publish wins, the others join it
+  const push = await git(repo, ["push", "--quiet", "origin", `${replace ? "+" : ""}${commit.out}:${REF}`]);
   if (push.ok) await git(repo, ["update-ref", REF, commit.out]);
   return push.ok;
 }
@@ -140,14 +140,16 @@ async function checkOnce(projectId: string): Promise<Project | undefined> {
       state.set(joined.id, { on: true, reason: "" });
       return joined;
     }
-    if (inv) return set(true), project; // ours, already published
+    // Ours, made by us with a database we no longer use (TRELLAI_DATABASE_URL changed): publish it again.
+    const outdated = !!inv && inv.by === db.me()!.name && staleInvite(code!);
+    if (inv && !outdated) return set(true), project; // ours, already published
     if (leftShare(projectId)) return set(false, "Dejaste de compartirlo."), project;
     const sync = syncStatus();
     if (!sync.enabled && !shareOf(projectId)) return set(false, "Hace falta una base de datos para compartir (TRELLAI_DATABASE_URL)."), project;
     const pub = await isPublic(project.remote_url);
     if (pub !== false) return set(false, pub ? "El repo es público: el tablero no se publica en él. Usa el enlace." : "Solo se publica en repos privados de GitHub."), project;
     const invite = cachedInvite(projectId) ?? (await createInvite(projectId));
-    if (await publish(project.repo_path, invite)) {
+    if (await publish(project.repo_path, invite, outdated)) {
       console.log(`[autoshare] ${project.name}: tablero publicado en el repo`);
       return set(true), project;
     }

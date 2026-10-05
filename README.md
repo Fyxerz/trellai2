@@ -74,7 +74,13 @@ Cada ordenador ejecuta su propio Trellai con **sus** modelos y suscripciones, pe
    ```
 4. `npm install` y `npm start`. La primera vez sube todo lo que tengas; en el otro ordenador aparece solo.
 
-Trellai crea sus tablas en un esquema propio (`trellai`), no expuesto en la API pública de Supabase.
+Trellai crea sus tablas en un esquema propio (`trellai`), no expuesto en la API pública de Supabase, así que puede vivir en un proyecto de Supabase que ya uses para otras apps sin tocar sus tablas.
+
+**Nuestra base de datos: Despidator.** El tablero se comparte por el proyecto de Supabase «Despidator» (`uvhhjluakmocxujxvjqh`, eu-west-1), que ya tiene el esquema `trellai` creado (migración `trellai_sync`). Para conectarte:
+
+1. Supabase → proyecto **Despidator** → **Connect** → **Session pooler** y copia la URI (la contraseña está en *Project Settings → Database*; si no la tienes, «Reset database password»).
+2. Pon en tu `.env` la línea de Despidator de `.env.example` con la contraseña y reinicia Trellai.
+3. En la cabecera aparece el icono de nube en verde. Si antes usabas otra base de datos, al cambiar la URL Trellai sube **todo** tu tablero (proyectos, tarjetas, personas y canal de agentes) a Despidator, y las invitaciones nuevas (enlace, código y la del repo) ya apuntan a Despidator. Quien estuviera en un proyecto compartido contigo por la base de datos vieja tiene que poner también la URL de Despidator.
 
 **Cómo se usa:**
 

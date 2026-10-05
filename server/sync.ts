@@ -187,6 +187,33 @@ if (URL) conns.set("own", newConn("own", URL, null));
 const sk = (c: Conn, k: string) => (c.id === "own" ? k : `share:${c.id}:${k}`);
 const pushedSeq = (c: Conn) => Number(getState(sk(c, "pushed")) ?? 0);
 
+const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
+/** A database without its password: changing the password doesn't make it another database. */
+export const dbId = (url: string) => sha(url.trim().replace(/^([a-z]+:\/\/[^:@/]+):[^@]*@/, "$1@").replace(/\?.*$/, ""));
+
+/**
+ * The own connection's state (seeded, cursors…) belongs to one database. Pointing TRELLAI_DATABASE_URL
+ * to another one (e.g. a new Supabase) starts over: take what's there and upload the whole board.
+ */
+function resetOwnIfMoved() {
+  if (!URL) return;
+  const id = dbId(URL);
+  const was = getState("own_db");
+  if (was === id) return;
+  // Before "own_db" existed, "migrated" remembered the database (hash of the full URL).
+  const legacy = getState("migrated")?.split(":")[0];
+  if (was || (legacy && legacy !== sha(URL))) {
+    console.log(`[sync] base de datos nueva (${hostOf(URL)}): se sube todo el tablero`);
+    for (const k of ["migrated", "seeded", "cursor"]) sqlite.prepare("DELETE FROM sync_state WHERE k = ?").run(k);
+    // The first sync sends every row, so what's in the outbox is already covered.
+    const max = (sqlite.prepare("SELECT MAX(seq) AS m FROM sync_outbox").get() as { m: number | null }).m ?? 0;
+    setState("pushed", String(max));
+    sqlite.prepare("DELETE FROM sync_deferred WHERE conn = 'own'").run();
+  }
+  setState("own_db", id);
+}
+resetOwnIfMoved();
+
 interface ShareRow {
   id: string;
   url: string;
@@ -580,7 +607,7 @@ let timer: NodeJS.Timeout | null = null;
 async function runTick(c: Conn) {
   try {
     c.sql ??= connect(c.url);
-    const urlHash = `${createHash("sha256").update(c.url).digest("hex").slice(0, 16)}:${SCHEMA}`;
+    const urlHash = `${sha(c.url)}:${SCHEMA}`;
     if (getState(sk(c, "migrated")) !== urlHash) {
       await migrateRemote(c.sql);
       setState(sk(c, "migrated"), urlHash);
@@ -784,7 +811,19 @@ export async function createInvite(projectId: string, dbUrl?: string): Promise<s
 }
 
 /** The last invitation made here for a project (made once, then reused). */
-export const cachedInvite = (projectId: string) => db.localGet(`invite:${projectId}`) ?? null;
+export const cachedInvite = (projectId: string) => {
+  const code = db.localGet(`invite:${projectId}`);
+  return code && !staleInvite(code) ? code : null;
+};
+
+/** An invitation of ours that points to a database this computer no longer syncs the project through. */
+export function staleInvite(code: string): boolean {
+  const inv = decodeInvite(code);
+  if (!inv) return true;
+  const share = shareOf(inv.project);
+  const current = share ? conns.get(share.id)!.url : URL;
+  return !current || dbId(inv.db) !== dbId(current);
+}
 
 /** You left (or were taken out of) a shared project: don't join it again by yourself. */
 export const leftShare = (projectId: string) => db.localGet(`share-left:${projectId}`) === "1";
