@@ -559,7 +559,7 @@ async function rewind(card: Card, m: Message) {
 function CreatedBy({ id }: { id: string }) {
   const { byId, people } = usePeople();
   if (people.length < 2 || !byId[id]) return null;
-  return <span className="text-[11px] text-zinc-500" title={`Creada por ${byId[id].name}`}>creada por <Byline id={id} /></span>;
+  return <span className="whitespace-nowrap text-[11px] text-zinc-500" title={`Creada por ${byId[id].name}`}>creada por <Byline id={id} /></span>;
 }
 
 /** Who sent a request, next to their bubble (only once there's more than one person). */

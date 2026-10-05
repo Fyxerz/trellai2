@@ -374,9 +374,10 @@ export function SharingSettings({ project }: { project: Project }) {
                       {p?.machines.length ? ` · ${p.machines.join(", ")}` : ""}
                     </div>
                   </div>
-                  <Button size="sm" variant="ghost" onClick={() => remove(m.person_id)} title={m.person_id === meId ? "Salir del proyecto compartido" : "Quitar del proyecto"}>
+                  {/* you can only leave a project you reach through a code; your own database always has it */}
+                  {(m.person_id !== meId || data.share) && <Button size="sm" variant="ghost" onClick={() => remove(m.person_id)} title={m.person_id === meId ? "Salir del proyecto compartido" : "Quitar del proyecto"}>
                     <UserMinus className="h-3.5 w-3.5" /> {m.person_id === meId ? "Salir" : "Quitar"}
-                  </Button>
+                  </Button>}
                 </li>
               );
             })}

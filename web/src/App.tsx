@@ -33,7 +33,7 @@ import { TagManager } from "./TagManager";
 import { ProjectDocs } from "./ProjectDocs";
 import { useProjectTags } from "./tags";
 import { Sidebar } from "./Sidebar";
-import { Byline, JoinDialog, ProfileChip, reloadPeople } from "./People";
+import { Byline, JoinDialog, ProfileChip, reloadPeople, usePeople } from "./People";
 import { BranchStatus, SyncIndicator, UnlinkedBanner } from "./SyncUI";
 import { Button, ChatHint, chatKeyDown, Kbd, ProjectAvatar, timeAgo } from "./ui";
 
@@ -659,6 +659,7 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
   const live = board.notes.filter((n) => !n.archived);
   const old = board.notes.filter((n) => n.archived);
   const [history, setHistory] = useState(false);
+  const { byId } = usePeople();
   const pending = useRef<HTMLElement>(null);
   const working = Object.values(board.cards).filter((c) => c.column === "doing").sort((a, b) => a.position - b.position);
   const archive = (id: number) => api(`/api/notes/${id}/archive`, {}).catch((e) => reportError((e as Error).message));
@@ -697,7 +698,8 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
         )}
       </div>
       {n.files.length > 0 && <div className="mb-0.5 font-mono text-[11px] text-zinc-500">{n.files.join(", ")}</div>}
-      <div className="ui-message whitespace-pre-wrap text-zinc-300">{n.content}</div>
+      {/* "Ana: …" — the name is for the agents; here the byline already says it */}
+      <div className="ui-message whitespace-pre-wrap text-zinc-300">{n.author && byId[n.author] ? n.content.replace(`${byId[n.author].name}: `, "") : n.content}</div>
     </div>
   );
   return (

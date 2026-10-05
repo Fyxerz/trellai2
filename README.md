@@ -87,6 +87,18 @@ Trellai crea sus tablas en un esquema propio (`trellai`), no expuesto en la API 
 
 En la cabecera, el icono de nube con el nombre de este ordenador indica que está sincronizado (en rojo si no llega a la base de datos; los cambios esperan y se suben al volver).
 
+## Trabajar con otras personas
+
+Puedes compartir **un proyecto concreto** con otra persona: los dos veis el mismo tablero, la actividad y el canal de agentes, y vuestros agentes ven las reservas de ficheros y las notas de los del otro. Tus demás proyectos no le llegan, ni los suyos a ti. No hay permisos: todos pueden hacer todo.
+
+- **Tu nombre:** la primera vez, Trellai te pregunta cómo te llamas y tu color. Se ve en la cabecera, en las tarjetas que creas, en tus mensajes y en el canal. Si ya eres alguien en otro de tus ordenadores, elige «Soy …».
+- **Invitar:** en **Ajustes de proyecto → Compartir**, **Generar código de invitación** y pásaselo. El proyecto necesita un remoto (GitHub). El código lleva la URL de la base de datos **con su contraseña**: dáselo solo a quien quieras. Por defecto usa la de tus ordenadores (`TRELLAI_DATABASE_URL`); Trellai solo le sincroniza ese proyecto, pero con esa URL podría leer los demás, así que si quieres aislarlos marca **Usar otra base de datos** y pega la URL de otro proyecto de Supabase.
+- **Unirse:** en la barra lateral (o en «Nuevo proyecto»), **Unirse con código** y pégalo. El proyecto aparece; si ya tienes clonado el mismo repo de GitHub se enlaza solo, si no, el aviso del tablero te deja clonarlo o elegir la carpeta. Pégalo en **cada ordenador** donde quieras verlo (lo que llega por una invitación no se reenvía a tus otros ordenadores).
+- **Quién lo comparte:** en el mismo panel ves a cada persona, sus ordenadores, y puedes **Quitar** a alguien, **Salir** (si entraste con un código) o **Dejar de compartir** con todos. Quien sale se queda con el tablero tal como estaba. Para cortar el acceso del todo, cambia la contraseña de esa base de datos.
+- Las tarjetas siguen teniendo dueño por ordenador; la etiqueta muestra la persona y su ordenador (p. ej. «Ana · portatil-ana»).
+
+Por dentro: cada fila de `trellai.rows` lleva su proyecto (`project`), y las conexiones de invitación (tabla local `sync_shares`) solo suben y bajan las filas de ese proyecto, más el nombre y color de quienes lo comparten (`people`, `members`).
+
 ## Ver esta rama
 
 Botón **Ver esta rama** en la tarjeta (o tecla `v` en el tablero): Trellai pone tu repo principal en la rama de esa tarjeta (`git checkout --detach`), así tu servidor de desarrollo (Vite, Next…) recarga solo y ves la feature en el navegador sin reiniciar nada.
