@@ -2,8 +2,8 @@
  * Who uses Trellai: your name and avatar, other people's on cards / activity / channel,
  * and sharing a project with someone through an invitation code.
  */
-import { Check, Copy, LogIn, Share2, TriangleAlert, UserMinus, Users } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Check, Copy, FolderGit2, Link2, LogIn, Share2, TriangleAlert, UserMinus, Users } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { AVATAR_COLORS, type Person, type Project, type Sharing } from "../../shared/types";
 import { api, useSync } from "./api";
 import { confirmDialog, notice } from "./Confirm";
@@ -210,9 +210,9 @@ function ProfileDialog({ first, onClose }: { first: boolean; onClose: () => void
 }
 
 /** "Unirse con código": paste an invitation and the shared project shows up. */
-export function JoinDialog({ onClose, onJoined }: { onClose: () => void; onJoined: (p: Project) => void }) {
-  const { me } = usePeople();
-  const [code, setCode] = useState("");
+export function JoinDialog({ initialCode = "", onClose, onJoined }: { initialCode?: string; onClose: () => void; onJoined: (p: Project) => void }) {
+  const { me, loaded } = usePeople();
+  const [code, setCode] = useState(initialCode);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ref = useDialogFocus();
@@ -230,6 +230,14 @@ export function JoinDialog({ onClose, onJoined }: { onClose: () => void; onJoine
       setBusy(false);
     }
   };
+  // Opened from an invitation link: join right away (once we know who you are).
+  const auto = useRef(!!initialCode);
+  useEffect(() => {
+    if (auto.current && loaded && me) {
+      auto.current = false;
+      join();
+    }
+  }, [loaded, me]);
   return (
     <div data-modal className={MODAL_BACKDROP} onClick={onClose}>
       <div ref={ref} role="dialog" aria-modal="true" aria-label="Unirse a un proyecto" onClick={(e) => e.stopPropagation()} className={MODAL}>
@@ -265,16 +273,40 @@ export function JoinDialog({ onClose, onJoined }: { onClose: () => void; onJoine
   );
 }
 
-/** Project settings → "Compartir": who shares it, the invitation code, stop sharing. */
+/** The link that opens someone's Trellai on the invitation (their Trellai usually runs on the same port as yours). */
+export const inviteLink = (code: string) => `${location.origin}/?join=${encodeURIComponent(code)}`;
+
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Button
+      size="sm"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        } catch {
+          notice("No pude copiarlo", "Selecciónalo y cópialo a mano.");
+        }
+      }}
+    >
+      {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
+      {copied ? "Copiado" : label}
+    </Button>
+  );
+}
+
+/** Project settings → "Compartir": who shares it, sharing with whoever has the repo, the invitation link. */
 export function SharingSettings({ project }: { project: Project }) {
   const { byId, meId } = usePeople();
   const sync = useSync();
   const [data, setData] = useState<Sharing | null>(null);
-  const [dbUrl, setDbUrl] = useState("");
-  const [otherDb, setOtherDb] = useState(false);
   const [code, setCode] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [codeError, setCodeError] = useState<string | null>(null);
+  const [dbUrl, setDbUrl] = useState("");
   const [busy, setBusy] = useState(false);
+  const [autoBusy, setAutoBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = () =>
@@ -285,23 +317,33 @@ export function SharingSettings({ project }: { project: Project }) {
       })
       .catch((e) => setError((e as Error).message));
   useEffect(() => {
+    setCode(null);
+    setCodeError(null);
     load();
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
   }, [project.id]);
+  // The link is ready as soon as you open this: nothing to press.
+  const canInvite = !!data && !data.problem && (data.ownDb || !!data.share);
+  useEffect(() => {
+    if (!canInvite || code) return;
+    api<{ code: string }>(`/api/projects/${project.id}/invite`)
+      .then((r) => setCode(r.code))
+      .catch((e) => setCodeError((e as Error).message));
+  }, [canInvite, project.id]);
 
   const members = (data?.members ?? []).filter((m) => !m.left_at);
   const shared = members.some((m) => m.person_id !== meId);
   const shareStatus = sync?.shares.find((s) => s.project_id === project.id);
-  const useOther = otherDb || (!!data && !data.ownDb && !data.share);
 
-  const invite = async () => {
+  /** No database of your own: the invitation needs one. */
+  const inviteWithDb = async () => {
     setBusy(true);
     setError(null);
     try {
-      const r = await api<{ code: string }>(`/api/projects/${project.id}/invite`, useOther ? { db: dbUrl } : {});
+      const r = await api<{ code: string }>(`/api/projects/${project.id}/invite`, { db: dbUrl });
       setCode(r.code);
-      setCopied(false);
+      setCodeError(null);
       load();
     } catch (e) {
       setError((e as Error).message);
@@ -309,13 +351,15 @@ export function SharingSettings({ project }: { project: Project }) {
       setBusy(false);
     }
   };
-  const copy = async () => {
-    if (!code) return;
+  const setAuto = async (on: boolean) => {
+    setAutoBusy(true);
     try {
-      await navigator.clipboard.writeText(code);
-      setCopied(true);
-    } catch {
-      notice("No pude copiarlo", "Selecciona el código y cópialo a mano.");
+      await api(`/api/projects/${project.id}/autoshare`, { on });
+      await load();
+    } catch (e) {
+      notice("No se pudo", (e as Error).message);
+    } finally {
+      setAutoBusy(false);
     }
   };
   const remove = async (personId: string) => {
@@ -324,8 +368,8 @@ export function SharingSettings({ project }: { project: Project }) {
     const ok = await confirmDialog({
       title: self ? "¿Salir de este proyecto compartido?" : `¿Quitar a ${name}?`,
       body: self
-        ? "Este ordenador deja de sincronizarlo. El tablero se queda aquí tal como está ahora."
-        : `Su Trellai deja de sincronizar este proyecto. Ojo: el código que le diste sigue dando acceso a la base de datos; si quieres cortarlo del todo, cambia su contraseña.`,
+        ? "Este ordenador deja de sincronizarlo (y no vuelve a unirse solo). El tablero se queda aquí tal como está ahora."
+        : `Su Trellai deja de sincronizar este proyecto. Ojo: la invitación sigue dando acceso a la base de datos; si quieres cortarlo del todo, cambia su contraseña.`,
       confirmLabel: self ? "Salir" : "Quitar",
       danger: true,
     });
@@ -336,7 +380,7 @@ export function SharingSettings({ project }: { project: Project }) {
   const unshare = async () => {
     const ok = await confirmDialog({
       title: "¿Dejar de compartir este proyecto?",
-      body: "Todos dejan de sincronizarlo (también este ordenador si entró con un código). Cada uno se queda con el tablero tal como está ahora.",
+      body: "Todos dejan de sincronizarlo, se quita la invitación del repo y deja de compartirse solo. Cada uno se queda con el tablero tal como está ahora.",
       confirmLabel: "Dejar de compartir",
       danger: true,
     });
@@ -357,7 +401,7 @@ export function SharingSettings({ project }: { project: Project }) {
             <Spinner className="h-3.5 w-3.5" /> Cargando…
           </div>
         ) : !shared ? (
-          <p className="mt-1 text-[12.5px] text-zinc-500">Solo tú. Genera un código abajo para trabajar en este tablero con otra persona.</p>
+          <p className="mt-1 text-[12.5px] text-zinc-500">Solo tú, de momento.</p>
         ) : (
           <ul className="mt-2 space-y-1">
             {members.map((m) => {
@@ -374,10 +418,12 @@ export function SharingSettings({ project }: { project: Project }) {
                       {p?.machines.length ? ` · ${p.machines.join(", ")}` : ""}
                     </div>
                   </div>
-                  {/* you can only leave a project you reach through a code; your own database always has it */}
-                  {(m.person_id !== meId || data.share) && <Button size="sm" variant="ghost" onClick={() => remove(m.person_id)} title={m.person_id === meId ? "Salir del proyecto compartido" : "Quitar del proyecto"}>
-                    <UserMinus className="h-3.5 w-3.5" /> {m.person_id === meId ? "Salir" : "Quitar"}
-                  </Button>}
+                  {/* you can only leave a project you reach through an invitation; your own database always has it */}
+                  {(m.person_id !== meId || data.share) && (
+                    <Button size="sm" variant="ghost" onClick={() => remove(m.person_id)} title={m.person_id === meId ? "Salir del proyecto compartido" : "Quitar del proyecto"}>
+                      <UserMinus className="h-3.5 w-3.5" /> {m.person_id === meId ? "Salir" : "Quitar"}
+                    </Button>
+                  )}
                 </li>
               );
             })}
@@ -391,63 +437,79 @@ export function SharingSettings({ project }: { project: Project }) {
         )}
       </section>
 
+      {data && !data.problem && (
+        <section>
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-100">
+            <FolderGit2 className="h-4 w-4" /> Con quien tenga el repo
+          </h3>
+          <label className="mt-1.5 flex items-start gap-2 text-[12.5px] text-zinc-300">
+            <input type="checkbox" className="mt-0.5" checked={data.auto.enabled} disabled={autoBusy} onChange={(e) => setAuto(e.target.checked)} />
+            <span>
+              Compartir el tablero automáticamente con quien abra este repo de GitHub en su Trellai
+              <span className="block text-[11.5px] text-zinc-500">
+                {autoBusy ? (
+                  "Comprobando…"
+                ) : data.auto.on ? (
+                  <span className="text-success">✓ Activo: quien tenga acceso al repo y lo añada a su Trellai verá este tablero sin hacer nada más.</span>
+                ) : (
+                  data.auto.reason
+                )}
+              </span>
+            </span>
+          </label>
+        </section>
+      )}
+
       <section>
         <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-100">
-          <Share2 className="h-4 w-4" /> Invitar
+          <Link2 className="h-4 w-4" /> Enlace de invitación
         </h3>
-        <p className="mt-1 text-[12.5px] text-zinc-400">
-          Quien pegue el código en su Trellai («Unirse con código», en la barra lateral) verá este tablero, su actividad y el canal de agentes. Solo se comparte este
-          proyecto. Necesita tener clonado el mismo repo de GitHub (o lo clona desde el aviso).
-        </p>
         {data?.problem ? (
           <div className="mt-2 rounded-lg bg-amber-400/10 px-3 py-2 text-[12px] text-warning">{data.problem}</div>
-        ) : (
-          data && (
-            <div className="mt-3 space-y-2.5">
-              {!data.share && data.ownDb && (
-                <label className="flex items-center gap-2 text-[12.5px] text-zinc-300">
-                  <input type="checkbox" checked={otherDb} onChange={(e) => setOtherDb(e.target.checked)} />
-                  Usar otra base de datos (no la de tus ordenadores)
-                </label>
-              )}
-              {useOther && (
-                <input
-                  value={dbUrl}
-                  onChange={(e) => setDbUrl(e.target.value)}
-                  placeholder="postgresql://postgres.xxx:contraseña@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
-                  aria-label="URL de la base de datos para compartir"
-                  className={`${FIELD} font-mono text-[12px]`}
-                />
-              )}
-              <div className="flex items-start gap-2 rounded-lg bg-red-400/[0.07] px-3 py-2 text-[11.5px] text-zinc-300">
-                <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-danger" />
-                <span>
-                  El código lleva la URL de la base de datos con su contraseña: dáselo solo a quien quieras.
-                  {!useOther && data.ownDb && !data.share
-                    ? " Es la base de datos de tus ordenadores: Trellai solo le sincroniza este proyecto, pero con esa URL podría leer los demás. Para aislarlos, usa otra base de datos."
-                    : ""}
-                </span>
-              </div>
-              <Button variant="primary" onClick={invite} disabled={busy || (useOther && !dbUrl.trim())}>
-                {busy ? <Spinner className="h-3.5 w-3.5" /> : <Share2 className="h-3.5 w-3.5" />}
-                {code ? "Generar otro código" : "Generar código de invitación"}
-              </Button>
-              {code && (
-                <div className="flex items-start gap-2">
-                  <textarea readOnly rows={3} value={code} aria-label="Código de invitación" onFocus={(e) => e.currentTarget.select()} className={`${FIELD} resize-none font-mono text-[11px] break-all`} />
-                  <Button onClick={copy} title="Copiar el código">
-                    {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
-                    {copied ? "Copiado" : "Copiar"}
-                  </Button>
-                </div>
-              )}
+        ) : !data ? null : code ? (
+          <div className="mt-2 space-y-2">
+            <p className="text-[12.5px] text-zinc-400">Pásaselo: si lo abre con su Trellai en marcha, se une sola. Si no, que pegue el código en «Unirse con código».</p>
+            <div className="flex items-center gap-2">
+              <input readOnly value={inviteLink(code)} aria-label="Enlace de invitación" onFocus={(e) => e.currentTarget.select()} className={`${FIELD} min-w-0 flex-1 font-mono text-[11.5px]`} />
+              <CopyButton text={inviteLink(code)} label="Copiar enlace" />
+              <CopyButton text={code} label="Copiar código" />
+            </div>
+            <div className="flex items-start gap-2 rounded-lg bg-red-400/[0.07] px-3 py-2 text-[11.5px] text-zinc-300">
+              <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-danger" />
+              <span>Lleva la URL de la base de datos con su contraseña: dáselo solo a quien quieras. Trellai solo le sincroniza este proyecto.</span>
+            </div>
+          </div>
+        ) : canInvite ? (
+          codeError ? (
+            <div className="mt-2 text-[12px] text-danger">{codeError}</div>
+          ) : (
+            <div className="mt-2 flex items-center gap-2 text-[12px] text-zinc-500">
+              <Spinner className="h-3.5 w-3.5" /> Preparando el enlace…
             </div>
           )
+        ) : (
+          <div className="mt-2 space-y-2">
+            <p className="text-[12.5px] text-zinc-400">
+              Para compartir hace falta una base de datos Postgres (Supabase) por la que se sincronice. Configura <span className="font-mono">TRELLAI_DATABASE_URL</span> (ver
+              README) o pega aquí la URL de una:
+            </p>
+            <input
+              value={dbUrl}
+              onChange={(e) => setDbUrl(e.target.value)}
+              placeholder="postgresql://postgres.xxx:contraseña@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
+              aria-label="URL de la base de datos para compartir"
+              className={`${FIELD} font-mono text-[12px]`}
+            />
+            <Button variant="primary" onClick={inviteWithDb} disabled={busy || !dbUrl.trim()}>
+              {busy ? <Spinner className="h-3.5 w-3.5" /> : <Share2 className="h-3.5 w-3.5" />}
+              Crear enlace
+            </Button>
+          </div>
         )}
         {error && <div className="mt-2 text-[12px] text-danger">{error}</div>}
       </section>
 
-      {(shared || data?.share) && (
+      {(shared || data?.share || data?.auto.on) && (
         <section>
           <Button variant="danger" onClick={unshare}>
             Dejar de compartir

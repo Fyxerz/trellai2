@@ -69,7 +69,13 @@ export default function App() {
   const { projects, reload } = useProjects();
   const [projectId, setProjectId] = useState<string | null>(() => store.get(LAST_PROJECT));
   const [showNew, setShowNew] = useState(false);
-  const [showJoin, setShowJoin] = useState(false);
+  /** an invitation link (?join=…) opened this page */
+  const [joinCode] = useState(() => {
+    const code = new URLSearchParams(location.search).get("join");
+    if (code) history.replaceState(null, "", location.pathname + location.hash);
+    return code;
+  });
+  const [showJoin, setShowJoin] = useState(!!joinCode);
   const [showNotes, setShowNotes] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showAssistant, setShowAssistant] = useState(false);
@@ -99,7 +105,7 @@ export default function App() {
 
   useEffect(() => {
     if (!projects) return;
-    if (!projects.length) setShowNew(true);
+    if (!projects.length) setShowNew(!showJoin);
     else if (!projects.some((p) => p.id === projectId)) setProjectId(projects[0].id);
   }, [projects]);
   useEffect(() => {
@@ -549,6 +555,7 @@ export default function App() {
         )}
         {showJoin && (
           <JoinDialog
+            initialCode={joinCode ?? ""}
             onClose={() => setShowJoin(false)}
             onJoined={async (p) => {
               await reload();

@@ -5,7 +5,7 @@
 import { execSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Card, Note, Person, Project, Sharing } from "../shared/types";
@@ -30,6 +30,7 @@ async function start(name: string, dir: string, dbUrl: string | null): Promise<M
     TRELLAI_SYNC_MS: "250",
     TRELLAI_NO_DOTENV: "1",
     TRELLAI_GUESS_REPOS: "0",
+    TRELLAI_AUTOSHARE_ANY: "1", // local bare repos count as private GitHub ones
   };
   delete env.TRELLAI_DATABASE_URL;
   if (dbUrl) env.TRELLAI_DATABASE_URL = dbUrl;
@@ -76,14 +77,14 @@ function repo(dir: string, name: string): { origin: string; path: string } {
   return { origin, path };
 }
 
-describe.skipIf(!PG)("sharing a project with someone else", { timeout: 40000 }, () => {
+describe.skipIf(!PG)("sharing a project with someone else", { timeout: 60000 }, () => {
   let pedro: Machine, ana: Machine;
-  let dbName: string, dbUrl: string;
+  let dbName: string, dbUrl: string, dir: string;
   let shared: Project, mine: Project, hers: Project;
   let pedroId: string, anaId: string;
 
   beforeAll(async () => {
-    const dir = mkdtempSync(join(tmpdir(), "trellai-share-"));
+    dir = mkdtempSync(join(tmpdir(), "trellai-share-"));
     dbName = `trellai_share_${Date.now()}`;
     const admin = postgres(PG!, { onnotice: () => {} });
     await admin.unsafe(`CREATE DATABASE ${dbName}`);
@@ -160,9 +161,46 @@ describe.skipIf(!PG)("sharing a project with someone else", { timeout: 40000 }, 
     expect((await api<Project[]>(pedro, "/api/projects")).some((p) => p.id === hers.id)).toBe(false);
   });
 
+  it("opening a repo someone shares joins its board, with your cards", async () => {
+    const auto = repo(dir, "auto");
+    const p = await api<Project>(pedro, "/api/projects", { repo_path: auto.path });
+    // Pedro's Trellai published the invitation in the repo by itself
+    await until(async () => sh(`git ls-remote ${auto.origin} refs/trellai/board`, dir), (out) => out.length > 0);
+    const anaClone = join(dir, "auto-ana");
+    sh(`git clone -q ${auto.origin} ${anaClone}`, dir);
+    // Ana already had her own board for it… no: she adds it now, with nothing to paste
+    const onAna = await api<Project>(ana, "/api/projects", { repo_path: anaClone });
+    expect(onAna.id).toBe(p.id);
+    expect(resolve(onAna.repo_path)).toBe(resolve(anaClone));
+    const c = await api<Card>(ana, "/api/cards", { project_id: p.id, title: "Desde Ana sin código", column: "backlog" });
+    await until(() => api<Card[]>(pedro, `/api/projects/${p.id}/cards`), (cs) => cs.some((x) => x.id === c.id));
+  });
+
+  it("a board you had for the repo is merged into the shared one", async () => {
+    const r = repo(dir, "mezcla");
+    const anaClone = join(dir, "mezcla-ana");
+    sh(`git clone -q ${r.origin} ${anaClone}`, dir);
+    // Ana's own board first (nobody shares it yet; she has no database to publish it)
+    const hersBefore = await api<Project>(ana, "/api/projects", { repo_path: anaClone });
+    const old = await api<Card>(ana, "/api/cards", { project_id: hersBefore.id, title: "Mi tarjeta de antes", column: "backlog" });
+    await api<Card>(ana, `/api/cards/${old.id}/checkpoints`, { text: "Paso uno" });
+    // Pedro adds it: published
+    const p = await api<Project>(pedro, "/api/projects", { repo_path: r.path });
+    await until(async () => sh(`git ls-remote ${r.origin} refs/trellai/board`, dir), (out) => out.length > 0);
+    // Ana re-links her folder (what the periodic check does by itself)
+    const merged = await api<Project>(ana, `/api/projects/${hersBefore.id}/link`, { repo_path: anaClone });
+    expect(merged.id).toBe(p.id);
+    expect((await api<Project[]>(ana, "/api/projects")).some((x) => x.id === hersBefore.id)).toBe(false);
+    const onPedro = await until(
+      () => api<Card[]>(pedro, `/api/projects/${p.id}/cards`),
+      (cs) => cs.some((x) => x.id === old.id && x.checkpoints_total === 1),
+    );
+    expect(onPedro.find((x) => x.id === old.id)!.author).toBe(anaId);
+  });
+
   it("taking Ana out stops the sync on her side", async () => {
     await api(pedro, `/api/projects/${shared.id}/members/${anaId}/remove`, {});
-    await until(() => api<{ shares: unknown[] }>(ana, "/api/sync"), (s) => s.shares.length === 0);
+    await until(() => api<{ shares: { project_id: string }[] }>(ana, "/api/sync"), (s) => !s.shares.some((x) => x.project_id === shared.id));
     const after = await api<Card>(pedro, "/api/cards", { project_id: shared.id, title: "Después", column: "backlog" });
     await new Promise((r) => setTimeout(r, 1000));
     expect((await api<Card[]>(ana, `/api/projects/${shared.id}/cards`)).some((c) => c.id === after.id)).toBe(false);

@@ -263,6 +263,8 @@ export interface Sharing {
   ownDb: boolean;
   /** why an invitation can't be made ("" = it can) */
   problem: string;
+  /** shared automatically with whoever has the repo (the invitation is published in it) */
+  auto: { enabled: boolean; on: boolean; reason: string };
 }
 
 export const AVATAR_COLORS = ["#f87171", "#fb923c", "#facc15", "#4ade80", "#2dd4bf", "#38bdf8", "#818cf8", "#c084fc", "#f472b6", "#a1a1aa"];

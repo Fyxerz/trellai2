@@ -560,7 +560,13 @@ function applyOne(c: Conn, r: RemoteRow, touched: Set<string>, after: (() => voi
   // Someone took us out of this shared project: stop syncing it.
   if (t === "members" && c.project && row?.person_id === db.meId() && row?.left_at) {
     const id = c.id;
-    after.push(() => setImmediate(() => dropShare(id)));
+    const pid = c.project;
+    after.push(() =>
+      setImmediate(() => {
+        markLeft(pid, true);
+        dropShare(id);
+      }),
+    );
   }
   return true;
 }
@@ -771,11 +777,56 @@ export async function createInvite(projectId: string, dbUrl?: string): Promise<s
       throw new Error(`No conecto con esa base de datos: ${c.error}`);
     }
   }
-  return encodeInvite({ db: url, project: projectId, repo: repoSlug(project.remote_url!), name: basename(project.name), by: me.name });
+  const code = encodeInvite({ db: url, project: projectId, repo: repoSlug(project.remote_url!), name: basename(project.name), by: me.name });
+  db.localSet(`invite:${projectId}`, code);
+  markLeft(projectId, false);
+  return code;
+}
+
+/** The last invitation made here for a project (made once, then reused). */
+export const cachedInvite = (projectId: string) => db.localGet(`invite:${projectId}`) ?? null;
+
+/** You left (or were taken out of) a shared project: don't join it again by yourself. */
+export const leftShare = (projectId: string) => db.localGet(`share-left:${projectId}`) === "1";
+function markLeft(projectId: string, left: boolean) {
+  db.localSet(`share-left:${projectId}`, left ? "1" : null);
+}
+
+/**
+ * Your own board for a repo that turned out to be shared: move its cards, notes, chats and
+ * tags into the shared project and drop it.
+ */
+function mergeProject(fromId: string, intoId: string) {
+  const from = db.getProject(fromId);
+  const into = db.getProject(intoId);
+  if (!from || !into || fromId === intoId) return;
+  const tx = sqlite.transaction(() => {
+    const tagMap = new Map(from.tags.map((t) => [t.id, db.ensureTag(intoId, t.name, t.color, t.model ?? null).id]));
+    const cards = db.listCards(fromId);
+    for (const card of cards) {
+      const max = (sqlite.prepare('SELECT MAX(position) AS m FROM cards WHERE project_id = ? AND "column" = ?').get(intoId, card.column) as { m: number | null }).m;
+      sqlite
+        .prepare("UPDATE cards SET project_id = ?, position = ?, tags = ? WHERE id = ?")
+        .run(intoId, (max ?? -1) + 1, JSON.stringify(card.tags.map((t) => tagMap.get(t)).filter(Boolean)), card.id);
+    }
+    sqlite.prepare("UPDATE notes SET project_id = ? WHERE project_id = ?").run(intoId, fromId);
+    sqlite.prepare("UPDATE assistant_messages SET project_id = ? WHERE project_id = ?").run(intoId, fromId);
+    if (!into.repo_path && from.repo_path) sqlite.prepare("UPDATE projects SET repo_path = ? WHERE id = ?").run(from.repo_path, intoId);
+    // The cards' messages, checkpoints… didn't change, so the triggers didn't see them: send them too.
+    if (triggersOn && cards.length) {
+      const ids = cards.map((c) => c.id);
+      const marks = ids.map(() => "?").join(", ");
+      for (const t of ["messages", "questions", "checkpoints", "attachments"])
+        sqlite.prepare(`INSERT INTO sync_outbox (tbl, key, project) SELECT '${t}', uid, ? FROM ${t} WHERE card_id IN (${marks})`).run(intoId, ...ids);
+    }
+    db.deleteProject(fromId);
+  });
+  tx();
+  emitSync(intoId);
 }
 
 /** Paste an invitation: sync that project from now on. Returns it once it's here. */
-export async function joinWithCode(code: string): Promise<Project> {
+export async function joinWithCode(code: string, opts: { mergeFrom?: string } = {}): Promise<Project> {
   const inv = decodeInvite(code);
   if (!inv) throw new Error("Ese código no es una invitación de Trellai (empieza por «trellai1.»).");
   const me = db.me();
@@ -794,6 +845,8 @@ export async function joinWithCode(code: string): Promise<Project> {
   const project = db.getProject(inv.project);
   if (!project) throw new Error("No encuentro el proyecto de la invitación.");
   db.joinProject(project.id, me.id);
+  markLeft(project.id, false);
+  if (opts.mergeFrom) mergeProject(opts.mergeFrom, project.id);
   // so our name and color travel with the member row
   sqlite.prepare("UPDATE people SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), me.id);
   await syncNow();
@@ -805,6 +858,7 @@ export async function removeMember(projectId: string, personId: string) {
   db.leaveProject(projectId, personId);
   await syncNow();
   if (personId === db.meId()) {
+    markLeft(projectId, true);
     const s = shareOf(projectId);
     if (s) dropShare(s.id);
   }
@@ -814,6 +868,8 @@ export async function removeMember(projectId: string, personId: string) {
 /** Everyone out (including you): the project goes back to being only yours. */
 export async function stopSharing(projectId: string) {
   for (const m of db.listMembers(projectId)) if (!m.left_at) db.leaveProject(projectId, m.person_id);
+  markLeft(projectId, true);
+  db.localSet(`invite:${projectId}`, null);
   await syncNow();
   const s = shareOf(projectId);
   if (s) dropShare(s.id);
