@@ -337,7 +337,7 @@ app.get("/api/projects/:id/branches", async (c) => {
     base: project.base_branch,
     baseMissing: !where || (!where.local && !where.remote),
     remoteLabel: list.remote ? remote.remoteLabel(project.repo_path) : null,
-    fetch: { ok: f.ok, message: f.message },
+    fetch: { ok: f.ok, message: f.message, fix: f.fix },
   });
 });
 
@@ -390,6 +390,7 @@ app.post("/api/projects/:id/github", async (c) => {
   const body = await c.req.json<{ name?: string; description?: string; private?: boolean }>().catch(() => ({}) as { name?: string; description?: string; private?: boolean });
   const created = await repoLock(repo, () => github.createRepo(repo, { name: body.name ?? "", description: body.description, private: body.private !== false }));
   if (!created.ok) return c.json({ error: created.error, code: created.code }, 400);
+  // createRepo already switched origin to HTTPS if SSH doesn't work here
   const updated = db.updateProject(project.id, { remote_url: git.remoteUrlSync(repo) });
   const pushed = await remote.pushBranch(repo, project.base_branch);
   // branches of cards already in progress go up now instead of on their next commit
@@ -397,6 +398,22 @@ app.post("/api/projects/:id/github", async (c) => {
     if (card.branch && card.worktree && ACTIVE_COLUMNS.has(card.column) && existsSync(card.worktree)) remote.pushCardBranch(card.worktree, card.branch);
   }
   return c.json({ url: created.url, project: updated, pushError: pushed.ok ? undefined : pushed.message });
+});
+
+/** «Usar HTTPS»: origin is git@github.com:… but SSH isn't set up here → switch to HTTPS with gh's login. */
+app.post("/api/projects/:id/use-https", async (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project?.repo_path) return c.json({ error: "Este proyecto no está en este ordenador" }, 400);
+  const repo = project.repo_path;
+  const r = await repoLock(repo, () => remote.useHttps(repo));
+  const updated = r.url ? db.updateProject(project.id, { remote_url: r.url }) : project;
+  if (!r.ok) return c.json({ error: r.message }, 400);
+  // what couldn't go up before goes up now
+  await remote.pushBranch(repo, project.base_branch);
+  for (const card of db.listCards(project.id)) {
+    if (card.branch && card.worktree && ACTIVE_COLUMNS.has(card.column) && existsSync(card.worktree)) remote.pushCardBranch(card.worktree, card.branch);
+  }
+  return c.json({ project: updated });
 });
 
 app.patch("/api/projects/:id", async (c) => {

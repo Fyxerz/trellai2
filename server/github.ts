@@ -21,6 +21,37 @@ function gh(args: string[], timeout = 30_000): Promise<{ ok: boolean; missing: b
   );
 }
 
+let sshCheck: { at: number; ok: Promise<boolean> } | null = null;
+
+/**
+ * Whether ssh to github.com works without asking anything (key loaded, host in known_hosts).
+ * Cached for 10 minutes. Never touches StrictHostKeyChecking.
+ */
+export function githubSshWorks(): Promise<boolean> {
+  if (process.env.TRELLAI_GITHUB_SSH) return Promise.resolve(process.env.TRELLAI_GITHUB_SSH === "1");
+  if (sshCheck && Date.now() - sshCheck.at < 10 * 60_000) return sshCheck.ok;
+  const ok = new Promise<boolean>((resolve) =>
+    execFile("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "git@github.com"], { timeout: 20_000 }, (_error, stdout, stderr) =>
+      // GitHub answers "Hi user! You've successfully authenticated…" with exit code 1
+      resolve(/successfully authenticated/i.test(String(stdout) + String(stderr))),
+    ),
+  );
+  sshCheck = { at: Date.now(), ok };
+  return ok;
+}
+
+/** Make git use gh's login for https://github.com (`gh auth setup-git`). True if gh is logged in and it worked. */
+export async function setupGitCredentials(): Promise<boolean> {
+  const r = await gh(["auth", "setup-git", "--hostname", "github.com"]);
+  return r.ok;
+}
+
+/** git@github.com:o/r.git, ssh://git@github.com/o/r.git → https://github.com/o/r.git; anything else → null. */
+export function sshToHttps(url: string): string | null {
+  const m = url.trim().match(/^(?:ssh:\/\/)?(?:[\w.-]+@)?github\.com(?::\d+)?[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i);
+  return m ? `https://github.com/${m[1]}/${m[2]}.git` : null;
+}
+
 /** One `{full_name, …}` JSON object per line (gh api --jq '.[] | {...}') → repos, newest first. */
 export function parseRepos(out: string, protocol: string): GitHubRepo[] {
   const seen = new Set<string>();
@@ -64,8 +95,10 @@ export async function listRepos(): Promise<GitHubRepos> {
     ),
     gh(["config", "get", "git_protocol"]),
   ]);
+  // git_protocol=ssh is only honoured when ssh to GitHub really works; otherwise clone over HTTPS
+  const protocol = proto.out.trim() === "ssh" && (await githubSshWorks()) ? "ssh" : "https";
   if (!list.ok) return { available: true, loggedIn: true, repos: [], error: `gh no pudo listar tus repos: ${list.err.split("\n")[0]}` };
-  return { available: true, loggedIn: true, repos: parseRepos(list.out, proto.out.trim()) };
+  return { available: true, loggedIn: true, repos: parseRepos(list.out, protocol) };
 }
 
 /** Folder name for a clone URL: last path segment without ".git". */
@@ -95,6 +128,8 @@ export const validRepoName = (name: string) => /^([\w.-]+\/)?[\w.-]+$/.test(name
 /**
  * Create a repo on GitHub for a local repo that has no remote and add it as `origin`
  * (gh uses your git_protocol for the URL). Pushing is left to the caller (the base branch only).
+ * If that URL is SSH and ssh to GitHub doesn't work here, origin is switched to HTTPS with gh as
+ * git's credential helper, so the first push works without asking anything.
  */
 export async function createRepo(
   repo: string,
@@ -113,5 +148,26 @@ export async function createRepo(
     return { ok: false, code: "failed", error: `gh no pudo crear el repo: ${r.err.split("\n").filter(Boolean).slice(0, 2).join(" — ")}` };
   }
   const url = r.out.match(/https:\/\/github\.com\/\S+/)?.[0]?.replace(/\.git$/, "") ?? `https://github.com/${name}`;
+  await preferHttps(repo);
   return { ok: true, url };
+}
+
+function gitIn(repo: string, args: string[]): Promise<{ ok: boolean; out: string }> {
+  return new Promise((resolve) =>
+    execFile("git", args, { cwd: repo, timeout: 15_000 }, (error, stdout) => resolve({ ok: !error, out: String(stdout).trim() })),
+  );
+}
+
+/**
+ * If origin is an SSH github.com URL and ssh doesn't work here (or `force`), switch it to HTTPS and
+ * let gh hand git the credentials. Returns the new URL, or null when nothing changed.
+ */
+export async function preferHttps(repo: string, force = false): Promise<string | null> {
+  const cur = await gitIn(repo, ["remote", "get-url", "origin"]);
+  const https = cur.ok ? sshToHttps(cur.out) : null;
+  if (!https) return null;
+  if (!force && (await githubSshWorks())) return null;
+  await setupGitCredentials();
+  const r = await gitIn(repo, ["remote", "set-url", "origin", https]);
+  return r.ok ? https : null;
 }
