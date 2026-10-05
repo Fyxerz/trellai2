@@ -1,7 +1,7 @@
 import { Notifications, reportError } from "./notifications";
 import { useMessageDraft } from "./chat";
 import { projectName, MOD, Appearance, useDialogFocus } from "./preferences";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { COLUMNS, type Column, type Project } from "../../shared/types";
 import { api, useBoard, useProjects, type Board as BoardState } from "./api";
 import { AssistantPanel, type AssistantMode } from "./Assistant";
@@ -576,21 +576,23 @@ export default function App() {
             <div className="flex h-full items-center justify-center text-zinc-500">Crea un proyecto para empezar.</div>
           )}
         </div>
-        {inBoard && card && <CardPanel key={card.id} card={card} board={board} project={project} onClose={() => setSelected(null)} />}
-        {inBoard && showAssistant && projectId && !card && (
-          <AssistantPanel
-            key={projectId}
-            projectId={projectId}
-            board={board}
-            onOpenCard={openPanelCard}
-            mode={assistantMode}
-            setMode={setAssistantMode}
-            project={project}
-            onProjectChange={reload}
-            onClose={() => setShowAssistant(false)}
-          />
-        )}
-        {inBoard && showNotes && projectId && !card && <NotesPanel key={projectId} projectId={projectId} board={board} onOpen={openPanelCard} onClose={() => setShowNotes(false)} />}
+        <PanelSlot>
+          {inBoard && card && <CardPanel key={card.id} card={card} board={board} project={project} onClose={() => setSelected(null)} />}
+          {inBoard && showAssistant && projectId && !card && (
+            <AssistantPanel
+              key={projectId}
+              projectId={projectId}
+              board={board}
+              onOpenCard={openPanelCard}
+              mode={assistantMode}
+              setMode={setAssistantMode}
+              project={project}
+              onProjectChange={reload}
+              onClose={() => setShowAssistant(false)}
+            />
+          )}
+          {inBoard && showNotes && projectId && !card && <NotesPanel key={projectId} projectId={projectId} board={board} onOpen={openPanelCard} onClose={() => setShowNotes(false)} />}
+        </PanelSlot>
       </main>
 
       <Notifications />
@@ -613,6 +615,25 @@ export default function App() {
       )}
     </div>
   );
+}
+
+const PANEL_ENTER_MS = 160, PANEL_EXIT_MS = 130;
+
+/** Slides side panels in when one opens and out when the last one closes; swapping panels while open doesn't re-animate. */
+function PanelSlot({ children }: { children: ReactNode }) {
+  const open = Array.isArray(children) ? children.some(Boolean) : !!children;
+  const last = useRef(children);
+  if (open) last.current = children;
+  const [phase, setPhase] = useState<"closed" | "enter" | "open" | "closing">(open ? "open" : "closed");
+  if (open && (phase === "closed" || phase === "closing")) setPhase("enter");
+  if (!open && (phase === "enter" || phase === "open")) setPhase("closing");
+  useEffect(() => {
+    if (phase !== "enter" && phase !== "closing") return;
+    const t = setTimeout(() => setPhase(phase === "enter" ? "open" : "closed"), phase === "enter" ? PANEL_ENTER_MS : PANEL_EXIT_MS);
+    return () => clearTimeout(t);
+  }, [phase]);
+  if (!open && phase === "closed") return null;
+  return <div className="panel-slot" data-phase={phase}>{open ? children : last.current}</div>;
 }
 
 function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; board: BoardState; onOpen: (id: string) => void; onClose: () => void }) {
