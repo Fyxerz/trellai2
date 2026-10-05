@@ -1,8 +1,9 @@
-import { ArrowDown, ArrowUp, ChevronDown, Cloud, CloudOff, FolderGit2, GitBranch, Laptop, Download, Lock, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, Cloud, CloudOff, CloudUpload, FolderGit2, GitBranch, Laptop, Download, Lock, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { COLUMN_LABELS, type Column, type Project } from "../../shared/types";
 import { api, useSync, type Board } from "./api";
 import { confirmDialog, notice } from "./Confirm";
+import { CreateGithubRepo } from "./CreateGithubRepo";
 import { FolderPicker } from "./FolderPicker";
 import { Button, COLUMN_ACCENT, Spinner, timeAgo } from "./ui";
 
@@ -68,6 +69,7 @@ export function BranchStatus({
   const [st, setSt] = useState<GitStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -126,7 +128,7 @@ export function BranchStatus({
           : `${project.repo_path} · al día con ${st.remote}`;
 
   return (
-    <div ref={root} className="relative ml-1 hidden lg:block">
+    <div ref={root} className="relative ml-1 hidden items-center lg:flex">
       <button
         onClick={() => project.repo_path && setOpen((v) => !v)}
         title={`${title}${project.repo_path ? " — clic para ver las ramas" : ""}`}
@@ -158,6 +160,26 @@ export function BranchStatus({
         )}
         <ChevronDown className={`h-3 w-3 transition ${open ? "rotate-180" : ""}`} />
       </button>
+      {st && !st.remote && project.repo_path && (
+        <button
+          onClick={() => setCreating(true)}
+          title="Este repo no tiene remoto: créalo en tu cuenta de GitHub y súbelo"
+          className="ml-1 flex items-center gap-1 rounded-md bg-indigo-500/10 px-1.5 py-0.5 text-[11px] text-indigo-300 ring-1 ring-indigo-500/30 transition hover:bg-indigo-500/20"
+        >
+          <CloudUpload className="h-3 w-3" />
+          Crear repo en GitHub
+        </button>
+      )}
+      {creating && (
+        <CreateGithubRepo
+          project={project}
+          onClose={() => setCreating(false)}
+          onCreated={() => {
+            api<GitStatus>(`/api/projects/${project.id}/git`).then(setSt).catch(() => {});
+            onProjectChange();
+          }}
+        />
+      )}
       {open && (
         <BranchMenu
           project={project}

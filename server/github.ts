@@ -3,7 +3,7 @@
  * (we never store tokens). Used by "Nuevo proyecto → Clonar de GitHub".
  */
 import { execFile } from "node:child_process";
-import type { GitHubRepo, GitHubRepos } from "../shared/types.js";
+import type { GitHubRepo, GitHubRepos, GitHubStatus } from "../shared/types.js";
 
 /** TRELLAI_GH lets tests point at a missing / fake binary. */
 const GH = process.env.TRELLAI_GH || "gh";
@@ -78,4 +78,40 @@ export function repoDirName(url: string): string {
       .split(/[/:\\]/)
       .pop() || ""
   );
+}
+
+/** Who `gh` is logged in as (for "Crear repo en GitHub"). Never throws. */
+export async function status(): Promise<GitHubStatus> {
+  const auth = await gh(["auth", "status"]);
+  if (auth.missing) return { available: false, loggedIn: false, login: null };
+  if (!auth.ok) return { available: true, loggedIn: false, login: null };
+  const user = await gh(["api", "user", "--jq", ".login"]);
+  return { available: true, loggedIn: true, login: user.ok ? user.out.trim() || null : null };
+}
+
+/** "nombre" or "owner/nombre" with GitHub's allowed characters. */
+export const validRepoName = (name: string) => /^([\w.-]+\/)?[\w.-]+$/.test(name) && !/(^|\/)\.{1,2}$/.test(name);
+
+/**
+ * Create a repo on GitHub for a local repo that has no remote and add it as `origin`
+ * (gh uses your git_protocol for the URL). Pushing is left to the caller (the base branch only).
+ */
+export async function createRepo(
+  repo: string,
+  opts: { name: string; description?: string; private: boolean },
+): Promise<{ ok: true; url: string } | { ok: false; code: "missing" | "auth" | "exists" | "invalid" | "failed"; error: string }> {
+  const name = opts.name.trim();
+  if (!validRepoName(name)) return { ok: false, code: "invalid", error: "Nombre no válido: usa letras, números, «-», «_» o «.» (o «org/nombre»)." };
+  const auth = await gh(["auth", "status"]);
+  if (auth.missing) return { ok: false, code: "missing", error: "No encuentro el comando `gh` (GitHub CLI). Instálalo desde https://cli.github.com y ejecuta `gh auth login`." };
+  if (!auth.ok) return { ok: false, code: "auth", error: "`gh` no tiene sesión iniciada. Ejecuta `gh auth login` en una terminal y vuelve a intentarlo." };
+  const args = ["repo", "create", name, opts.private ? "--private" : "--public", "--source", repo, "--remote", "origin"];
+  if (opts.description?.trim()) args.push("--description", opts.description.trim());
+  const r = await gh(args, 60_000);
+  if (!r.ok) {
+    if (/already exists/i.test(r.err)) return { ok: false, code: "exists", error: `Ya existe un repo llamado «${name}» en GitHub. Elige otro nombre.` };
+    return { ok: false, code: "failed", error: `gh no pudo crear el repo: ${r.err.split("\n").filter(Boolean).slice(0, 2).join(" — ")}` };
+  }
+  const url = r.out.match(/https:\/\/github\.com\/\S+/)?.[0]?.replace(/\.git$/, "") ?? `https://github.com/${name}`;
+  return { ok: true, url };
 }
