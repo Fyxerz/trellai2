@@ -29,7 +29,7 @@ Usa tu sesión de Claude Code: si `claude` funciona en tu terminal, Trellai tamb
 |---|---|
 | **Backlog** | Ideas sueltas. Nadie las toca. |
 | **Plan** | Escribes la spec en la tarjeta, en markdown. Claude no hace nada aquí. |
-| **Preparation** | Un agente de solo lectura lee la spec y el repo. Si le falta algo importante, te deja preguntas con opciones (la tarjeta se marca en morado: *Te necesita*). Si lo tiene claro, escribe un plan técnico y **mueve la tarjeta sola a Doing**. |
+| **Preparation** | Un agente de solo lectura lee la spec y el repo. Si le falta algo importante, te deja preguntas con opciones (la tarjeta se marca en morado: *Te necesita*). Si lo tiene claro, escribe un plan técnico y la deja *En espera* hasta que la muevas a Doing (o **la mueve sola** si el proyecto tiene activado el paso automático). |
 | **Doing** | Cada tarjeta tiene su propio agente en su propio **git worktree y rama** (`trellai/<slug>`), todos **en paralelo y sin límite**. Al terminar se commitea, se hace rebase sobre la rama base y la tarjeta **pasa sola a To Review**. Si el rebase da conflictos, el agente los resuelve. |
 | **To Review** | Ves el diff. Puedes **pedir cambios** escribiendo en Actividad (vuelve a Doing con tu comentario) o pulsar **Mergear** / arrastrarla a Merged. |
 | **Merged** | `git merge --no-ff` a la rama base y se borran el worktree y la rama. Si hay conflicto, la tarjeta vuelve a Doing para que el agente rebase y resuelva, y luego vuelve a To Review. |

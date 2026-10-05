@@ -240,7 +240,7 @@ async function afterPrep(card: Card, res: RunResult): Promise<void> {
     const { plan, files } = res.signals.ready;
     if (!projectOf(card).auto_doing) {
       // Pedro moves it when he wants; onEnter("doing") starts the dev with this plan.
-      set(card.id, { plan, files, status: "waiting", status_text: "Lista — muévela a Doing cuando quieras" });
+      set(card.id, { plan, files, status: "ready", status_text: "Lista — muévela a Doing cuando quieras" });
       log(card, "system", "✅ Spec clara — lista para Doing: muévela cuando quieras.");
       return;
     }

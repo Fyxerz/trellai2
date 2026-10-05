@@ -142,6 +142,7 @@ addColumn("cards", "tags", "tags TEXT NOT NULL DEFAULT '[]'");
 addColumn("cards", "agent_model", "agent_model TEXT");
 /** When the card entered Merged (the board groups that column by day). */
 addColumn("cards", "merged_at", "merged_at TEXT");
+db.exec(`UPDATE cards SET status = 'ready' WHERE status = 'waiting' AND status_text LIKE 'Lista —%'`);
 db.exec(`UPDATE cards SET merged_at = updated_at WHERE "column" = 'merged' AND merged_at IS NULL`);
 /** JSON Claim[]: what the card's agent is touching while in Doing. */
 addColumn("cards", "claims", "claims TEXT NOT NULL DEFAULT '[]'");
