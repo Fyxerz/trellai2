@@ -157,6 +157,8 @@ export interface Card {
   merged_at: string | null;
   /** card it was split from in Preparation (null = not a sub-card) */
   parent_id: string | null;
+  /** person who created it (Person.id; null = before people existed) */
+  author: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -187,6 +189,8 @@ export interface Message {
   column_before: Column | null;
   /** undone by a rewind (↶) */
   undone: boolean;
+  /** person whose Trellai wrote it (Person.id; null = before people existed) */
+  author: string | null;
 }
 
 export interface Question {
@@ -224,8 +228,46 @@ export interface Note {
   targets: string[];
   /** no longer shown to agents: its card left Doing, or it was archived by hand */
   archived: boolean;
+  /** person who wrote it, or whose agent did (Person.id; null = before people existed) */
+  author: string | null;
   created_at: string;
 }
+
+/** Someone using Trellai (one per person, shared by their computers). */
+export interface Person {
+  id: string;
+  name: string;
+  /** hex color of their avatar */
+  color: string;
+  /** computers they use (Card.machine values) */
+  machines: string[];
+  updated_at: string;
+}
+
+/** Someone who shares a project (joined with an invitation code, or created it). */
+export interface Member {
+  id: string;
+  project_id: string;
+  person_id: string;
+  joined_at: string;
+  /** they left, or were removed (null = still in) */
+  left_at: string | null;
+}
+
+/** GET /api/projects/:id/sharing */
+export interface Sharing {
+  members: Member[];
+  /** this computer reaches the project through an invitation (its own database), not TRELLAI_DATABASE_URL */
+  share: { id: string; host: string } | null;
+  /** TRELLAI_DATABASE_URL is set here (an invitation can reuse it) */
+  ownDb: boolean;
+  /** why an invitation can't be made ("" = it can) */
+  problem: string;
+  /** shared automatically with whoever has the repo (the invitation is published in it) */
+  auto: { enabled: boolean; on: boolean; reason: string };
+}
+
+export const AVATAR_COLORS = ["#f87171", "#fb923c", "#facc15", "#4ade80", "#2dd4bf", "#38bdf8", "#818cf8", "#c084fc", "#f472b6", "#a1a1aa"];
 
 /** A message in the project assistant conversation. */
 export interface AssistantMessage {

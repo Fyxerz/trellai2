@@ -14,7 +14,9 @@ import type {
   Message,
   MessageRole,
   ModelRole,
+  Member,
   Note,
+  Person,
   Project,
   Question,
   Tag,
@@ -165,6 +167,29 @@ addColumn("projects", "bg_image", "bg_image TEXT");
 /** 1 = a card that finishes preparation moves to Doing by itself (off by default). */
 addColumn("projects", "auto_doing", "auto_doing INTEGER NOT NULL DEFAULT 0");
 
+/** Who wrote it (Person.id): the card's creator, and whoever's Trellai wrote a message or note. */
+for (const t of ["cards", "messages", "notes"]) addColumn(t, "author", "author TEXT");
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS people (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL,
+  machines TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS members (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  person_id TEXT NOT NULL,
+  joined_at TEXT NOT NULL,
+  left_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_members_project ON members(project_id);
+-- this computer's own settings (never synced)
+CREATE TABLE IF NOT EXISTS local_kv (k TEXT PRIMARY KEY, v TEXT);
+`);
+
 /** Tables whose rows use a local INTEGER id; `uid` identifies them across computers. */
 export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages", "attachments"] as const;
 for (const t of UID_TABLES) {
@@ -283,9 +308,9 @@ export function createCard(c: { project_id: string; title: string; spec?: string
     .get(c.project_id, column) as { m: number | null };
   const id = nanoid(10);
   db.prepare(
-    `INSERT INTO cards (id, project_id, title, spec, "column", position, parent_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, c.project_id, c.title, c.spec ?? "", column, (max.m ?? -1) + 1, c.parent_id ?? null, now(), now());
+    `INSERT INTO cards (id, project_id, title, spec, "column", position, parent_id, author, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, c.project_id, c.title, c.spec ?? "", column, (max.m ?? -1) + 1, c.parent_id ?? null, meId(), now(), now());
   return getCard(id)!;
 }
 
@@ -371,10 +396,11 @@ export function takePendingInput(id: string): string[] {
 
 export function addMessage(cardId: string, role: MessageRole, content: string): Message {
   const created_at = now();
+  const author = meId();
   const r = db
-    .prepare("INSERT INTO messages (uid, card_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)")
-    .run(uid(), cardId, role, content, created_at);
-  return { id: Number(r.lastInsertRowid), card_id: cardId, role, content, created_at, head_sha: null, head_ahead: null, column_before: null, undone: false };
+    .prepare("INSERT INTO messages (uid, card_id, role, content, author, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(uid(), cardId, role, content, author, created_at);
+  return { id: Number(r.lastInsertRowid), card_id: cardId, role, content, created_at, head_sha: null, head_ahead: null, column_before: null, undone: false, author };
 }
 
 type MessageRow = Omit<Message, "undone"> & { undone: number; uid: string };
@@ -447,8 +473,8 @@ export function addNote(
   { files = [], targets = [] }: { files?: string[]; targets?: string[] } = {},
 ): Note {
   const r = db
-    .prepare("INSERT INTO notes (uid, project_id, card_id, content, files, targets, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(uid(), projectId, cardId, content, JSON.stringify(files), JSON.stringify(targets), now());
+    .prepare("INSERT INTO notes (uid, project_id, card_id, content, files, targets, author, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(uid(), projectId, cardId, content, JSON.stringify(files), JSON.stringify(targets), meId(), now());
   return getNote(Number(r.lastInsertRowid))!;
 }
 
@@ -634,4 +660,80 @@ export function copyAttachments(fromCardId: string, toCardId: string) {
     annotations: string;
   }[];
   for (const r of rows) addAttachment(toCardId, { ...r, annotations: safeJson(r.annotations, []) });
+}
+
+// ---------- people (who uses Trellai) and project members ----------
+
+export function localGet(k: string): string | undefined {
+  return (db.prepare("SELECT v FROM local_kv WHERE k = ?").get(k) as { v: string } | undefined)?.v;
+}
+export function localSet(k: string, v: string | null) {
+  if (v === null) db.prepare("DELETE FROM local_kv WHERE k = ?").run(k);
+  else db.prepare("INSERT OR REPLACE INTO local_kv (k, v) VALUES (?, ?)").run(k, v);
+}
+
+type PersonRow = Omit<Person, "machines"> & { machines: string };
+const toPerson = (r: PersonRow): Person => ({ ...r, machines: safeJson(r.machines, []) });
+
+export function listPeople(): Person[] {
+  return (db.prepare("SELECT * FROM people ORDER BY name").all() as PersonRow[]).map(toPerson);
+}
+
+export function getPerson(id: string): Person | undefined {
+  const r = db.prepare("SELECT * FROM people WHERE id = ?").get(id) as PersonRow | undefined;
+  return r && toPerson(r);
+}
+
+/** The person using this computer (set the first time Trellai opens; null until then). */
+export function meId(): string | null {
+  return localGet("me") ?? null;
+}
+export function me(): Person | undefined {
+  const id = meId();
+  return id ? getPerson(id) : undefined;
+}
+
+/** Create or update this computer's person (`adopt`: "I'm this person already", from another computer). */
+export function setMe(p: { name: string; color: string; adopt?: string }, machine: string): Person {
+  const id = (p.adopt && getPerson(p.adopt) ? p.adopt : meId()) ?? nanoid(10);
+  const existing = getPerson(id);
+  const machines = [...new Set([...(existing?.machines ?? []), machine])];
+  db.prepare("INSERT OR REPLACE INTO people (id, name, color, machines, updated_at) VALUES (?, ?, ?, ?, ?)").run(
+    id,
+    p.name,
+    p.color,
+    JSON.stringify(machines),
+    now(),
+  );
+  localSet("me", id);
+  return getPerson(id)!;
+}
+
+/** Make sure this computer is listed under its person (e.g. after TRELLAI_MACHINE changes). */
+export function registerMachine(machine: string) {
+  const p = me();
+  if (p && !p.machines.includes(machine))
+    db.prepare("UPDATE people SET machines = ?, updated_at = ? WHERE id = ?").run(JSON.stringify([...p.machines, machine]), now(), p.id);
+}
+
+/** Whose computer is it (by Card.machine). */
+export function personOnMachine(machine: string | null): Person | undefined {
+  return machine ? listPeople().find((p) => p.machines.includes(machine)) : undefined;
+}
+
+export function listMembers(projectId: string): Member[] {
+  return db.prepare("SELECT * FROM members WHERE project_id = ? ORDER BY joined_at").all(projectId) as Member[];
+}
+
+/** (Re)join: `left_at` back to null. */
+export function joinProject(projectId: string, personId: string): Member {
+  const id = `${projectId}:${personId}`;
+  const existing = db.prepare("SELECT * FROM members WHERE id = ?").get(id) as Member | undefined;
+  if (!existing) db.prepare("INSERT INTO members (id, project_id, person_id, joined_at) VALUES (?, ?, ?, ?)").run(id, projectId, personId, now());
+  else if (existing.left_at) db.prepare("UPDATE members SET left_at = NULL, joined_at = ? WHERE id = ?").run(now(), id);
+  return db.prepare("SELECT * FROM members WHERE id = ?").get(id) as Member;
+}
+
+export function leaveProject(projectId: string, personId: string) {
+  db.prepare("UPDATE members SET left_at = ? WHERE id = ? AND left_at IS NULL").run(now(), `${projectId}:${personId}`);
 }

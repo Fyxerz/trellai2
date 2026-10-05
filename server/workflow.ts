@@ -76,7 +76,7 @@ function logMove(card: Card, from: Column, to: Column, why: string) {
 }
 
 /** `why`: who or what moved it (default: you, from the board). */
-export function moveCard(cardId: string, column: Column, index = Number.MAX_SAFE_INTEGER, why = `movida por ti en ${MACHINE}`): Card {
+export function moveCard(cardId: string, column: Column, index = Number.MAX_SAFE_INTEGER, why = `movida por ${db.me()?.name ?? "ti"} en ${MACHINE}`): Card {
   const before = db.getCard(cardId);
   if (!before) throw new Error("Tarjeta no encontrada");
   if (before.column !== column && runningElsewhere(before)) {

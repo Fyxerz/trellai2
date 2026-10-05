@@ -33,6 +33,7 @@ import { TagManager } from "./TagManager";
 import { ProjectDocs } from "./ProjectDocs";
 import { useProjectTags } from "./tags";
 import { Sidebar } from "./Sidebar";
+import { Byline, JoinDialog, ProfileChip, reloadPeople, usePeople } from "./People";
 import { BranchStatus, SyncIndicator, UnlinkedBanner } from "./SyncUI";
 import { Button, ChatHint, chatKeyDown, Kbd, ProjectAvatar, timeAgo } from "./ui";
 
@@ -68,6 +69,13 @@ export default function App() {
   const { projects, reload } = useProjects();
   const [projectId, setProjectId] = useState<string | null>(() => store.get(LAST_PROJECT));
   const [showNew, setShowNew] = useState(false);
+  /** an invitation link (?join=…) opened this page */
+  const [joinCode] = useState(() => {
+    const code = new URLSearchParams(location.search).get("join");
+    if (code) history.replaceState(null, "", location.pathname + location.hash);
+    return code;
+  });
+  const [showJoin, setShowJoin] = useState(!!joinCode);
   const [showNotes, setShowNotes] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showAssistant, setShowAssistant] = useState(false);
@@ -97,7 +105,7 @@ export default function App() {
 
   useEffect(() => {
     if (!projects) return;
-    if (!projects.length) setShowNew(true);
+    if (!projects.length) setShowNew(!showJoin);
     else if (!projects.some((p) => p.id === projectId)) setProjectId(projects[0].id);
   }, [projects]);
   useEffect(() => {
@@ -503,7 +511,7 @@ export default function App() {
             variant="ghost"
             size="sm"
             aria-haspopup="dialog"
-            title={project ? `Ajustes de ${projectName(project.name)}: modelos y fondo del tablero` : "Abre un proyecto para cambiar sus ajustes"}
+            title={project ? `Ajustes de ${projectName(project.name)}: modelos, fondo del tablero y compartir` : "Abre un proyecto para cambiar sus ajustes"}
             disabled={!project}
             onClick={() => setShowSettings(true)}
             className="ring-1 ring-ui-ink/10"
@@ -511,6 +519,7 @@ export default function App() {
             <SlidersHorizontal className="h-4 w-4" />
             Ajustes de proyecto
           </Button>
+          <ProfileChip />
           <Appearance />
           <IconButton title="Atajos de teclado (?)" onClick={() => setShowHelp(true)}>
             <Keyboard className="h-4 w-4" />
@@ -540,7 +549,19 @@ export default function App() {
             onPick={openProject}
             onHome={goHome}
             onNew={() => setShowNew(true)}
+            onJoin={() => setShowJoin(true)}
             onRemoved={reload}
+          />
+        )}
+        {showJoin && (
+          <JoinDialog
+            initialCode={joinCode ?? ""}
+            onClose={() => setShowJoin(false)}
+            onJoined={async (p) => {
+              await reload();
+              reloadPeople();
+              openProject(p.id);
+            }}
           />
         )}
         <div className={`min-w-0 flex-1 ${view === "home" ? "pt-3" : ""}`} onMouseDown={() => setZone("board")}>
@@ -606,6 +627,10 @@ export default function App() {
           canClose={!!projects?.length}
           onClose={() => setShowNew(false)}
           onCloneStarted={() => setShowNew(false)}
+          onJoin={() => {
+            setShowNew(false);
+            setShowJoin(true);
+          }}
           onCreated={(p) => {
             setShowNew(false);
             reload();
@@ -641,6 +666,7 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
   const live = board.notes.filter((n) => !n.archived);
   const old = board.notes.filter((n) => n.archived);
   const [history, setHistory] = useState(false);
+  const { byId } = usePeople();
   const pending = useRef<HTMLElement>(null);
   const working = Object.values(board.cards).filter((c) => c.column === "doing").sort((a, b) => a.position - b.position);
   const archive = (id: number) => api(`/api/notes/${id}/archive`, {}).catch((e) => reportError((e as Error).message));
@@ -661,9 +687,10 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
           <button onClick={() => onOpen(n.card_id!)} className="font-medium text-zinc-300 hover:underline">
             {n.card_title}
           </button>
-        ) : (
+        ) : n.author && !n.targets.length ? null : (
           <span className="font-medium text-zinc-400">Trellai</span>
         )}
+        {n.author && <Byline id={n.author} />}
         <span>{timeAgo(n.created_at)}</span>
         {n.targets.length > 0 && <span>para {n.targets.map((t) => board.cards[t]?.title ?? "una tarjeta").join(" y ")}</span>}
         {!n.archived && (
@@ -678,7 +705,8 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
         )}
       </div>
       {n.files.length > 0 && <div className="mb-0.5 font-mono text-[11px] text-zinc-500">{n.files.join(", ")}</div>}
-      <div className="ui-message whitespace-pre-wrap text-zinc-300">{n.content}</div>
+      {/* "Ana: …" — the name is for the agents; here the byline already says it */}
+      <div className="ui-message whitespace-pre-wrap text-zinc-300">{n.author && byId[n.author] ? n.content.replace(`${byId[n.author].name}: `, "") : n.content}</div>
     </div>
   );
   return (
@@ -739,7 +767,20 @@ function NotesPanel({ projectId, board, onOpen, onClose }: { projectId: string; 
   );
 }
 
-function NewProject({ onClose, onCreated, onCloneStarted, canClose }: { onClose: () => void; onCreated: (p: Project) => void; onCloneStarted: () => void; canClose: boolean }) {
+function NewProject({
+  onClose,
+  onCreated,
+  onCloneStarted,
+  onJoin,
+  canClose,
+}: {
+  onClose: () => void;
+  onCreated: (p: Project) => void;
+  onCloneStarted: () => void;
+  /** "Unirse con código" instead */
+  onJoin: () => void;
+  canClose: boolean;
+}) {
   const dialogRef = useDialogFocus<HTMLDivElement>();
   const [tab, setTab] = useState<"local" | "clone">("local");
   const [repo, setRepo] = useState<{ path: string; isRepo: boolean } | null>(null);
@@ -800,6 +841,9 @@ function NewProject({ onClose, onCreated, onCloneStarted, canClose }: { onClose:
             <p className="text-xs text-zinc-500">
               {tab === "local" ? "Elige la carpeta del repo. Las carpetas con git salen en verde." : "Elige uno de tus repos o pega su URL; se clona en segundo plano y te avisa al terminar."}
             </p>
+            <button type="button" onClick={onJoin} className="mt-1 text-xs text-accent hover:underline">
+              ¿Te han invitado a un proyecto? Unirse con código
+            </button>
           </div>
           <div role="tablist" aria-label="Origen del proyecto" className="flex shrink-0 gap-0.5 rounded-lg bg-zinc-950 p-0.5 ring-1 ring-zinc-800">
             {tabs.map(([id, label]) => (

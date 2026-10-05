@@ -21,7 +21,7 @@ interface Machine {
 
 async function start(name: string, dir: string, dbUrl: string, delay: number): Promise<Machine> {
   const port = 4900 + Math.floor(Math.random() * 900);
-  const proc = spawn("npx", ["tsx", "server/index.ts"], {
+  const proc = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
     env: {
       ...process.env,
       PORT: String(port),

@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
-import { COLUMNS, isColumn, TAG_COLORS, type CloneJob, type Project, type ServerEvent } from "../shared/types.js";
+import { AVATAR_COLORS, COLUMNS, isColumn, TAG_COLORS, type CloneJob, type Project, type ServerEvent, type Sharing } from "../shared/types.js";
 import { sweepAll } from "./claims.js";
 import * as db from "./db.js";
 import { cleanAnnotations, parseImage } from "./attachments.js";
@@ -20,7 +20,8 @@ import { MACHINE } from "./machine.js";
 import * as remote from "./remote.js";
 import { repoLock } from "./lock.js";
 import * as github from "./github.js";
-import { startSync, syncStatus } from "./sync.js";
+import * as autoshare from "./autoshare.js";
+import { cachedInvite, createInvite, inviteProblem, joinWithCode, removeMember, shareOf, startSync, stopSharing, syncStatus } from "./sync.js";
 import { assistantRunning, sendToAssistant, stopAssistant } from "./assistant.js";
 import { buildInfo, distDir, startSelfUpdate } from "./selfupdate.js";
 import { backgroundFile, backgroundStatus, generateBackground, imageMime, stopBackground } from "./background.js";
@@ -132,8 +133,17 @@ app.get("/api/branches", (c) => {
 app.post("/api/projects", async (c) => {
   const body = await c.req.json<{ name?: string; repo_path?: string; base_branch?: string; init?: boolean }>();
   const r = addProject(expandHome(String(body.repo_path ?? "").trim()), body);
-  return "error" in r ? c.json(r, 400) : c.json(r.project);
+  return "error" in r ? c.json(r, 400) : c.json(await sharedBoard(r.project));
 });
+
+/**
+ * Someone already shares this repo's board? Then the new project joins it (your cards go there).
+ * Waits a few seconds at most; after that it goes on in the background.
+ */
+async function sharedBoard(project: Project): Promise<Project> {
+  const timeout = new Promise<undefined>((r) => setTimeout(r, 10_000));
+  return (await Promise.race([autoshare.check(project.id), timeout])) ?? db.getProject(project.id) ?? project;
+}
 
 /** Your GitHub repos through the `gh` CLI (+ whether it's installed / logged in). */
 app.get("/api/github/repos", async (c) => c.json(await github.listRepos()));
@@ -190,7 +200,7 @@ app.post("/api/projects/clone", async (c) => {
     Object.assign(job, { stage: "creating", percent: 100, message: undefined });
     const r = addProject(dest, opts);
     if ("error" in r) Object.assign(job, { stage: "error", message: r.error });
-    else Object.assign(job, { stage: "done", project: r.project });
+    else Object.assign(job, { stage: "done", project: await sharedBoard(r.project) });
   })()
     .catch((e) => Object.assign(job, { stage: "error", message: String(e?.message ?? e) }))
     .finally(() => {
@@ -214,6 +224,91 @@ app.get("/api/clone-jobs/:id", (c) => {
 
 app.get("/api/sync", (c) => c.json(syncStatus()));
 
+// ---------- people and sharing projects with them ----------
+
+/** Everyone this Trellai knows (yours and the people you share projects with) + who you are here. */
+app.get("/api/people", (c) => c.json({ me: db.meId(), machine: MACHINE, people: db.listPeople() }));
+
+/** Your name and avatar color (`adopt`: you're already this person on another computer). */
+app.post("/api/me", async (c) => {
+  const body = await c.req.json<{ name?: string; color?: string; adopt?: string }>();
+  const adopted = body.adopt ? db.getPerson(body.adopt) : undefined;
+  const name = (body.name ?? adopted?.name ?? "").trim().slice(0, 40);
+  if (!name) return c.json({ error: "Escribe tu nombre." }, 400);
+  const color = /^#[0-9a-f]{6}$/i.test(body.color ?? "") ? body.color! : (adopted?.color ?? AVATAR_COLORS[0]);
+  const me = db.setMe({ name, color, adopt: adopted?.id }, MACHINE);
+  // now there's someone to share as
+  for (const p of db.listProjects()) autoshare.check(p.id).catch(() => {});
+  return c.json(me);
+});
+
+app.get("/api/projects/:id/sharing", (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project) return c.json({ error: "Proyecto no encontrado" }, 404);
+  const sharing: Sharing = {
+    members: db.listMembers(project.id),
+    share: shareOf(project.id),
+    ownDb: syncStatus().enabled,
+    problem: inviteProblem(project),
+    auto: { ...autoshare.autoShareState(project.id), enabled: !autoshare.autoOff(project.id) },
+  };
+  return c.json(sharing);
+});
+
+/** The project's invitation (made the first time it's asked for). */
+app.get("/api/projects/:id/invite", async (c) => {
+  const cached = cachedInvite(c.req.param("id"));
+  if (cached) return c.json({ code: cached });
+  try {
+    return c.json({ code: await createInvite(c.req.param("id")) });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 400);
+  }
+});
+
+/** Share automatically with whoever has the repo (on by default). */
+app.post("/api/projects/:id/autoshare", async (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project) return c.json({ error: "Proyecto no encontrado" }, 404);
+  const { on } = await c.req.json<{ on: boolean }>();
+  db.localSet(`autoshare-off:${project.id}`, on ? null : "1");
+  if (on) await autoshare.check(project.id);
+  else await autoshare.unpublish(project);
+  return c.json({ ...autoshare.autoShareState(project.id), enabled: on });
+});
+
+/** Invitation code for a project (`db`: a Postgres URL other than TRELLAI_DATABASE_URL). */
+app.post("/api/projects/:id/invite", async (c) => {
+  const body = await c.req.json<{ db?: string }>().catch(() => ({}) as { db?: string });
+  try {
+    return c.json({ code: await createInvite(c.req.param("id"), body.db) });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 400);
+  }
+});
+
+/** Paste an invitation code: the project shows up here and syncs from now on. */
+app.post("/api/shares", async (c) => {
+  const { code } = await c.req.json<{ code?: string }>();
+  try {
+    return c.json(await joinWithCode(String(code ?? "")));
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 400);
+  }
+});
+
+app.post("/api/projects/:id/members/:person/remove", async (c) => {
+  await removeMember(c.req.param("id"), c.req.param("person"));
+  return c.json({ ok: true });
+});
+
+app.post("/api/projects/:id/unshare", async (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (project) await autoshare.unpublish(project).catch(() => {});
+  await stopSharing(c.req.param("id"));
+  return c.json({ ok: true });
+});
+
 /** Link a project that came from another computer to a folder on this one. */
 app.post("/api/projects/:id/link", async (c) => {
   const project = db.getProject(c.req.param("id"));
@@ -226,7 +321,7 @@ app.post("/api/projects/:id/link", async (c) => {
   if (project.remote_url && url && !git.sameRemoteSync(project.remote_url, url)) {
     return c.json({ error: `Esa carpeta apunta a ${url}, pero el proyecto es ${project.remote_url}.` }, 400);
   }
-  return c.json(db.updateProject(project.id, { repo_path: repo, remote_url: project.remote_url ?? url }));
+  return c.json(await sharedBoard(db.updateProject(project.id, { repo_path: repo, remote_url: project.remote_url ?? url })));
 });
 
 /** Clone a project that came from another computer (default: ~/code/<name>). */
@@ -573,7 +668,7 @@ app.get("/api/projects/:id/notes", (c) => c.json(db.listNotes(c.req.param("id"))
 
 app.post("/api/projects/:id/notes", async (c) => {
   const { content, files } = await c.req.json<{ content: string; files?: string[] }>();
-  const note = db.addNote(c.req.param("id"), null, `Pedro: ${content}`, { files: (files ?? []).map((f) => f.trim()).filter(Boolean) });
+  const note = db.addNote(c.req.param("id"), null, `${db.me()?.name ?? "Pedro"}: ${content}`, { files: (files ?? []).map((f) => f.trim()).filter(Boolean) });
   emitNote(note);
   return c.json(note);
 });
@@ -908,7 +1003,9 @@ for (const p of db.listProjects()) {
     if (url) db.updateProject(p.id, { remote_url: url });
   }
 }
+db.registerMachine(MACHINE);
 startSync();
+autoshare.startAutoShare();
 startSelfUpdate();
 
 const port = Number(process.env.PORT ?? 4317);

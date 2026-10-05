@@ -5,6 +5,7 @@ import { api, useSync, type Board } from "./api";
 import { confirmDialog, notice } from "./Confirm";
 import { CreateGithubRepo } from "./CreateGithubRepo";
 import { FolderPicker } from "./FolderPicker";
+import { Avatar, usePeople } from "./People";
 import { Button, COLUMN_ACCENT, Spinner, timeAgo } from "./ui";
 
 interface GitStatus {
@@ -660,20 +661,25 @@ function BranchItem({ b, remote, base, busy, failed, onDelete, onOpenCard }: { b
 /** Small cloud chip: board shared with your other computers. */
 export function SyncIndicator() {
   const s = useSync();
-  if (!s?.enabled) return null;
-  const Icon = s.ok ? Cloud : CloudOff;
+  if (!s?.active) return null;
+  const shares = s.shares ?? [];
+  const broken = shares.filter((x) => !x.ok && x.error);
+  const ok = (!s.enabled || s.ok) && !broken.length;
+  const Icon = ok ? Cloud : CloudOff;
+  const lines = [
+    s.enabled
+      ? s.ok
+        ? `Tablero compartido entre tus ordenadores. Este es "${s.machine}".${s.last_sync ? ` Última sincronización: hace ${timeAgo(s.last_sync)}.` : ""}`
+        : `Sin conexión con la base de datos de tus ordenadores: ${s.error}. Sigues trabajando en local; se sincroniza al volver.${s.pending ? ` (${s.pending} cambios pendientes)` : ""}`
+      : `Este ordenador es "${s.machine}".`,
+    ...(shares.length ? [`${shares.length} proyecto(s) compartido(s) con otras personas.`] : []),
+    ...broken.map((x) => `Sin conexión con ${x.host}: ${x.error}`),
+  ];
   return (
-    <span
-      className={`hidden items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] md:flex ${s.ok ? "text-zinc-500" : "text-danger"}`}
-      title={
-        s.ok
-          ? `Tablero compartido entre tus ordenadores. Este es "${s.machine}".${s.last_sync ? ` Última sincronización: hace ${timeAgo(s.last_sync)}.` : ""}`
-          : `Sin conexión con la base de datos compartida: ${s.error}. Sigues trabajando en local; se sincroniza al volver.${s.pending ? ` (${s.pending} cambios pendientes)` : ""}`
-      }
-    >
+    <span className={`hidden items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] md:flex ${ok ? "text-zinc-500" : "text-danger"}`} title={lines.join("\n")}>
       <Icon className="h-3.5 w-3.5" />
       {s.machine}
-      {!s.ok && s.pending > 0 && <span className="tabular">· {s.pending}</span>}
+      {s.enabled && !s.ok && s.pending > 0 && <span className="tabular">· {s.pending}</span>}
     </span>
   );
 }
@@ -681,11 +687,17 @@ export function SyncIndicator() {
 /** "en mac-casa" chip for cards whose agent/worktree is on another computer. */
 export function MachineChip({ machine, className = "" }: { machine: string | null; className?: string }) {
   const s = useSync();
-  if (!machine || !s?.enabled || machine === s.machine) return null;
+  const { people, meId } = usePeople();
+  if (!machine || !s?.active || machine === s.machine) return null;
+  const who = people.find((p) => p.machines.includes(machine));
+  const someoneElse = who && who.id !== meId;
   return (
-    <span className={`inline-flex items-center gap-1 rounded-md bg-sky-400/10 px-1.5 text-[10.5px] leading-4 text-info ${className}`} title={`Su agente y su worktree están en ${machine}`}>
-      <Laptop className="h-3 w-3" />
-      {machine}
+    <span
+      className={`inline-flex items-center gap-1 rounded-md bg-sky-400/10 px-1.5 text-[10.5px] leading-4 text-info ${className}`}
+      title={`Su agente y su worktree están en ${machine}${someoneElse ? `, el ordenador de ${who.name}` : ""}`}
+    >
+      {someoneElse ? <Avatar person={who} size={12} /> : <Laptop className="h-3 w-3" />}
+      {someoneElse ? `${who.name} · ${machine}` : machine}
     </span>
   );
 }

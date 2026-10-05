@@ -2,6 +2,7 @@ import { flushDraft } from "./drafts";
 import { reportError } from "./notifications";
 import { DragDropContext, Draggable, Droppable, type DropResult } from "@hello-pangea/dnd";
 import { MachineChip } from "./SyncUI";
+import { Avatar, usePeople } from "./People";
 import { useSync } from "./api";
 import { useEffect, useRef, useState, type CSSProperties, type ReactElement } from "react";
 import { createPortal } from "react-dom";
@@ -446,6 +447,9 @@ function CardItem({
   const done = card.checkpoints_total > 0 && card.checkpoints_done === card.checkpoints_total;
   const showBranch = card.branch && (card.column === "doing" || card.column === "review");
   const sync = useSync();
+  const { byId, people } = usePeople();
+  // only once there's someone else to tell apart
+  const showAuthor = !!card.author && !!byId[card.author] && people.length > 1;
   // a tag being dragged over this card (shown as if already on it) or just dropped on it
   const tagDrag = useTagDrag();
   const hoverTag = tagDrag.hover?.cardId === card.id ? tagDrag.hover.tag : null;
@@ -453,7 +457,7 @@ function CardItem({
   const shownTags = [...tags, ...[hoverTag, landed?.tag].filter((t): t is Tag => !!t && !tags.some((x) => x.id === t.id))].filter(
     (t, i, all) => all.findIndex((x) => x.id === t.id) === i,
   );
-  const elsewhere = !merged && !!card.machine && !!sync?.enabled && card.machine !== sync.machine && ["preparation", "doing", "review"].includes(card.column);
+  const elsewhere = !merged && !!card.machine && !!sync?.active && card.machine !== sync.machine && ["preparation", "doing", "review"].includes(card.column);
 
   return (
     <div
@@ -565,7 +569,10 @@ function CardItem({
           )}
         </div>
       )}
-      <div className={`text-sm leading-snug font-medium ${merged ? "text-zinc-400 line-through decoration-zinc-600" : "text-zinc-100"}`}>{card.title}</div>
+      <div className="flex items-start gap-1.5">
+        <div className={`min-w-0 flex-1 text-sm leading-snug font-medium ${merged ? "text-zinc-400 line-through decoration-zinc-600" : "text-zinc-100"}`}>{card.title}</div>
+        {showAuthor && <Avatar id={card.author} size={16} title={`Creada por ${byId[card.author!]?.name}`} className="mt-0.5" />}
+      </div>
       {card.spec && !merged && <div className="mt-1 line-clamp-2 text-sm leading-relaxed text-zinc-500">{specPreview(card.spec)}</div>}
 
       {(card.status !== "idle" || (card.status_text && !merged) || elsewhere) && (

@@ -1,8 +1,9 @@
 import { projectName, useDialogFocus } from "./preferences";
-import { useEffect, useId, useRef, useState } from "react";
+import { Component, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api";
-import { Check, ChevronDown, Cpu, Image as ImageIcon, Loader2, RefreshCw, Sparkles, Workflow, X } from "lucide-react";
+import { Check, ChevronDown, Cpu, Image as ImageIcon, Loader2, RefreshCw, Share2, Sparkles, Workflow, X } from "lucide-react";
+import { SharingSettings } from "./People";
 import { TAG_PALETTE, type BgMode, type BgStatus, type Project } from "../../shared/types";
 import { reportError } from "./notifications";
 import { CODEX_EFFORTS, EFFORT_LABELS, EFFORTS, prettyModel, splitEffort, withEffort, type Effort } from "../../shared/models";
@@ -438,13 +439,17 @@ export function ProjectSettings({
             ))}
           </nav>
           <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`} className="min-w-0 flex-1 overflow-y-auto p-5">
+            <PanelGuard key={tab}>
             {tab === "models" ? (
               <ModelSettings project={project} onSaved={onSaved} />
             ) : tab === "flow" ? (
               <FlowSettings project={project} onSaved={onSaved} />
+            ) : tab === "sharing" ? (
+              <SharingSettings project={project} />
             ) : (
               <BackgroundSettings project={project} codexReady={codex ? codex.installed && codex.loggedIn !== false : null} onSaved={onSaved} />
             )}
+            </PanelGuard>
           </div>
         </div>
       </div>
@@ -452,12 +457,30 @@ export function ProjectSettings({
   );
 }
 
-type SettingsTab = "models" | "flow" | "background";
+/** A section that fails to draw shows why, instead of taking the whole app down with it (blank grey screen). */
+class PanelGuard extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="rounded-lg bg-red-400/10 px-3 py-2.5 text-[12.5px] text-danger">
+        Esta sección no se pudo mostrar: {this.state.error.message}
+        <div className="mt-1 text-[11.5px] text-zinc-400">Si acabas de actualizar Trellai, reinícialo para que el servidor esté al día.</div>
+      </div>
+    );
+  }
+}
+
+type SettingsTab = "models" | "flow" | "background" | "sharing";
 const SETTINGS_TAB = "trellai:settings-tab";
 const SETTINGS_TABS: { id: SettingsTab; label: string; icon: typeof Cpu }[] = [
   { id: "models", label: "Modelos", icon: Cpu },
   { id: "flow", label: "Flujo", icon: Workflow },
   { id: "background", label: "Fondo del tablero", icon: ImageIcon },
+  { id: "sharing", label: "Compartir", icon: Share2 },
 ];
 
 function ModelSettings({ project, onSaved }: { project: Project; onSaved: () => void }) {

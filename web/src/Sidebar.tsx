@@ -1,5 +1,5 @@
 import { projectName, MOD } from "./preferences";
-import { LayoutGrid, Plus, Trash2 } from "lucide-react";
+import { LayoutGrid, LogIn, Plus, Trash2 } from "lucide-react";
 import { confirmDeleteProject } from "./Confirm";
 import { useEffect, useRef, useState } from "react";
 import type { CardStatus, Column, Project } from "../../shared/types";
@@ -48,6 +48,7 @@ export function Sidebar({
   onPick,
   onHome,
   onNew,
+  onJoin,
   onRemoved,
 }: {
   projects: Project[];
@@ -60,6 +61,8 @@ export function Sidebar({
   onPick: (id: string) => void;
   onHome: () => void;
   onNew: () => void;
+  /** "Unirse con código" */
+  onJoin: () => void;
   onRemoved: () => void;
 }) {
   const summaries = useProjectSummaries(true);
@@ -170,6 +173,13 @@ export function Sidebar({
         className="m-2 flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-zinc-500 transition hover:bg-ui-ink/[0.04] hover:text-zinc-200"
       >
         <Plus className="h-4 w-4" /> Nuevo proyecto
+      </button>
+      <button
+        onClick={onJoin}
+        title="Pega un código de invitación para trabajar en el proyecto de otra persona"
+        className="mx-2 mb-2 -mt-1.5 flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-zinc-500 transition hover:bg-ui-ink/[0.04] hover:text-zinc-200"
+      >
+        <LogIn className="h-4 w-4" /> Unirse con código
       </button>
     </nav>
   );
