@@ -84,6 +84,13 @@ export interface GitHubRepos {
   error?: string;
 }
 
+/** Whether `gh` is installed and logged in (GET /api/github/status). */
+export interface GitHubStatus {
+  available: boolean;
+  loggedIn: boolean;
+  login: string | null;
+}
+
 /** A background "clone from GitHub" (GET /api/clone-jobs/:id). */
 export interface CloneJob {
   stage: "cloning" | "creating" | "done" | "error";

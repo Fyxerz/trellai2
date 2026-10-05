@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { CloneJob, GitHubRepos, Project } from "../shared/types";
-import { parseRepos, repoDirName } from "../server/github";
+import { parseRepos, repoDirName, validRepoName } from "../server/github";
 import { parseCloneProgress } from "../server/remote";
 
 const PORT = 4950 + Math.floor(Math.random() * 400);
@@ -172,5 +172,42 @@ describe("GitHub repos list", () => {
     expect(repoDirName("https://github.com/me/trellai.git")).toBe("trellai");
     expect(repoDirName("git@github.com:me/trellai.git")).toBe("trellai");
     expect(repoDirName("https://github.com/me/trellai/")).toBe("trellai");
+  });
+});
+
+describe("create a GitHub repo for a local project", () => {
+  it("explains that gh is missing, and refuses repos that already have a remote", async () => {
+    const local = join(dir, "solo-local");
+    mkdirSync(local);
+    sh("git init -q -b main && git config user.email t@t && git config user.name t", local);
+    writeFileSync(join(local, "a.txt"), "a\n");
+    sh("git add -A && git commit -qm init", local);
+    const { json: p } = await call<Project>("/api/projects", { repo_path: local });
+    expect(p.remote_url).toBeNull();
+
+    const st = await call("/api/github/status");
+    expect(st.json).toMatchObject({ available: false, loggedIn: false });
+
+    const bad = await call(`/api/projects/${p.id}/github`, { name: "con espacios" });
+    expect(bad.status).toBe(400);
+    expect(bad.json.code).toBe("invalid");
+
+    const r = await call(`/api/projects/${p.id}/github`, { name: "solo-local", private: true });
+    expect(r.status).toBe(400);
+    expect(r.json.code).toBe("missing");
+    expect(r.json.error).toMatch(/gh auth login/);
+
+    sh(`git remote add origin "${origin}"`, local);
+    const twice = await call(`/api/projects/${p.id}/github`, { name: "solo-local" });
+    expect(twice.status).toBe(400);
+    expect(twice.json.error).toMatch(/ya tiene remoto/);
+  });
+
+  it("validates repo names", () => {
+    expect(validRepoName("trellai")).toBe(true);
+    expect(validRepoName("org/my.repo_2")).toBe(true);
+    expect(validRepoName("con espacios")).toBe(false);
+    expect(validRepoName("a/b/c")).toBe(false);
+    expect(validRepoName("..")).toBe(false);
   });
 });

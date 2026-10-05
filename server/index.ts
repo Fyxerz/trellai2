@@ -375,6 +375,30 @@ app.post("/api/projects/:id/pull", async (c) => {
   return c.json(r);
 });
 
+/** Whether `gh` is installed / logged in, for the "Crear repo en GitHub" dialog. */
+app.get("/api/github/status", async (c) => c.json(await github.status()));
+
+/** Create a GitHub repo for a project whose local repo has no remote, push the base branch and link it. */
+app.post("/api/projects/:id/github", async (c) => {
+  const project = db.getProject(c.req.param("id"));
+  if (!project) return c.json({ error: "Proyecto no encontrado" }, 404);
+  if (!project.repo_path || !git.isRepo(project.repo_path)) return c.json({ error: "Este proyecto no está en este ordenador" }, 400);
+  const repo = project.repo_path;
+  if (git.remoteUrlSync(repo)) return c.json({ error: `Este repo ya tiene remoto: ${git.remoteUrlSync(repo)}` }, 400);
+  if (!git.hasCommits(repo) || !git.shaOf(repo, `refs/heads/${project.base_branch}`))
+    return c.json({ error: `La rama ${project.base_branch} no tiene ningún commit todavía. Haz un primer commit antes de subirla a GitHub.` }, 400);
+  const body = await c.req.json<{ name?: string; description?: string; private?: boolean }>().catch(() => ({}) as { name?: string; description?: string; private?: boolean });
+  const created = await repoLock(repo, () => github.createRepo(repo, { name: body.name ?? "", description: body.description, private: body.private !== false }));
+  if (!created.ok) return c.json({ error: created.error, code: created.code }, 400);
+  const updated = db.updateProject(project.id, { remote_url: git.remoteUrlSync(repo) });
+  const pushed = await remote.pushBranch(repo, project.base_branch);
+  // branches of cards already in progress go up now instead of on their next commit
+  for (const card of db.listCards(project.id)) {
+    if (card.branch && card.worktree && ACTIVE_COLUMNS.has(card.column) && existsSync(card.worktree)) remote.pushCardBranch(card.worktree, card.branch);
+  }
+  return c.json({ url: created.url, project: updated, pushError: pushed.ok ? undefined : pushed.message });
+});
+
 app.patch("/api/projects/:id", async (c) => {
   const body = await c.req.json<Record<string, string | null>>();
   const project = db.getProject(c.req.param("id"));
