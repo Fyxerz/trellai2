@@ -22,7 +22,7 @@ import type {
   Tag,
 } from "../shared/types.js";
 
-const DB_PATH = resolve(process.env.TRELLAI_DB ?? "data/trellai.db");
+export const DB_PATH = resolve(process.env.TRELLAI_DB ?? "data/trellai.db");
 mkdirSync(dirname(DB_PATH), { recursive: true });
 
 export const db = new Database(DB_PATH);

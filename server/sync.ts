@@ -23,8 +23,8 @@
 import postgres from "postgres";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, join, relative, resolve } from "node:path";
 import type { Card, Project } from "../shared/types.js";
 import * as db from "./db.js";
 import { emitSync } from "./events.js";
@@ -34,6 +34,22 @@ import { MACHINE } from "./machine.js";
 const URL = process.env.TRELLAI_DATABASE_URL?.trim() || "";
 const INTERVAL = Number(process.env.TRELLAI_SYNC_MS ?? 2000);
 const LOCK_ID = 7_741_100;
+
+/**
+ * The tests make throwaway repos in the temp dir (trellai-e2e-…, trellai-clone-…). A test server that
+ * inherited TRELLAI_DATABASE_URL once uploaded them to the real board, so the real board (its database
+ * isn't a temp file) never shares them nor takes them in, and drops the ones it already has.
+ */
+const insideTmp = (p: string) => {
+  const rel = relative(resolve(tmpdir()), resolve(p));
+  return !!rel && !rel.startsWith("..") && !/^[a-z]:/i.test(rel);
+};
+const TEST_SERVER = insideTmp(db.DB_PATH);
+export const isTestRepo = (p: unknown): boolean =>
+  !TEST_SERVER &&
+  typeof p === "string" &&
+  !!p &&
+  ((insideTmp(p) && /^trellai-/.test(relative(resolve(tmpdir()), resolve(p)))) || /[\\/](temp|tmp|T)[\\/]trellai-[a-z]+-[^\\/]+[\\/]/i.test(p));
 /** Bumped when the remote schema changes, so every database is migrated again. */
 const SCHEMA = 2;
 
@@ -324,9 +340,11 @@ async function write(c: Conn, items: { tbl: string; key: string; project?: strin
   const rows: Outgoing[] = [];
   /** deleted rows whose project we can no longer tell: only if the remote row is the share's */
   const orphans: { tbl: string; key: string }[] = [];
+  const testProjects = new Set(db.listProjects().filter((p) => isTestRepo(p.repo_path)).map((p) => p.id));
   for (const { tbl, key, project } of items) {
     const row = readRow(tbl, key);
     const pid = project ?? projectOfRow(tbl, key, row) ?? null;
+    if (pid && row && testProjects.has(pid)) continue;
     if (c.project) {
       if (tbl === "people") {
         if (key !== me && !members!.has(key)) continue;
@@ -553,6 +571,7 @@ function applyOne(c: Conn, r: RemoteRow, touched: Set<string>, after: (() => voi
 
   const data = JSON.parse(r.data) as Record<string, unknown>;
   if (outside(projectOfRow(t, r.key, data))) return false;
+  if (t === "projects" && !existing && isTestRepo(data.repo_hint)) return false; // its cards find no project: deferred until they expire
   const allowed = new Set(sharedCols(t));
   const cols = Object.keys(data).filter((col) => allowed.has(col) && col !== k);
   const values = cols.map((col) => data[col] ?? null);
@@ -672,9 +691,18 @@ function ensureRunning() {
 
 export function startSync() {
   for (const s of listShares()) if (s.url !== URL) conns.set(s.id, newConn(s.id, s.url, s.project_id));
-  if (!conns.size) return;
   ensureRunning();
-  tick();
+  dropTestProjects();
+  if (conns.size) tick();
+}
+
+/** Delete the test projects that leaked onto the board (and, through the sync, from everyone's). */
+function dropTestProjects() {
+  for (const p of db.listProjects()) {
+    if (!isTestRepo(p.repo_path)) continue;
+    console.log(`[sync] borrando el proyecto de prueba "${p.name}" (${p.repo_path})`);
+    db.deleteProject(p.id);
+  }
 }
 
 /** Sync right now (e.g. before handing a card to another computer). */
