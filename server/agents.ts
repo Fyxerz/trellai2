@@ -12,11 +12,39 @@ import { runEngine, type ToolSpec } from "./engine.js";
 
 export type AgentKind = "prep" | "dev";
 
+/** One piece of a card that preparation split off as its own sub-card. */
+export interface SubcardSpec {
+  title: string;
+  spec: string;
+  checkpoints: string[];
+  files: string[];
+}
+
+/** One part of a card that the dev agent hands to a subagent (same worktree). */
+export interface ParallelPart {
+  name: string;
+  scope: string;
+  files: string[];
+}
+
 /** Things the agent told us through its tools during a run. */
 export interface Signals {
   asked: boolean;
   ready?: { plan: string; files: string[] };
+  /** preparation split the card into sub-cards that run in parallel */
+  split?: { plan: string; subcards: SubcardSpec[] };
   done?: string;
+}
+
+/** Heading of the plan section with the parts the dev agent runs as parallel subagents. */
+export const PARALLEL_HEADING = "## Reparto en paralelo";
+
+export function parallelSection(parts: ParallelPart[]): string {
+  return [
+    PARALLEL_HEADING,
+    "",
+    ...parts.map((p, i) => `${i + 1}. **${p.name}** — ${p.scope}${p.files.length ? ` (${p.files.map((f) => `\`${f}\``).join(", ")})` : ""}`),
+  ].join("\n");
 }
 
 export interface RunOptions {
@@ -64,7 +92,19 @@ can be implemented without important ambiguity.
 - If something is missing that would materially change the implementation, call \`ask_questions\` with 1–4
   concrete questions, each with 2–4 short options, then END YOUR TURN. Do not ask about things you can decide
   yourself with good judgement — Pedro wants you to be autonomous.
-- Otherwise call \`mark_ready\` with:
+- Otherwise decide HOW the work should be done, by size:
+  a) Small or tightly coupled work → \`mark_ready\` as usual.
+  b) ONE feature with several pieces that can be built at the same time in the same branch (e.g. backend
+     endpoint + UI + tests, or several independent screens) → \`mark_ready\` with \`parallel\`: 2–5 parts, each
+     with a name, its scope and the files it touches. Parts must not edit the same files. The developer agent
+     then runs one subagent per part in parallel and integrates the result.
+  c) SEVERAL independent features that touch DIFFERENT files and are each worth a card on its own → call
+     \`split_card\` instead of \`mark_ready\`: 2–5 sub-cards, each with its own title, spec, checkpoints and the
+     files it will touch. They all start at the same time on their own branches and coordinate through notes, so
+     avoid sub-cards that need another one finished first (fold such pieces together). The original card waits
+     and closes by itself when every sub-card is merged.
+  When in doubt, pick the simpler option (a before b before c).
+- \`mark_ready\` takes:
   - \`checkpoints\`: the work broken into 3–10 short steps (Spanish, one line each) written in PRODUCT language:
     describe what Pedro will notice or be able to do when the step is done, not how it's coded. Ask yourself "can
     Pedro check this by using the app?". E.g. "Al pegar una imagen en la spec aparece adjunta", "Cada camarero ve
@@ -75,7 +115,11 @@ can be implemented without important ambiguity.
     kept — send only the ones you want to ADD.
   - \`plan\`: optional short notes for the developer agent (decisions, gotchas) — don't repeat the checkpoints.
   - \`files\`: the files you expect to touch.
+  - \`parallel\` (optional, option b only): the parts to build in parallel.
   The card is then ready for DOING (Trellai or Pedro moves it there).
+- \`split_card\` takes \`subcards\` (title, self-contained spec, checkpoints in the same product language, files)
+  and an optional \`plan\` with notes shared by all of them (e.g. contracts between sub-cards: endpoint shapes,
+  shared types).
 
 Always write to Pedro in Spanish. Be brief.`;
 
@@ -107,6 +151,11 @@ How to work:
    what Pedro will notice (e.g. "Los adjuntos también se ven en el móvil"), not code details.
    All checkpoints should be done before you finish.
 7. When finished, call \`report_done\` with a short summary in Spanish of what you did and how to test it.
+8. If the notes from preparation have a "Reparto en paralelo" section, go faster by delegating: launch one
+   subagent per part with your Agent (Task) tool, ALL in the same message so they run at the same time, telling
+   each its scope, its files, the spec, and that it must not touch the other parts' files nor commit. Don't edit
+   their files meanwhile. When they finish, review and integrate their work, run the tests, then check the
+   checkpoints yourself. If you have no subagent tool, do the parts one after another.
 
 Write to Pedro in Spanish. Be brief.`;
 
@@ -129,15 +178,26 @@ export function makeToolkit(card: Card, signals: Signals) {
       log("system", `❓ ${questions.length} pregunta(s) para ti`);
       return "Questions delivered to Pedro. End your turn now; you'll be resumed with the answers.";
     },
-    markReady(plan: string, files: string[], checkpoints: string[] = []) {
+    markReady(plan: string, files: string[], checkpoints: string[] = [], parallel: ParallelPart[] = []) {
       const existing = new Set(db.listCheckpoints(card.id).map((c) => c.text.trim().toLowerCase()));
       for (const t of checkpoints) {
         const clean = t.trim();
         if (clean && !existing.has(clean.toLowerCase())) db.addCheckpoint(card.id, clean, "agent");
       }
       if (checkpoints.length) emitCheckpoints(card.project_id, card.id);
+      const parts = parallel.filter((p) => p.name?.trim());
+      if (parts.length > 1) {
+        plan = [plan.trim(), parallelSection(parts)].filter(Boolean).join("\n\n");
+        log("system", `🔀 Se hará en ${parts.length} partes en paralelo: ${parts.map((p) => p.name).join(", ")}`);
+      }
       signals.ready = { plan, files };
       return "Card marked as ready for DOING. End your turn now.";
+    },
+    splitCard(subcards: SubcardSpec[], plan = "") {
+      const valid = subcards.filter((s) => s.title?.trim());
+      if (valid.length < 2) return "A split needs at least 2 sub-cards. Call mark_ready instead if the card is a single piece of work.";
+      signals.split = { plan, subcards: valid };
+      return `Card split into ${valid.length} sub-cards. End your turn now.`;
     },
     postNote(message: string, files: string[] = []) {
       const note = db.addNote(card.project_id, card.id, message, { files: files.map((f) => f.trim()).filter(Boolean) });
@@ -230,8 +290,38 @@ export function cardTools(kind: AgentKind, kit: ReturnType<typeof makeToolkit>):
             ),
           plan: z.string().describe("Optional short notes for the developer agent, in Spanish (markdown)"),
           files: z.array(z.string()).describe("Files you expect to create or modify"),
+          parallel: z
+            .array(
+              z.object({
+                name: z.string().describe("Short name of the part, in Spanish"),
+                scope: z.string().describe("What this part builds, in Spanish"),
+                files: z.array(z.string()).describe("Files only this part touches"),
+              }),
+            )
+            .optional()
+            .describe("Only for ONE feature whose pieces can be built at the same time: 2-5 parts the developer runs as parallel subagents"),
         },
-        run: ({ plan, files, checkpoints }) => kit.markReady(plan, files, checkpoints),
+        run: ({ plan, files, checkpoints, parallel }) => kit.markReady(plan, files, checkpoints, parallel ?? []),
+      },
+      {
+        name: "split_card",
+        description:
+          "Instead of mark_ready: split the card into 2-5 independent sub-cards (each a feature of its own, touching different files) that run in parallel on their own branches.",
+        shape: {
+          subcards: z
+            .array(
+              z.object({
+                title: z.string().describe("Sub-card title, in Spanish"),
+                spec: z.string().describe("What this sub-card must do, self-contained, in Spanish (markdown)"),
+                checkpoints: z.array(z.string()).describe("2-8 one-line steps in Spanish, in product language"),
+                files: z.array(z.string()).describe("Files this sub-card will create or modify"),
+              }),
+            )
+            .min(2)
+            .max(5),
+          plan: z.string().optional().describe("Notes shared by every sub-card (contracts between them, gotchas), in Spanish"),
+        },
+        run: ({ subcards, plan }) => kit.splitCard(subcards, plan ?? ""),
       },
     ];
   return [

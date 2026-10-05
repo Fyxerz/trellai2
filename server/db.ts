@@ -146,6 +146,8 @@ db.exec(`UPDATE cards SET status = 'ready' WHERE status = 'waiting' AND status_t
 db.exec(`UPDATE cards SET merged_at = updated_at WHERE "column" = 'merged' AND merged_at IS NULL`);
 /** JSON Claim[]: what the card's agent is touching while in Doing. */
 addColumn("cards", "claims", "claims TEXT NOT NULL DEFAULT '[]'");
+/** Card this one was split from in Preparation (the mother closes when all its sub-cards are merged). */
+addColumn("cards", "parent_id", "parent_id TEXT");
 /** JSON string[]: files a note is about, and cards it's addressed to ([] = everyone). */
 addColumn("notes", "files", "files TEXT NOT NULL DEFAULT '[]'");
 addColumn("notes", "targets", "targets TEXT NOT NULL DEFAULT '[]'");
@@ -274,16 +276,16 @@ export function getCard(id: string): Card | undefined {
   return toCard(db.prepare(`${CARD_SELECT} WHERE c.id = ?`).get(id) as CardRow | undefined);
 }
 
-export function createCard(c: { project_id: string; title: string; spec?: string; column?: Column }): Card {
+export function createCard(c: { project_id: string; title: string; spec?: string; column?: Column; parent_id?: string | null }): Card {
   const column = c.column ?? "backlog";
   const max = db
     .prepare('SELECT MAX(position) AS m FROM cards WHERE project_id = ? AND "column" = ?')
     .get(c.project_id, column) as { m: number | null };
   const id = nanoid(10);
   db.prepare(
-    `INSERT INTO cards (id, project_id, title, spec, "column", position, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, c.project_id, c.title, c.spec ?? "", column, (max.m ?? -1) + 1, now(), now());
+    `INSERT INTO cards (id, project_id, title, spec, "column", position, parent_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, c.project_id, c.title, c.spec ?? "", column, (max.m ?? -1) + 1, c.parent_id ?? null, now(), now());
   return getCard(id)!;
 }
 
@@ -306,6 +308,7 @@ export interface CardPatch {
   tags?: string[];
   claims?: Claim[];
   agent_model?: string | null;
+  parent_id?: string | null;
 }
 
 export function updateCard(id: string, patch: CardPatch): Card {
@@ -317,6 +320,11 @@ export function updateCard(id: string, patch: CardPatch): Card {
     db.prepare(`UPDATE cards SET ${sets}, updated_at = @updated_at WHERE id = @id`).run(params);
   }
   return getCard(id)!;
+}
+
+/** Sub-cards split from this card. */
+export function childCards(parentId: string): Card[] {
+  return (db.prepare(`${CARD_SELECT} WHERE c.parent_id = ? ORDER BY c.created_at, c.rowid`).all(parentId) as CardRow[]).map((r) => toCard(r)!);
 }
 
 export function deleteCard(id: string) {

@@ -577,7 +577,7 @@ export default function App() {
           )}
         </div>
         <PanelSlot>
-          {inBoard && card && <CardPanel key={card.id} card={card} board={board} project={project} onClose={() => setSelected(null)} />}
+          {inBoard && card && <CardPanel key={card.id} card={card} board={board} project={project} onClose={() => setSelected(null)} onOpen={setSelected} />}
           {inBoard && showAssistant && projectId && !card && (
             <AssistantPanel
               key={projectId}

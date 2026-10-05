@@ -13,6 +13,7 @@ import { confirmDeleteCard, confirmDialog, togglePreview } from "./Confirm";
 import {
   ArrowRight,
   Bot,
+  CornerLeftUp,
   Eye,
   EyeOff,
   FileDiff,
@@ -22,6 +23,7 @@ import {
   GitMerge,
   Hammer,
   MessagesSquare,
+  Network,
   RotateCcw,
   Sparkles,
   Square,
@@ -35,7 +37,20 @@ import { Button, ChatHint, chatKeyDown, COLUMN_HEX, COLUMN_ICON, Markdown, Spinn
 
 type Tab = "spec" | "activity" | "diff";
 
-export function CardPanel({ card, board, project, onClose }: { card: Card; board: Board; project?: Project; onClose: () => void }) {
+export function CardPanel({
+  card,
+  board,
+  project,
+  onClose,
+  onOpen,
+}: {
+  card: Card;
+  board: Board;
+  project?: Project;
+  onClose: () => void;
+  /** open another card (its mother or one of its sub-cards) */
+  onOpen?: (id: string) => void;
+}) {
   const previewing = project?.preview_card_id === card.id;
   const { messages, questions, checkpoints, setCheckpoints } = useCardDetail(board, card.id);
   const tags = useProjectTags(card.project_id, board);
@@ -122,6 +137,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
         {card.status_text && card.status !== "running" && (
           <p className={`mt-1 text-[12.5px] ${card.status === "error" ? "text-danger" : "text-zinc-400"}`}>{card.status_text}</p>
         )}
+        <Family card={card} board={board} onOpen={onOpen} />
         <div className="mt-3 flex flex-wrap items-center gap-2 empty:hidden">
           {card.column === "backlog" && (
             <Button onClick={() => move("plan")}>
@@ -781,6 +797,47 @@ function InlineCode({ text }: { text: string }) {
         ),
       )}
     </>
+  );
+}
+
+/** The card preparation split this one from, or the sub-cards it was split into. */
+function Family({ card, board, onOpen }: { card: Card; board: Board; onOpen?: (id: string) => void }) {
+  const mother = card.parent_id ? board.cards[card.parent_id] : undefined;
+  const kids = Object.values(board.cards)
+    .filter((c) => c.parent_id === card.id)
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  if (!mother && !kids.length) return null;
+  const link = "truncate text-left text-zinc-200 underline-offset-2 hover:text-sky-300 hover:underline";
+  if (mother)
+    return (
+      <p className="mt-2 flex min-w-0 items-center gap-1.5 text-[12.5px] text-zinc-400">
+        <CornerLeftUp className="h-3.5 w-3.5 shrink-0 text-sky-300" /> Sub-tarjeta de
+        <button className={link} onClick={() => onOpen?.(mother.id)} title="Abrir la tarjeta madre">
+          {mother.title}
+        </button>
+      </p>
+    );
+  const merged = kids.filter((k) => k.column === "merged").length;
+  return (
+    <div className="mt-3 rounded-lg bg-ui-ink/[0.03] px-3 py-2 ring-1 ring-ui-ink/[0.06]">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-zinc-300">
+        <Network className="h-3.5 w-3.5 text-sky-300" /> Sub-tarjetas
+        <span className={`tabular ml-auto text-[11px] ${merged === kids.length ? "text-success" : "text-zinc-500"}`}>
+          {merged}/{kids.length} mergeadas
+        </span>
+      </div>
+      <ul className="space-y-1">
+        {kids.map((k) => (
+          <li key={k.id} className="flex min-w-0 items-center gap-2 text-[12.5px]">
+            <ColumnChip column={k.column} />
+            <button className={`${link} min-w-0 flex-1 ${k.column === "merged" ? "line-through decoration-zinc-600" : ""}`} onClick={() => onOpen?.(k.id)}>
+              {k.title}
+            </button>
+            {k.status !== "idle" && <StatusBadge card={k} />}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
