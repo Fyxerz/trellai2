@@ -64,11 +64,18 @@ export const COLUMN_ICON: Record<Column, LucideIcon> = {
   merged: GitMerge,
 };
 
+/** What a running card is doing right now: "Preparando", "Mergeando" (incl. resolving a merge conflict) or "Trabajando". */
+export function runningLabel(card: Pick<Card, "column" | "status_text">): string {
+  if (card.column === "preparation") return "Preparando";
+  if (card.column === "merged" || /^(Mergeando|Resolviendo conflicto)/.test(card.status_text ?? "")) return "Mergeando";
+  return "Trabajando";
+}
+
 export function StatusBadge({ card }: { card: Card }) {
   if (card.status === "running")
     return (
       <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-amber-500/12 px-2 py-0.5 text-xs font-medium text-warning ring-1 ring-amber-400/25">
-        <Spinner /> {card.column === "preparation" ? "Preparando" : "Trabajando"}
+        <Spinner /> {runningLabel(card)}
       </span>
     );
   if (card.status === "waiting")
