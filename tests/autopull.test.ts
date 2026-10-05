@@ -1,6 +1,6 @@
 /**
  * Automatic pull: a teammate pushes to the shared remote and our base branch catches up by
- * itself — but only as a fast-forward, never over uncommitted changes or unpushed commits.
+ * itself (same pull as the header's button: never over uncommitted changes).
  */
 import { execSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -103,7 +103,7 @@ describe("automatic pull", { timeout: 30000 }, () => {
     expect(sh("git branch --show-current", mine)).toBe("otra");
   });
 
-  it("does nothing with uncommitted changes, nor with local commits not pushed", async () => {
+  it("local commits not pushed go on top of the new merge; uncommitted changes are never touched", async () => {
     const dirty = clone("dirty");
     const ahead = clone("ahead");
     const teammate = clone("teammate3");
@@ -111,16 +111,14 @@ describe("automatic pull", { timeout: 30000 }, () => {
     writeFileSync(join(ahead, "local.txt"), "local\n");
     sh("git add -A && git commit -qm local", ahead);
     const dirtyHead = head(dirty);
-    const aheadHead = head(ahead);
     const pd = await call<Project>("/api/projects", { repo_path: dirty });
-    const pa = await call<Project>("/api/projects", { repo_path: ahead });
-    push(teammate, "c.txt");
-    await sleep(2500);
+    await call<Project>("/api/projects", { repo_path: ahead });
+    const sha = push(teammate, "c.txt");
+    expect(await until(() => head(ahead, "main~1") === sha)).toBe(true);
+    expect(sh("git log -1 --format=%s", ahead)).toBe("local");
     expect(head(dirty)).toBe(dirtyHead);
-    expect(head(ahead)).toBe(aheadHead);
     expect(sh("git status --porcelain", dirty)).toContain("README.md");
     expect((await call(`/api/projects/${pd.id}/git`)).behind).toBeGreaterThan(0);
-    expect((await call(`/api/projects/${pa.id}/git`)).behind).toBeGreaterThan(0);
   });
 
   it("a remote that can't be reached is not an error: it just doesn't pull", async () => {
