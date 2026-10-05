@@ -6,6 +6,7 @@ import { Check, ChevronDown, Cpu, Image as ImageIcon, Loader2, RefreshCw, Share2
 import { SharingSettings } from "./People";
 import { TAG_PALETTE, type BgMode, type BgStatus, type Project } from "../../shared/types";
 import { reportError } from "./notifications";
+import { confirmDialog } from "./Confirm";
 import { CODEX_EFFORTS, EFFORT_LABELS, EFFORTS, prettyModel, splitEffort, withEffort, type Effort } from "../../shared/models";
 
 /**
@@ -595,6 +596,38 @@ function EngineStatus() {
     fail("Se agotó el tiempo esperando el login. Vuelve a intentarlo.");
   };
 
+  const [leaving, setLeaving] = useState<Record<"claude" | "codex", boolean>>({ claude: false, codex: false });
+  const disconnect = async (engine: "claude" | "codex") => {
+    const name = engine === "claude" ? "Claude" : "GPT";
+    const where = engine === "claude" ? "Claude Code" : "la app de Codex";
+    const ok = await confirmDialog({
+      title: `¿Desconectar ${name}?`,
+      body: `La sesión es la misma que usa ${where}, así que también se cerrará allí en este ordenador. Los agentes que usen ${name} fallarán hasta que vuelvas a conectarlo.`,
+      confirmLabel: `Desconectar ${name}`,
+      danger: true,
+    });
+    if (!ok) return;
+    setErrors((e) => ({ ...e, [engine]: null }));
+    setLeaving((l) => ({ ...l, [engine]: true }));
+    try {
+      const r = await api<{ ok: boolean; error?: string }>(`/api/engines/${engine}/logout`, {}, "POST");
+      if (!r.ok) setErrors((e) => ({ ...e, [engine]: r.error || `No se pudo desconectar ${name}.` }));
+    } catch (err) {
+      setErrors((e) => ({ ...e, [engine]: (err as Error).message || `No se pudo desconectar ${name}.` }));
+    }
+    await refreshEngines().catch(() => {});
+    setLeaving((l) => ({ ...l, [engine]: false }));
+  };
+  const leaveButton = (engine: "claude" | "codex", label: string) => (
+    <button
+      onClick={() => disconnect(engine)}
+      disabled={leaving[engine]}
+      className="ml-auto shrink-0 rounded-md px-2 py-1 text-xs text-zinc-500 ring-1 ring-zinc-800 hover:bg-zinc-900 hover:text-zinc-300 disabled:opacity-60"
+    >
+      {leaving[engine] ? "Desconectando…" : label}
+    </button>
+  );
+
   const button = (engine: "claude" | "codex", label: string) => (
     <button
       onClick={() => connect(engine)}
@@ -623,6 +656,7 @@ function EngineStatus() {
           <span className="text-zinc-200">Claude</span>
           <span>{claudeLoggedIn === null ? "Comprobando…" : claudeLoggedIn ? "Conectado" : "No conectado"}</span>
           {claudeLoggedIn === false && button("claude", "Conectar Claude")}
+          {claudeLoggedIn === true && leaveButton("claude", "Desconectar Claude")}
         </div>
         {waiting.claude && waitingHint}
         {error("claude")}
@@ -635,6 +669,7 @@ function EngineStatus() {
             {!codex ? "Comprobando…" : !codex.installed ? "No instalado" : codex.loggedIn === false ? "No conectado" : `Conectado · ${codex.version}`}
           </span>
           {codex?.installed && codex.loggedIn === false && button("codex", "Conectar GPT")}
+          {codexOn && leaveButton("codex", "Desconectar GPT")}
         </div>
         {codex && !codex.installed && (
           <div className="text-[11px] text-zinc-500">

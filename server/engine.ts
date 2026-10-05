@@ -449,6 +449,30 @@ export function cancelLogin(engine: Engine) {
   child?.kill();
 }
 
+/** `claude auth logout` / `codex logout`: closes the CLI's session (shared with Claude Code / the Codex app). */
+export function logout(engine: Engine): Promise<{ ok: boolean; error?: string }> {
+  cancelLogin(engine);
+  logins[engine].error = undefined;
+  resetEngineCaches();
+  const name = engine === "claude" ? "Claude" : "Codex";
+  const [bin, args] = engine === "claude" ? [claudeBin(), ["auth", "logout"]] : codexCmd(["logout"]);
+  const shell = engine === "claude" && process.platform === "win32" && !/\.exe$/i.test(bin);
+  return new Promise((res) =>
+    execFile(bin, args, { timeout: 30_000, shell }, (err, out, errOut) => {
+      resetEngineCaches();
+      if (!err) return res({ ok: true });
+      const tail = `${out}\n${errOut}`.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim().split("\n").slice(-2).join(" ").trim();
+      res({
+        ok: false,
+        error:
+          (err as NodeJS.ErrnoException).code === "ENOENT"
+            ? `No encuentro el comando de ${name}.`
+            : `No se pudo desconectar ${name}${tail ? `: ${tail}` : `: ${err.message}`}`,
+      });
+    }),
+  );
+}
+
 function toml(s: string) {
   return JSON.stringify(s); // TOML basic strings use the same escaping as JSON for our needs
 }

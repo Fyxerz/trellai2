@@ -13,6 +13,10 @@ if (args[0] === "login" && args[1] === "status") {
   console.log("Logged in using ChatGPT");
   process.exit(0);
 }
+if (args[0] === "logout") {
+  console.log("Successfully logged out");
+  process.exit(0);
+}
 if (process.env.FAKE_CODEX_ARGS) writeFileSync(process.env.FAKE_CODEX_ARGS, JSON.stringify(args));
 const cwd = args.includes("-C") ? args[args.indexOf("-C") + 1] : process.cwd();
 const prompt = args[args.length - 1];

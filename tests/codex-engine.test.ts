@@ -75,3 +75,9 @@ describe("codex engine", () => {
     expect(engine.codexExitError(1, null, "boom\n", ["ignored"])).toBe("codex terminó con código 1: boom");
   });
 });
+
+describe("codex logout", () => {
+  it("runs `codex logout` and reports success", async () => {
+    expect(await engine.logout("codex")).toEqual({ ok: true });
+  });
+});
