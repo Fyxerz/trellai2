@@ -14,7 +14,7 @@ import { cleanAnnotations, parseImage } from "./attachments.js";
 import { emitAttachments, emitCard, emitCardDeleted, emitCheckpoints, emitGit, emitMessage, emitNote, emitTags, subscribe } from "./events.js";
 import * as git from "./git.js";
 import * as wf from "./workflow.js";
-import { claudeLoggedIn, claudeModels, codexDefaultModel, codexModels, codexStatus, loginState, mcpCallTool, mcpListTools, startLogin } from "./engine.js";
+import { claudeLoggedIn, claudeModels, codexDefaultModel, codexModels, codexStatus, loginState, logout, mcpCallTool, mcpListTools, startLogin } from "./engine.js";
 import { startPreview, stopPreview } from "./preview.js";
 import { MACHINE } from "./machine.js";
 import * as remote from "./remote.js";
@@ -575,6 +575,12 @@ app.post("/api/engines/:engine/login", (c) => {
   const engine = c.req.param("engine");
   if (engine !== "claude" && engine !== "codex") return c.json({ error: "Motor desconocido" }, 400);
   return c.json(startLogin(engine));
+});
+
+app.post("/api/engines/:engine/logout", async (c) => {
+  const engine = c.req.param("engine");
+  if (engine !== "claude" && engine !== "codex") return c.json({ error: "Motor desconocido" }, 400);
+  return c.json(await logout(engine));
 });
 
 // Codex reaches Trellai's tools through server/mcp-bridge.mjs, which calls these.
