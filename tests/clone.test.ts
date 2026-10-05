@@ -8,8 +8,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { CloneJob, GitHubRepos, Project } from "../shared/types";
-import { parseRepos, repoDirName, validRepoName } from "../server/github";
-import { parseCloneProgress } from "../server/remote";
+import { parseRepos, repoDirName, sshToHttps, validRepoName } from "../server/github";
+import { isSshError, parseCloneProgress } from "../server/remote";
 
 const PORT = 4950 + Math.floor(Math.random() * 400);
 const URL = `http://127.0.0.1:${PORT}`;
@@ -166,6 +166,21 @@ describe("GitHub repos list", () => {
     expect(https.map((r) => r.name)).toEqual(["org/new", "me/old"]);
     expect(https[0]).toEqual({ name: "org/new", description: "Nuevo", private: true, updated_at: "2026-09-01T00:00:00Z", clone_url: "https://github.com/org/new.git" });
     expect(parseRepos(out, "ssh")[1].clone_url).toBe("git@github.com:me/old.git");
+  });
+
+  it("turns GitHub SSH URLs into HTTPS ones", () => {
+    expect(sshToHttps("git@github.com:me/trellai.git")).toBe("https://github.com/me/trellai.git");
+    expect(sshToHttps("ssh://git@github.com/me/trellai.git")).toBe("https://github.com/me/trellai.git");
+    expect(sshToHttps("git@github.com:org/my.repo")).toBe("https://github.com/org/my.repo.git");
+    expect(sshToHttps("https://github.com/me/trellai.git")).toBeNull();
+    expect(sshToHttps("git@gitlab.com:me/trellai.git")).toBeNull();
+    expect(sshToHttps("/tmp/repo.git")).toBeNull();
+  });
+
+  it("recognises SSH connection errors", () => {
+    expect(isSshError("Host key verification failed.\nfatal: Could not read from remote repository.")).toBe(true);
+    expect(isSshError("git@github.com: Permission denied (publickey).")).toBe(true);
+    expect(isSshError("fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host")).toBe(false);
   });
 
   it("derives the folder name from the URL", () => {

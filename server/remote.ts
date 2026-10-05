@@ -12,6 +12,7 @@
  */
 import { execFile, spawn } from "node:child_process";
 import * as git from "./git.js";
+import * as github from "./github.js";
 import { repoLock } from "./lock.js";
 
 const PUSH_BRANCHES = process.env.TRELLAI_PUSH_BRANCHES !== "0";
@@ -47,6 +48,27 @@ const firstLine = (s: string) =>
     .filter(Boolean)
     .slice(0, 2)
     .join(" — ") || "error desconocido";
+
+/** ssh couldn't log in without asking: unknown host key, no key, key not on the account… */
+export const isSshError = (err: string) =>
+  /Host key verification failed|Permission denied \(publickey|No ECDSA host key|REMOTE HOST IDENTIFICATION HAS CHANGED|ssh: connect to host/i.test(err);
+
+/**
+ * A connection problem explained in Spanish. For SSH problems with a github.com remote,
+ * `fix: "https"` tells the UI it can offer to switch origin to HTTPS.
+ */
+function connectError(remote: string, url: string | null, err: string, what = "conectar con"): { message: string; fix?: "https" } {
+  if (!isSshError(err)) return { message: `No pude ${what} ${remote}: ${firstLine(err)}` };
+  const https = url ? github.sshToHttps(url) : null;
+  const why = /Host key verification failed/i.test(err)
+    ? "este ordenador no conoce todavía la huella SSH del servidor (no está en known_hosts)"
+    : /Permission denied/i.test(err)
+      ? "no hay una clave SSH de este ordenador dada de alta en tu cuenta"
+      : "la conexión SSH no funciona";
+  return https
+    ? { message: `No pude ${what} GitHub por SSH: ${why}. Pulsa «Usar HTTPS» para conectar con tu sesión de gh en su lugar.`, fix: "https" }
+    : { message: `No pude ${what} ${remote} por SSH: ${why}. Configura SSH para ese servidor (o cambia el remoto a HTTPS) y vuelve a intentarlo.` };
+}
 
 /** "origin" if it exists, else the first remote, else null. */
 export async function remoteOf(repo: string): Promise<string | null> {
@@ -84,13 +106,13 @@ export interface SyncResult {
 const lastFetch = new Map<string, number>();
 
 /** git fetch, at most once every `maxAgeMs` per repo. */
-export async function fetchRemote(repo: string, maxAgeMs = 0): Promise<{ ok: boolean; remote: string | null; message?: string }> {
+export async function fetchRemote(repo: string, maxAgeMs = 0): Promise<{ ok: boolean; remote: string | null; message?: string; fix?: "https" }> {
   const remote = await remoteOf(repo);
   if (!remote) return { ok: true, remote: null };
   const last = lastFetch.get(repo) ?? 0;
   if (maxAgeMs && Date.now() - last < maxAgeMs) return { ok: true, remote };
   const r = await run(repo, ["fetch", "--prune", remote], 45_000);
-  if (!r.ok) return { ok: false, remote, message: `No pude conectar con ${remote}: ${firstLine(r.err)}` };
+  if (!r.ok) return { ok: false, remote, ...connectError(remote, await remoteUrl(repo), r.err) };
   lastFetch.set(repo, Date.now());
   return { ok: true, remote };
 }
@@ -177,7 +199,9 @@ async function pushBranchUnlocked(repo: string, branch: string): Promise<{ ok: b
     if (!s.ok) return { ok: false, remote: true, message: s.message };
     r = await run(repo, ["push", "-u", remote, branch], 60_000);
   }
-  return r.ok ? { ok: true, remote: true } : { ok: false, remote: true, message: `No pude hacer push: ${firstLine(r.err)}` };
+  if (r.ok) return { ok: true, remote: true };
+  if (isSshError(r.err)) return { ok: false, remote: true, message: connectError(remote, await remoteUrl(repo), r.err, "subir a").message };
+  return { ok: false, remote: true, message: `No pude hacer push: ${firstLine(r.err)}` };
 }
 
 // ---- card branches (background, best effort) ----
@@ -252,7 +276,7 @@ export async function baseStatus(repo: string, base: string) {
   const f = await fetchRemote(repo, 60_000);
   if (!f.remote) return { remote: null as string | null, ok: true, ahead: 0, behind: 0 };
   const c = await counts(repo, base, f.remote);
-  return { remote: f.remote, ok: f.ok, message: f.message, ahead: c?.ahead ?? 0, behind: c?.behind ?? 0 };
+  return { remote: f.remote, ok: f.ok, message: f.message, fix: f.fix, ahead: c?.ahead ?? 0, behind: c?.behind ?? 0 };
 }
 
 export interface CloneProgress {
@@ -277,10 +301,26 @@ export function parseCloneProgress(line: string): CloneProgress | null {
   return { phase, percent: Math.round(from + (span * Number(m[2])) / 100) };
 }
 
+/**
+ * Clone `url`. A github.com SSH URL that fails because ssh isn't set up here is retried over
+ * HTTPS (with gh as credential helper), so cloning works on computers without SSH keys.
+ */
 export async function cloneRepo(url: string, dest: string, onProgress?: (p: CloneProgress) => void): Promise<{ ok: boolean; message?: string }> {
+  const https = github.sshToHttps(url);
+  if (https && !(await github.githubSshWorks())) {
+    await github.setupGitCredentials();
+    return cloneOnce(https, dest, onProgress);
+  }
+  const r = await cloneOnce(url, dest, onProgress);
+  if (r.ok || !https || !r.ssh) return r;
+  await github.setupGitCredentials();
+  return cloneOnce(https, dest, onProgress);
+}
+
+async function cloneOnce(url: string, dest: string, onProgress?: (p: CloneProgress) => void): Promise<{ ok: boolean; message?: string; ssh?: boolean }> {
   if (!onProgress) {
     const r = await run(process.cwd(), ["clone", url, dest], 10 * 60_000);
-    return r.ok ? { ok: true } : { ok: false, message: `No pude clonar: ${firstLine(r.err)}` };
+    return r.ok ? { ok: true } : { ok: false, ssh: isSshError(r.err), message: `No pude clonar: ${firstLine(r.err)}` };
   }
   // --progress: git writes "Receiving objects:  42% (…)\r" to stderr even without a terminal.
   return new Promise((resolve) => {
@@ -299,11 +339,27 @@ export async function cloneRepo(url: string, dest: string, onProgress?: (p: Clon
     });
     const done = (ok: boolean, why = "") => {
       clearTimeout(timer);
-      resolve(ok ? { ok: true } : { ok: false, message: `No pude clonar: ${firstLine(err + rest + why)}` });
+      resolve(ok ? { ok: true } : { ok: false, ssh: isSshError(err + rest), message: `No pude clonar: ${firstLine(err + rest + why)}` });
     };
     child.on("error", (e) => done(false, e.message));
     child.on("close", (code) => done(code === 0, code === null ? "se tardó demasiado" : ""));
   });
+}
+
+/**
+ * Switch a github.com SSH origin to HTTPS (gh provides the credentials) and check it connects.
+ * Used by the header's «Usar HTTPS» button.
+ */
+export async function useHttps(repo: string): Promise<{ ok: boolean; url?: string; message?: string }> {
+  const url = await remoteUrl(repo);
+  if (!url || !github.sshToHttps(url)) return { ok: false, message: "El remoto no es una URL SSH de GitHub: no hay nada que cambiar." };
+  if (!(await github.setupGitCredentials()))
+    return { ok: false, message: "`gh` no tiene sesión iniciada (o no está instalado). Ejecuta `gh auth login` en una terminal y vuelve a intentarlo." };
+  const https = await github.preferHttps(repo, true);
+  if (!https) return { ok: false, message: "No pude cambiar la URL de origin." };
+  lastFetch.delete(repo);
+  const f = await fetchRemote(repo);
+  return f.ok ? { ok: true, url: https } : { ok: false, url: https, message: f.message };
 }
 
 /** "GitHub" when the remote is on github.com, else the remote's name. */

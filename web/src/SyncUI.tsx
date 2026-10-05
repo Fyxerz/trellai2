@@ -11,8 +11,21 @@ interface GitStatus {
   remote: string | null;
   ok: boolean;
   message?: string;
+  /** "https": the remote is GitHub over SSH and SSH isn't set up here; offer «Usar HTTPS» */
+  fix?: "https";
   ahead: number;
   behind: number;
+}
+
+/** Switch origin to HTTPS (gh's login) after an SSH error. Resolves true if it now connects. */
+async function useHttps(projectId: string): Promise<boolean> {
+  try {
+    await api(`/api/projects/${projectId}/use-https`, {});
+    return true;
+  } catch (e) {
+    notice("No pude pasar a HTTPS", (e as Error).message);
+    return false;
+  }
 }
 
 interface BranchRow {
@@ -50,7 +63,7 @@ interface BranchList {
   base: string;
   /** the base is `HEAD` or a branch that no longer exists */
   baseMissing: boolean;
-  fetch: { ok: boolean; message?: string };
+  fetch: { ok: boolean; message?: string; fix?: "https" };
   branches: BranchRow[];
 }
 
@@ -117,6 +130,18 @@ export function BranchStatus({
     }
   };
 
+  const fixHttps = async () => {
+    setBusy(true);
+    try {
+      if (await useHttps(project.id)) {
+        setSt(await api<GitStatus>(`/api/projects/${project.id}/git`));
+        onProjectChange();
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const title = !project.repo_path
     ? "Este proyecto no está en este ordenador"
     : !st?.remote
@@ -160,6 +185,19 @@ export function BranchStatus({
         )}
         <ChevronDown className={`h-3 w-3 transition ${open ? "rotate-180" : ""}`} />
       </button>
+      {st?.remote && !st.ok && st.fix === "https" && (
+        <button
+          onClick={fixHttps}
+          disabled={busy}
+          title={`${st.message}
+
+Cambia origin a https://github.com/… y usa tu sesión de gh para conectar.`}
+          className="ml-1 flex items-center gap-1 rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[11px] text-amber-300 ring-1 ring-amber-500/30 transition hover:bg-amber-500/20"
+        >
+          <CloudOff className="h-3 w-3" />
+          Usar HTTPS
+        </button>
+      )}
       {st && !st.remote && project.repo_path && (
         <button
           onClick={() => setCreating(true)}
@@ -187,6 +225,7 @@ export function BranchStatus({
           title={title}
           syncing={busy}
           onSync={out ? sync : undefined}
+          onFixHttps={fixHttps}
           onProjectChange={onProjectChange}
           onOpenCard={(id) => {
             setOpen(false);
@@ -204,6 +243,7 @@ function BranchMenu({
   title,
   syncing,
   onSync,
+  onFixHttps,
   onProjectChange,
   onOpenCard,
 }: {
@@ -212,6 +252,7 @@ function BranchMenu({
   title: string;
   syncing: boolean;
   onSync?: () => void;
+  onFixHttps: () => Promise<void>;
   onProjectChange: () => unknown;
   onOpenCard: (id: string) => void;
 }) {
@@ -379,6 +420,14 @@ function BranchMenu({
       {list && !list.fetch.ok && (
         <div className="mx-1 mb-1.5 rounded-lg bg-red-400/10 px-2.5 py-1.5 text-[11px] text-danger">
           {list.fetch.message} Lo que ves de {list.remoteLabel} puede no estar al día.
+          {list.fetch.fix === "https" && (
+            <div className="mt-1.5">
+              <Button onClick={() => onFixHttps().then(() => reload.current())} disabled={syncing}>
+                {syncing ? <Spinner className="h-3.5 w-3.5" /> : <Cloud className="h-3.5 w-3.5" />}
+                Usar HTTPS
+              </Button>
+            </div>
+          )}
         </div>
       )}
       {error ? (
