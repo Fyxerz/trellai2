@@ -13,6 +13,7 @@ import { CloneToasts } from "./CloneToasts";
 import { Help } from "./Help";
 import { ConfirmHost, confirmDeleteCard, togglePreview } from "./Confirm";
 import { Home } from "./Home";
+import { BoardFilters } from "./BoardFilters";
 import {
   Archive,
   BookOpen,
@@ -97,11 +98,17 @@ export default function App() {
   const liveNotes = board.notes.filter((n) => !n.archived).length;
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [peopleFilter, setPeopleFilter] = useState<string[]>([]);
+  const [tagFilter, setTagFilter] = useState<string[]>([]);
   const visibleBoard = { ...board, cards: Object.fromEntries(Object.entries(board.cards).filter(([, c]) =>
     (!query.trim() || `${c.title} ${c.spec}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())) &&
-    (filter === "all" || (filter === "waiting" ? c.status === "waiting" : filter === "review" ? c.column === "review" : c.status === "error"))
+    (filter === "all" || (filter === "waiting" ? c.status === "waiting" : filter === "review" ? c.column === "review" : c.status === "error")) &&
+    (!peopleFilter.length || (!!c.author && peopleFilter.includes(c.author))) &&
+    (!tagFilter.length || (c.tags ?? []).some((t) => tagFilter.includes(t)))
   )) };
-  useEffect(() => { setQuery(""); setFilter("all"); }, [projectId]);
+  const filtering = !!query || filter !== "all" || peopleFilter.length > 0 || tagFilter.length > 0;
+  const clearFilters = () => { setQuery(""); setFilter("all"); setPeopleFilter([]); setTagFilter([]); };
+  useEffect(clearFilters, [projectId]);
 
   useEffect(() => {
     if (!projects) return;
@@ -573,7 +580,8 @@ export default function App() {
             <div className="flex flex-wrap items-center gap-3 px-4 pb-3">
               <label className="flex min-w-0 w-full sm:min-w-48 max-w-sm flex-1 items-center gap-2 rounded-lg border border-ui-ink/10 bg-panel px-3 py-2 focus-within:ring-2 focus-within:ring-indigo-400"><Search className="h-4 w-4 text-zinc-500" /><input aria-label="Buscar tarjetas" placeholder="Buscar tarjetas…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); if (query) setQuery(""); else e.currentTarget.blur(); } }} className="ui-field min-w-0 flex-1 bg-transparent text-sm outline-none" />{query && <button aria-label="Limpiar búsqueda" className="text-zinc-500" onClick={() => setQuery("")}>×</button>}</label>
               <div role="group" aria-label="Filtrar tarjetas" className="flex flex-wrap gap-1">{[["all", "Todas"], ["waiting", "Te necesitan"], ["review", "Por revisar"], ["error", "Errores"]].map(([value, label]) => <button key={value} aria-pressed={filter === value} onClick={() => setFilter(value)} className={`rounded-lg px-3 py-2 text-sm transition ${filter === value ? "bg-indigo-500/10 text-accent ring-1 ring-indigo-400/30" : "text-zinc-400 hover:bg-ui-ink/5"}`}>{label}</button>)}</div>
-              {(query || filter !== "all") && <span role="status" className="text-xs text-zinc-500">{Object.keys(visibleBoard.cards).length} resultados</span>}
+              <BoardFilters tags={projectTags} people={peopleFilter} setPeople={setPeopleFilter} tagIds={tagFilter} setTagIds={setTagFilter} />
+              {filtering && <span role="status" className="flex items-center gap-2 text-xs text-zinc-500">{Object.keys(visibleBoard.cards).length} resultados<button onClick={clearFilters} title="Quitar búsqueda y filtros" className="flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-zinc-400 ring-1 ring-ui-ink/10 hover:bg-ui-ink/5 hover:text-zinc-200"><X className="h-3 w-3" />Quitar filtros</button></span>}
               <button data-tags-toggle onClick={() => setShowTags(!showTags)} aria-expanded={showTags} title={showTags ? "Ocultar etiquetas" : "Etiquetas: colores, modelo de cada una y arrastrarlas a las tarjetas"} className={`ml-auto flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm ring-1 transition ${showTags ? "bg-indigo-500/10 text-accent ring-indigo-400/30" : "text-zinc-400 ring-ui-ink/10 hover:bg-ui-ink/5 hover:text-zinc-200"}`}><Tags className="h-4 w-4" />Etiquetas</button>
             </div>
             {!project.repo_path && <UnlinkedBanner project={project} onLinked={reload} />}
