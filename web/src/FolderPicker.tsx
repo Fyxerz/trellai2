@@ -28,6 +28,10 @@ export function FolderPicker({ onPick, selected, start: startAt }: { onPick: (pa
   const [typed, setTyped] = useState("");
   // Entry selected with a single click (double click / Enter opens it).
   const [highlighted, setHighlighted] = useState<Listing["entries"][number] | null>(null);
+  // «Nueva carpeta»: the name being typed (null = closed) and why the last try failed.
+  const [newName, setNewName] = useState<string | null>(null);
+  const [mkError, setMkError] = useState("");
+  const [making, setMaking] = useState(false);
 
   const go = async (path: string): Promise<boolean> => {
     setLoading(true);
@@ -75,6 +79,30 @@ export function FolderPicker({ onPick, selected, start: startAt }: { onPick: (pa
     }
   };
 
+  const closeNew = () => {
+    setNewName(null);
+    setMkError("");
+  };
+
+  const mkdir = async () => {
+    if (!listing || newName === null || making) return;
+    setMaking(true);
+    setMkError("");
+    try {
+      const { path } = await api<{ path: string }>("/api/fs/mkdir", { parent: listing.path, name: newName });
+      closeNew();
+      await go(listing.path);
+      const entry = { name: path.split(/[\\/]/).pop() || newName, path, isRepo: false };
+      setHighlighted(entry);
+      onPick(path, false);
+      requestAnimationFrame(() => document.querySelector(`[data-folder="${CSS.escape(path)}"]`)?.scrollIntoView({ block: "nearest" }));
+    } catch (e) {
+      setMkError((e as Error).message);
+    } finally {
+      setMaking(false);
+    }
+  };
+
   const crumbs = listing ? breadcrumbs(listing.path, listing.home) : [];
   const entries = (listing?.entries ?? []).filter((e) => e.name.toLowerCase().includes(filter.toLowerCase()));
   // What the footer describes and «Usar esta carpeta» picks: the selected entry, else the current folder.
@@ -112,6 +140,9 @@ export function FolderPicker({ onPick, selected, start: startAt }: { onPick: (pa
           </span>
         ))}
         <span className="ml-auto flex items-center gap-2 text-zinc-500">
+          <button type="button" disabled={!listing} onClick={() => (newName === null ? setNewName("") : closeNew())} className="hover:text-zinc-200 disabled:opacity-30">
+            + Nueva carpeta
+          </button>
           <button type="button" onClick={() => go("~")} className="hover:text-zinc-200">Inicio</button>
           <button type="button" onClick={() => go("~/code")} className="hover:text-zinc-200">~/code</button>
           <label className="flex cursor-pointer items-center gap-1 hover:text-zinc-200">
@@ -119,6 +150,44 @@ export function FolderPicker({ onPick, selected, start: startAt }: { onPick: (pa
           </label>
         </span>
       </div>
+
+      {/* new folder */}
+      {newName !== null && listing && (
+        <div className="border-b border-zinc-800 bg-zinc-950 px-3 py-1.5">
+          <div className="flex items-center gap-2">
+            <FolderIcon repo={false} />
+            <input
+              autoFocus
+              aria-label="Nombre de la carpeta nueva"
+              value={newName}
+              onChange={(e) => {
+                setNewName(e.target.value);
+                setMkError("");
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === "Escape") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (e.nativeEvent.isComposing) return;
+                  if (e.key === "Enter") mkdir();
+                  else closeNew();
+                }
+              }}
+              placeholder="Nombre de la carpeta"
+              spellCheck={false}
+              className="ui-field min-w-0 flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
+            />
+            {making && <Spinner className="h-3 w-3 text-zinc-500" />}
+            <Button type="button" variant="primary" disabled={!newName.trim() || making} onClick={mkdir} className="!px-2 !py-0.5 text-xs">
+              Crear
+            </Button>
+            <Button type="button" variant="ghost" onClick={closeNew} className="!px-2 !py-0.5 text-xs">
+              Cancelar
+            </Button>
+          </div>
+          {mkError && <p className="ui-alert mt-1.5">{mkError}</p>}
+        </div>
+      )}
 
       {/* filter */}
       {(listing?.entries.length ?? 0) > 8 && (
@@ -141,6 +210,7 @@ export function FolderPicker({ onPick, selected, start: startAt }: { onPick: (pa
         {entries.map((e) => (
           <li
             key={e.path}
+            data-folder={e.path}
             className={`folder-row group flex items-center gap-2 px-3 py-1 ${
               highlighted?.path === e.path ? "bg-indigo-500/25 ring-1 ring-inset ring-indigo-500/50" : selected === e.path ? "bg-indigo-500/10 hover:bg-zinc-800/70" : "hover:bg-zinc-800/70"
             }`}

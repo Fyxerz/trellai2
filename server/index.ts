@@ -4,7 +4,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { AVATAR_COLORS, COLUMNS, isColumn, TAG_COLORS, type CloneJob, type Project, type ServerEvent, type Sharing } from "../shared/types.js";
@@ -69,6 +69,26 @@ app.get("/api/fs", (c) => {
     entries,
     nativePicker: process.platform === "darwin",
   });
+});
+
+/** Create the folder `name` inside `parent` (the «Nueva carpeta» button of the folder browser). */
+app.post("/api/fs/mkdir", async (c) => {
+  const body = await c.req.json<{ parent?: string; name?: string }>();
+  const parent = expandHome(String(body.parent ?? "").trim() || "~");
+  const name = String(body.name ?? "").trim();
+  if (!name) return c.json({ error: "Escribe un nombre para la carpeta." }, 400);
+  // Also what Windows refuses, so a board made on one machine can be cloned on another.
+  if (name === "." || name === ".." || /[\\/<>:"|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name))
+    return c.json({ error: `«${name}» no vale como nombre de carpeta: sin / \\ < > : " | ? * ni punto o espacio al final.` }, 400);
+  if (!existsSync(parent) || !statSync(parent).isDirectory()) return c.json({ error: `No existe: ${parent}` }, 400);
+  const path = join(parent, name);
+  if (existsSync(path)) return c.json({ error: `Ya existe «${name}» en esta carpeta.` }, 400);
+  try {
+    mkdirSync(path);
+  } catch (err) {
+    return c.json({ error: `No se pudo crear la carpeta: ${(err as Error).message}` }, 400);
+  }
+  return c.json({ path });
 });
 
 const safe = <T,>(fn: () => T): T | null => {

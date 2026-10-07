@@ -70,6 +70,25 @@ afterAll(() => {
   server?.kill();
 });
 
+describe("new folder from the folder browser", () => {
+  it("creates an empty folder and turns it into a project", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "trellai-mkdir-"));
+    const { path } = await api<{ path: string }>("/api/fs/mkdir", { parent, name: "mi-app" });
+    expect(path).toBe(join(parent, "mi-app"));
+    expect(existsSync(path)).toBe(true);
+    await expect(api("/api/fs/mkdir", { parent, name: "mi-app" })).rejects.toThrow(/Ya existe/);
+    for (const bad of ["", "  ", "a/b", "a\\b", "..", "que?", "fin."]) {
+      await expect(api("/api/fs/mkdir", { parent, name: bad })).rejects.toThrow();
+    }
+    expect(existsSync(join(parent, "a"))).toBe(false);
+    const p = await api<any>("/api/projects", { repo_path: path, name: "mi-app", init: true });
+    expect(p.name).toBe("mi-app");
+    expect(p.base_branch).toBe("main");
+    expect(sh("git log --format=%s", path)).toBe("Initial commit");
+    expect(await api<Card[]>(`/api/projects/${p.id}/cards`)).toEqual([]);
+  });
+});
+
 describe("board flow", () => {
   it("by default a prepared card waits in preparation until moved to doing", async () => {
     const c = await api<Card>("/api/cards", { project_id: projectId, title: "Perfil", spec: "Página de perfil", column: "plan" });
