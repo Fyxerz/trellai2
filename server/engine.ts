@@ -12,7 +12,7 @@
 import { createSdkMcpServer, query, tool, type HookCallback, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -284,6 +284,16 @@ function findCodexBin(): string {
       if (dir) candidates.push(join(dir.split(/\r?\n/)[0], "app", "resources", "codex.exe"));
     } catch {
       // no PowerShell / no app
+    }
+    // Codex/ChatGPT desktop app (installer build): %LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe, newest first
+    const bin = process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "OpenAI", "Codex", "bin");
+    if (bin && existsSync(bin)) {
+      candidates.push(
+        ...readdirSync(bin)
+          .map((d) => join(bin, d, "codex.exe"))
+          .filter((c) => existsSync(c))
+          .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs),
+      );
     }
   } else if (process.platform === "darwin") {
     candidates.push("/Applications/Codex.app/Contents/Resources/codex", join(homedir(), "Applications/Codex.app/Contents/Resources/codex"));
