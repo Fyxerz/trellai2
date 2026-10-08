@@ -53,6 +53,8 @@ export interface Project {
   bg_image: string | null;
   /** When preparation finishes, move the card to Doing by itself (otherwise it waits in Preparation) */
   auto_doing: boolean;
+  /** Command that starts the app for the Vista (null = detected from package.json: `npm run dev`…) */
+  preview_command: string | null;
   created_at: string;
 }
 
@@ -159,8 +161,61 @@ export interface Card {
   parent_id: string | null;
   /** person who created it (Person.id; null = before people existed) */
   author: string | null;
+  /** the project's "rama de retoques": small changes pointed at in the Vista of the base branch */
+  touchup: boolean;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * The Vista: the app running from a card's worktree (or from the base branch) inside Trellai.
+ * GET /api/cards/:id/vista and /api/projects/:id/vista.
+ */
+export interface VistaStatus {
+  /** what is shown: a card's branch, or the base branch (`cardId` null) */
+  cardId: string | null;
+  /** branch name, for the header */
+  branch: string;
+  /**
+   * stopped   – not running (opening the Vista starts it)
+   * waiting   – the card's worktree isn't ready yet (its agent is about to create it)
+   * installing – installing the project's dependencies in the worktree
+   * starting  – the app's dev server is starting
+   * ready     – open it at `port`
+   * error     – see `message` and `log`
+   */
+  state: "stopped" | "waiting" | "installing" | "starting" | "ready" | "error";
+  /** port of Trellai's proxy in front of the app (same host as Trellai) */
+  port: number | null;
+  /** command that runs (or would run) the app */
+  command: string | null;
+  /** why it's waiting, or what went wrong */
+  message: string | null;
+  /** last lines the server printed */
+  log: string[];
+}
+
+/** An element Pedro pointed at in the Vista, with what he wants changed. */
+export interface VistaPin {
+  comment: string;
+  /** page where it was picked ("/tarjetas?x=1") */
+  page: string;
+  /** opening tag as it is in the page: <button class="primary" type="submit"> */
+  tag: string;
+  /** its visible text */
+  text: string;
+  /** a CSS selector that finds it */
+  selector: string;
+  /** "96×32" (CSS px) */
+  size: string;
+  /** components around it, innermost first (React, Vue, Svelte in development) */
+  components: string[];
+  /** its source file (and line) when the framework exposes it in development */
+  source: string;
+  /** what's next to it: "Cancelar · »Guardar« · ⋯" */
+  siblings: string;
+  /** the styles that matter: "padding 6px 12px · font 13px/600 · fondo #4f46e5" */
+  styles: string;
 }
 
 export interface Checkpoint {

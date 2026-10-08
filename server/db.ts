@@ -166,6 +166,10 @@ addColumn("projects", "bg_color", "bg_color TEXT");
 addColumn("projects", "bg_image", "bg_image TEXT");
 /** 1 = a card that finishes preparation moves to Doing by itself (off by default). */
 addColumn("projects", "auto_doing", "auto_doing INTEGER NOT NULL DEFAULT 0");
+/** Command that starts the app for the Vista (NULL = detected from package.json). */
+addColumn("projects", "preview_command", "preview_command TEXT");
+/** 1 = the project's "rama de retoques" (small changes pointed at in the Vista). */
+addColumn("cards", "touchup", "touchup INTEGER NOT NULL DEFAULT 0");
 
 /** Who wrote it (Person.id): the card's creator, and whoever's Trellai wrote a message or note. */
 for (const t of ["cards", "messages", "notes"]) addColumn(t, "author", "author TEXT");
@@ -242,9 +246,9 @@ export function createProject(p: { name: string; repo_path: string; base_branch:
 
 export function updateProject(
   id: string,
-  patch: Partial<Pick<Project, "name" | "base_branch" | "repo_path" | "remote_url" | ModelRole | "bg_mode" | "bg_color" | "bg_image" | "auto_doing">>,
+  patch: Partial<Pick<Project, "name" | "base_branch" | "repo_path" | "remote_url" | ModelRole | "bg_mode" | "bg_color" | "bg_image" | "auto_doing" | "preview_command">>,
 ): Project {
-  const allowed = ["name", "base_branch", "repo_path", "remote_url", "model_prep", "model_dev", "model_plan", "model_do", "model_ui", "bg_mode", "bg_color", "bg_image", "auto_doing"];
+  const allowed = ["name", "base_branch", "repo_path", "remote_url", "model_prep", "model_dev", "model_plan", "model_do", "model_ui", "bg_mode", "bg_color", "bg_image", "auto_doing", "preview_command"];
   const entries = Object.entries(patch)
     .filter(([k, v]) => allowed.includes(k) && v !== undefined)
     .map(([k, v]) => [k, k === "auto_doing" ? (v ? 1 : 0) : v] as const);
@@ -261,7 +265,7 @@ export function deleteProject(id: string) {
 
 // ---------- cards ----------
 
-type CardRow = Omit<Card, "files" | "tags" | "claims"> & { files: string; tags: string; claims: string; pending_input: string };
+type CardRow = Omit<Card, "files" | "tags" | "claims" | "touchup"> & { files: string; tags: string; claims: string; touchup: number; pending_input: string };
 
 /** Card columns plus checkpoint counters. */
 const CARD_SELECT = `SELECT c.*,
@@ -271,8 +275,8 @@ const CARD_SELECT = `SELECT c.*,
 
 function toCard(row: CardRow | undefined): Card | undefined {
   if (!row) return undefined;
-  const { pending_input: _p, files, tags, claims, ...rest } = row;
-  return { ...rest, files: safeJson(files, []), tags: safeJson(tags, []), claims: safeJson(claims, []) };
+  const { pending_input: _p, files, tags, claims, touchup, ...rest } = row;
+  return { ...rest, files: safeJson(files, []), tags: safeJson(tags, []), claims: safeJson(claims, []), touchup: !!touchup };
 }
 
 function safeJson<T>(s: string, fallback: T): T {
@@ -334,6 +338,7 @@ export interface CardPatch {
   claims?: Claim[];
   agent_model?: string | null;
   parent_id?: string | null;
+  touchup?: boolean;
 }
 
 export function updateCard(id: string, patch: CardPatch): Card {
@@ -341,7 +346,7 @@ export function updateCard(id: string, patch: CardPatch): Card {
   if (entries.length) {
     const sets = entries.map(([k]) => `"${k}" = @${k}`).join(", ");
     const params: Record<string, unknown> = { id, updated_at: now() };
-    for (const [k, v] of entries) params[k] = k === "files" || k === "tags" || k === "claims" ? JSON.stringify(v) : v;
+    for (const [k, v] of entries) params[k] = k === "files" || k === "tags" || k === "claims" ? JSON.stringify(v) : typeof v === "boolean" ? Number(v) : v;
     db.prepare(`UPDATE cards SET ${sets}, updated_at = @updated_at WHERE id = @id`).run(params);
   }
   return getCard(id)!;

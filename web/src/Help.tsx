@@ -9,6 +9,7 @@ const groups = (): { title: string; keys: [string, string][] }[] => [
       ["t", "Asistente: ideas → tarjetas"],
       ["d", "Directo: cambios pequeños sin tarjeta"],
       ["a", "Canal de agentes"],
+      ["w", "Vista: la app funcionando (la de la tarjeta abierta, o la del proyecto)"],
       ["?", "Esta ayuda"],
       ["Esc", "Cerrar / salir del campo de texto"],
     ],
@@ -47,6 +48,15 @@ const groups = (): { title: string; keys: [string, string][] }[] => [
       [readPreference("send", "enter") === "mod" ? `${MOD}+Enter` : "Enter", "Enviar mensaje / pedir cambios"],
       ["Shift+Enter", "Nueva línea en el mensaje"],
       [`${MOD}+Enter`, "Guardar spec inmediatamente"],
+    ],
+  },
+  {
+    title: "Vista",
+    keys: [
+      ["s", "Señalar un elemento (Mayús+clic: varios seguidos)"],
+      ["r", "Recargar la página"],
+      [`${MOD}+Enter`, "Enviar lo señalado"],
+      ["Esc", "Dejar de señalar / cerrar"],
     ],
   },
 ];

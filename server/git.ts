@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 function git(cwd: string, args: string[], opts: { allowFail?: boolean } = {}): string {
@@ -73,10 +73,51 @@ export function createWorktree(repo: string, base: string, cardId: string, title
   return { branch, path };
 }
 
+/** Called before a worktree is deleted (the Vista stops the app running from it). */
+const beforeRemove: ((path: string) => void)[] = [];
+export function onRemoveWorktree(fn: (path: string) => void) {
+  beforeRemove.push(fn);
+}
+
+/**
+ * Get a worktree ready to be deleted: stop what runs from it, and unlink the node_modules the
+ * Vista linked to the main checkout's — deleting the folder must never go through that link.
+ */
+export function releaseWorktree(path: string) {
+  for (const fn of beforeRemove) {
+    try {
+      fn(path);
+    } catch (err) {
+      console.warn("[trellai] antes de borrar el worktree:", (err as Error).message);
+    }
+  }
+  const nm = join(path, "node_modules");
+  try {
+    if (lstatSync(nm).isSymbolicLink()) rmSync(nm);
+  } catch {
+    /* no node_modules */
+  }
+}
+
 export function removeWorktree(repo: string, path: string | null, branch: string | null) {
-  if (path && existsSync(path)) git(repo, ["worktree", "remove", "--force", path], { allowFail: true });
+  if (path && existsSync(path)) {
+    releaseWorktree(path);
+    git(repo, ["worktree", "remove", "--force", path], { allowFail: true });
+  }
   git(repo, ["worktree", "prune"], { allowFail: true });
   if (branch) git(repo, ["branch", "-D", branch], { allowFail: true });
+}
+
+/** A worktree with `ref` checked out detached (no branch of its own). */
+export function addDetachedWorktree(repo: string, path: string, ref: string) {
+  ensureExcluded(repo);
+  mkdirSync(join(path, ".."), { recursive: true });
+  git(repo, ["worktree", "add", "--detach", path, ref]);
+}
+
+/** git would ignore `path` (relative to `cwd`; end it with "/" for a folder). */
+export function isIgnored(cwd: string, path: string): boolean {
+  return gitOk(cwd, ["check-ignore", "-q", path]);
 }
 
 export function hasChanges(cwd: string): boolean {
@@ -390,6 +431,7 @@ export function deleteLocalBranch(repo: string, branch: string, opts: { worktree
   if (opts.worktree && existsSync(opts.worktree)) {
     if (!opts.force && git(opts.worktree, ["status", "--porcelain"], { allowFail: true }).length > 0)
       throw new Error(`Su carpeta de trabajo (${opts.worktree}) tiene cambios sin commitear.`);
+    releaseWorktree(opts.worktree);
     git(repo, ["worktree", "remove", "--force", opts.worktree]);
   }
   git(repo, ["worktree", "prune"], { allowFail: true });
