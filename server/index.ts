@@ -16,6 +16,8 @@ import * as git from "./git.js";
 import * as wf from "./workflow.js";
 import { claudeLoggedIn, claudeModels, codexDefaultModel, codexModels, codexStatus, loginState, logout, mcpCallTool, mcpListTools, startLogin } from "./engine.js";
 import { startPreview, stopPreview } from "./preview.js";
+import { removeMainWorktree, vista, type VistaAction } from "./vista.js";
+import { cleanPins, sendPinsToCard, sendPinsToProject } from "./vista-pins.js";
 import { MACHINE } from "./machine.js";
 import * as remote from "./remote.js";
 import { repoLock } from "./lock.js";
@@ -580,6 +582,10 @@ app.patch("/api/projects/:id", async (c) => {
   if (body.bg_mode !== undefined && !["none", "color", "image"].includes(body.bg_mode as string))
     return c.json({ error: "Fondo no válido (none, color o image)" }, 400);
   if (body.bg_color != null && !/^#[0-9a-f]{6}$/i.test(body.bg_color)) return c.json({ error: "Color no válido (#rrggbb)" }, 400);
+  if (body.preview_command !== undefined) {
+    if (body.preview_command !== null && typeof body.preview_command !== "string") return c.json({ error: "El comando de la Vista debe ser texto" }, 400);
+    body.preview_command = body.preview_command?.trim().slice(0, 500) || null;
+  }
   delete body.bg_image; // only set by the generator
   return c.json(db.updateProject(c.req.param("id"), body));
 });
@@ -683,6 +689,8 @@ app.get("/api/projects/summary", (c) => {
 
 app.delete("/api/projects/:id", async (c) => {
   for (const card of db.listCards(c.req.param("id"))) await wf.removeCard(card.id);
+  const project = db.getProject(c.req.param("id"));
+  if (project) safe(() => removeMainWorktree(project));
   db.deleteProject(c.req.param("id"));
   return c.json({ ok: true });
 });
@@ -985,6 +993,29 @@ app.post("/api/cards/:id/preview", async (c) => {
 });
 
 app.post("/api/projects/:id/preview/stop", (c) => c.json(stopPreview(c.req.param("id"))));
+
+// ---------- Vista: the app running inside Trellai, and "Señalar" ----------
+
+const VISTA_ACTIONS: VistaAction[] = ["start", "restart", "stop"];
+const vistaAction = (a: string): VistaAction => {
+  if (!(VISTA_ACTIONS as string[]).includes(a)) throw new Error(`Acción desconocida: ${a}`);
+  return a as VistaAction;
+};
+
+app.get("/api/cards/:id/vista", async (c) => c.json(await vista({ cardId: c.req.param("id") })));
+app.get("/api/projects/:id/vista", async (c) => c.json(await vista({ projectId: c.req.param("id") })));
+
+app.post("/api/cards/:id/vista/pins", async (c) => {
+  const { pins, note } = await c.req.json<{ pins?: unknown; note?: unknown }>();
+  return c.json(sendPinsToCard(c.req.param("id"), cleanPins(pins), typeof note === "string" ? note : ""));
+});
+app.post("/api/projects/:id/vista/pins", async (c) => {
+  const { pins, note } = await c.req.json<{ pins?: unknown; note?: unknown }>();
+  return c.json(sendPinsToProject(c.req.param("id"), cleanPins(pins), typeof note === "string" ? note : ""));
+});
+
+app.post("/api/cards/:id/vista/:action", async (c) => c.json(await vista({ cardId: c.req.param("id") }, vistaAction(c.req.param("action")))));
+app.post("/api/projects/:id/vista/:action", async (c) => c.json(await vista({ projectId: c.req.param("id") }, vistaAction(c.req.param("action")))));
 
 app.get("/api/cards/:id/messages", (c) => c.json(db.listMessages(c.req.param("id"))));
 app.get("/api/cards/:id/questions", (c) => c.json(db.listQuestions(c.req.param("id"))));

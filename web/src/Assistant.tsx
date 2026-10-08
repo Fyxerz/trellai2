@@ -37,7 +37,7 @@ function useAssistant(board: Board, projectId: string, mode: AssistantMode) {
 }
 
 /** Browser speech-to-text (Chrome/Safari/Edge). Firefox doesn't have it: use macOS dictation there. */
-function useDictation(onText: (text: string) => void) {
+export function useDictation(onText: (text: string) => void) {
   const SR = (window as unknown as { SpeechRecognition?: any; webkitSpeechRecognition?: any }).SpeechRecognition ??
     (window as unknown as { webkitSpeechRecognition?: any }).webkitSpeechRecognition;
   const [listening, setListening] = useState(false);

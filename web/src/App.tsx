@@ -15,6 +15,7 @@ import { ConfirmHost, confirmDeleteCard, togglePreview } from "./Confirm";
 import { Home } from "./Home";
 import { BoardFilters } from "./BoardFilters";
 import {
+  AppWindow,
   Archive,
   BookOpen,
   ChevronRight,
@@ -32,6 +33,7 @@ import {
 import { ProjectSettings } from "./models";
 import { TagManager } from "./TagManager";
 import { ProjectDocs } from "./ProjectDocs";
+import { Vista } from "./Vista";
 import { useProjectTags } from "./tags";
 import { Sidebar } from "./Sidebar";
 import { Byline, JoinDialog, ProfileChip, reloadPeople, usePeople } from "./People";
@@ -84,6 +86,8 @@ export default function App() {
   const [showTags, setShowTags] = useState(false);
   const closeTags = useCallback(() => setShowTags(false), []);
   const [showDocs, setShowDocs] = useState(false);
+  /** The Vista: a card's app, or the project's (cardId null) */
+  const [vista, setVista] = useState<{ cardId: string | null } | null>(null);
   const [assistantMode, setAssistantMode] = useState<AssistantMode>("plan");
   const [selected, setSelected] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => store.get(SIDEBAR_OPEN) !== "0");
@@ -117,6 +121,7 @@ export default function App() {
   }, [projects]);
   useEffect(() => {
     if (projectId) store.set(LAST_PROJECT, projectId);
+    setVista(null);
     setSelected(null);
     setAdding(null);
     setCursor((c) => ({ col: c.col, id: null }));
@@ -270,6 +275,13 @@ export default function App() {
           return setShowNotes(true);
         }
         return setShowNotes((v) => !v);
+      }
+      if (key === "w" && s.projectId && s.view === "board") {
+        // The open card's app if it has a branch being worked on; otherwise the project's.
+        const open = s.selected ? s.board.cards[s.selected] : undefined;
+        e.preventDefault();
+        setVista({ cardId: open?.branch && (open.column === "doing" || open.column === "review") ? open.id : null });
+        return;
       }
       if (key === "t" || key === "d") {
         e.preventDefault();
@@ -490,6 +502,13 @@ export default function App() {
                 }}
               />
               <HeaderButton
+                active={!!vista}
+                icon={<AppWindow className="h-3.5 w-3.5" />}
+                label="Vista"
+                kbd="w"
+                onClick={() => setVista({ cardId: null })}
+              />
+              <HeaderButton
                 active={showNotes && !card}
                 icon={<Radio className="h-3.5 w-3.5" />}
                 label={`Canal${liveNotes ? ` · ${liveNotes}` : ""}`}
@@ -606,7 +625,7 @@ export default function App() {
           )}
         </div>
         <PanelSlot>
-          {inBoard && card && <CardPanel key={card.id} card={card} board={board} project={project} onClose={() => setSelected(null)} onOpen={setSelected} />}
+          {inBoard && card && <CardPanel key={card.id} card={card} board={board} project={project} onClose={() => setSelected(null)} onOpen={setSelected} onVista={() => setVista({ cardId: card.id })} />}
           {inBoard && showAssistant && projectId && !card && (
             <AssistantPanel
               key={projectId}
@@ -629,6 +648,19 @@ export default function App() {
       <ConfirmHost />
       {showHelp && <Help onClose={() => setShowHelp(false)} />}
       {showDocs && project && <ProjectDocs projectId={project.id} onClose={() => setShowDocs(false)} />}
+      {vista && project && view === "board" && (
+        <Vista
+          key={`${project.id}:${vista.cardId ?? "project"}`}
+          project={project}
+          cardId={vista.cardId}
+          board={board}
+          onClose={() => setVista(null)}
+          onOpenCard={(id) => {
+            setVista(null);
+            setSelected(id);
+          }}
+        />
+      )}
       {showSettings && project && <ProjectSettings project={project} onClose={() => setShowSettings(false)} onSaved={reload} />}
       {showNew && (
         <NewProject

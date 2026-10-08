@@ -116,6 +116,17 @@ Botón **Ver esta rama** en la tarjeta (o tecla `v` en el tablero): Trellai pone
 - Al mergear, borrar la tarjeta o usar Directo, Trellai vuelve antes a tu rama.
 - Si la rama añade dependencias, puede que tengas que hacer `npm install`.
 
+## Vista y Señalar
+
+Botón **Vista** (cabecera, o en una tarjeta en Doing / To Review, o tecla `w`): la app funcionando **dentro de Trellai**, para decir qué cambiar señalándolo en vez de con capturas.
+
+- **Un servidor por rama.** Trellai arranca la app en el worktree de esa tarjeta, con el comando del proyecto (por defecto `npm run dev`, o `start`, del `package.json`; se cambia en **Ajustes de proyecto → Vista**) y la variable `PORT` con un puerto libre. Si la app no lee `PORT`, pon `{port}` en el comando donde vaya el puerto (p. ej. `node servidor.js --puerto {port}`); si aun así arranca en otro, Trellai la encuentra en la dirección que imprima al arrancar. No toca tu checkout ni tus cambios sin commitear, y puedes tener varias abiertas.
+- **Dependencias.** Si el lockfile de la rama es el mismo que el del repo principal, el `node_modules` del worktree es un enlace al tuyo (instantáneo). Si cambia, se instala en el worktree (`npm ci`, `pnpm install --frozen-lockfile`…). Al borrar el worktree se quita el enlace antes, nunca se borra tu `node_modules`.
+- **Señalar** (`s`, o Mayús+clic para varios seguidos): pasas el ratón por la app, se resalta el elemento y al hacer clic queda un pin numerado. Escribe (o dicta) qué cambiar en cada uno y **Enviar** (`Ctrl/⌘+Enter`). El agente no recibe una imagen sino, por cada pin: tu comentario, la etiqueta HTML y su texto, el componente (React, Vue o Svelte en desarrollo) y **el fichero y la línea exactos** (con React 19 se sacan del source map), lo que tiene al lado y los estilos que tiene ahora. Cada pin se convierte además en un checkpoint.
+- **A dónde va.** Desde la Vista de una tarjeta, a esa tarjeta (desde To Review vuelve a Doing). Desde la Vista del proyecto (la rama base), a la **rama de retoques**: una tarjeta «Retoques: …» que va directa a Doing sin preparación; mientras esté abierta, lo que señales se suma a ella y la Vista del proyecto muestra su rama. **Mergear** (también desde la Vista) la cierra y la Vista vuelve a la rama base, que se pone al día sola.
+- Ancho total, tableta o móvil; registro del servidor; reiniciar; abrir en una pestaña. Los servidores se paran tras 20 minutos sin mirarlos, al borrar su worktree o al cerrar Trellai (si Trellai muere de golpe, `vista-runner.mjs` los para igualmente).
+- Por dentro: un proxy delante de la app inyecta `server/vista-picker.js` en sus páginas, quita lo que impide meterla en un iframe y deja pasar el websocket de recarga en caliente.
+
 ## Modelos: Claude y GPT
 
 Cada agente puede usar **Claude** (con tu sesión de Claude Code) o **GPT** (con tu sesión de ChatGPT, a través de OpenAI Codex CLI).
@@ -147,6 +158,7 @@ Pulsa `?` para ver todos los atajos. Los principales:
 - En los chats (Actividad, Asistente y Canal): `Enter` envía y `Shift+Enter` añade una línea. En **Apariencia y teclado** puedes elegir `Ctrl/⌘+Enter` para enviar y dejar `Enter` para escribir varias líneas.
 - Al editar una spec: `Ctrl/⌘+Enter` guarda inmediatamente. Las transiciones de columna esperan a que se guarde la última versión.
 - Con una tarjeta abierta: `1`/`2`/`3` pestañas, `e` editar spec, `c` checkpoint, `i` escribir al agente, `Esc` cerrar.
+- `w` abre la Vista (la de la tarjeta abierta, o la del proyecto); dentro, `s` señalar, `r` recargar, `Esc` cerrar.
 
 ## Comodidad y apariencia
 
@@ -198,6 +210,9 @@ server/
   remote.ts      fetch / pull / push con GitHub
   sync.ts        tablero compartido entre ordenadores (Postgres)
   db.ts          SQLite
+  vista.ts       Vista: un servidor de la app por worktree, detrás de un proxy
+  vista-pins.ts  lo señalado → mensaje / checkpoints / rama de retoques
+  vista-picker.js  «Señalar», inyectado en la app
   fake-agent.ts  agente simulado para tests
 web/src/         React: tablero, panel de tarjeta, canal
 shared/types.ts

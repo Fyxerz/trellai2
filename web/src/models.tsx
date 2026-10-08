@@ -2,7 +2,7 @@ import { projectName, useDialogFocus } from "./preferences";
 import { Component, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "./api";
-import { Check, ChevronDown, Cpu, Image as ImageIcon, Loader2, RefreshCw, Share2, Sparkles, Workflow, X } from "lucide-react";
+import { AppWindow, Check, ChevronDown, Cpu, Image as ImageIcon, Loader2, RefreshCw, Share2, Sparkles, Workflow, X } from "lucide-react";
 import { SharingSettings } from "./People";
 import { TAG_PALETTE, type BgMode, type BgStatus, type Project } from "../../shared/types";
 import { reportError } from "./notifications";
@@ -480,6 +480,8 @@ export function ProjectSettings({
               <FlowSettings project={project} onSaved={onSaved} />
             ) : tab === "sharing" ? (
               <SharingSettings project={project} />
+            ) : tab === "vista" ? (
+              <VistaSettings project={project} onSaved={onSaved} />
             ) : (
               <BackgroundSettings project={project} codexReady={codex ? codex.installed && codex.loggedIn !== false : null} onSaved={onSaved} />
             )}
@@ -508,11 +510,12 @@ class PanelGuard extends Component<{ children: ReactNode }, { error: Error | nul
   }
 }
 
-type SettingsTab = "models" | "flow" | "background" | "sharing";
+type SettingsTab = "models" | "flow" | "vista" | "background" | "sharing";
 const SETTINGS_TAB = "trellai:settings-tab";
 const SETTINGS_TABS: { id: SettingsTab; label: string; icon: typeof Cpu }[] = [
   { id: "models", label: "Modelos", icon: Cpu },
   { id: "flow", label: "Flujo", icon: Workflow },
+  { id: "vista", label: "Vista", icon: AppWindow },
   { id: "background", label: "Fondo del tablero", icon: ImageIcon },
   { id: "sharing", label: "Compartir", icon: Share2 },
 ];
@@ -595,6 +598,51 @@ function FlowSettings({ project, onSaved }: { project: Project; onSaved: () => v
           <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${on ? "translate-x-4" : ""}`} />
         </button>
       </div>
+    </section>
+  );
+}
+
+/** How the Vista starts the project's app (the command; empty = detected from package.json). */
+function VistaSettings({ project, onSaved }: { project: Project; onSaved: () => void }) {
+  const [value, setValue] = useState(project.preview_command ?? "");
+  useEffect(() => setValue(project.preview_command ?? ""), [project.preview_command]);
+  const save = () => {
+    const next = value.trim() || null;
+    if (next === (project.preview_command ?? null)) return;
+    api<Project>(`/api/projects/${project.id}`, { preview_command: next }, "PATCH")
+      .then(onSaved)
+      .catch((e) => reportError((e as Error).message));
+  };
+  return (
+    <section className="space-y-4" aria-label="Vista">
+      <div>
+        <h3 className="text-sm font-semibold text-zinc-100">Vista</h3>
+        <p className="text-[11px] text-zinc-500">
+          La app de cada rama funcionando dentro de Trellai (botón Vista o tecla w), para señalar qué cambiar sin capturas. Cada rama arranca su
+          propio servidor en su worktree, en un puerto libre que recibe en la variable <code className="font-mono">PORT</code>.
+        </p>
+      </div>
+      <label className="block">
+        <span className="text-sm text-zinc-200">Comando para arrancar la app</span>
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.currentTarget.blur();
+            }
+          }}
+          placeholder="Automático: npm run dev (o start) del package.json"
+          className="ui-field mt-1 w-full rounded-lg bg-ui-ink/[0.04] px-3 py-2 font-mono text-[12.5px] text-zinc-100 ring-1 ring-ui-ink/[0.08] outline-none placeholder:text-zinc-600 focus:ring-indigo-400"
+        />
+        <span className="mt-1 block text-[11px] text-zinc-500">
+          Déjalo vacío para usar el script <code className="font-mono">dev</code> (o <code className="font-mono">start</code>). Si tu app no lee{" "}
+          <code className="font-mono">PORT</code>, pon <code className="font-mono">{"{port}"}</code> donde vaya el puerto (p. ej.{" "}
+          <code className="font-mono">{"node servidor.js --puerto {port}"}</code>): cada rama necesita el suyo. Se aplica la próxima vez que arranque (o con Reiniciar).
+        </span>
+      </label>
     </section>
   );
 }

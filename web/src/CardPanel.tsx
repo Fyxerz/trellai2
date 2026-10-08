@@ -12,6 +12,7 @@ import { AddImageButton, SpecImages, useChatImages } from "./ImageEditor";
 import { prettyModel } from "../../shared/models";
 import { confirmDeleteCard, confirmDialog, togglePreview } from "./Confirm";
 import {
+  AppWindow,
   ArrowRight,
   Bot,
   CornerLeftUp,
@@ -44,6 +45,7 @@ export function CardPanel({
   project,
   onClose,
   onOpen,
+  onVista,
 }: {
   card: Card;
   board: Board;
@@ -51,6 +53,8 @@ export function CardPanel({
   onClose: () => void;
   /** open another card (its mother or one of its sub-cards) */
   onOpen?: (id: string) => void;
+  /** open this card's app in the Vista */
+  onVista?: () => void;
 }) {
   const previewing = project?.preview_card_id === card.id;
   const { messages, questions, checkpoints, setCheckpoints } = useCardDetail(board, card.id);
@@ -164,6 +168,11 @@ export function CardPanel({
           {card.column === "review" && (
             <Button variant="primary" onClick={() => move("merged")}>
               <GitMerge className="h-3.5 w-3.5" /> Mergear
+            </Button>
+          )}
+          {onVista && card.branch && (card.column === "doing" || card.column === "review") && (
+            <Button onClick={onVista} title="Ver la app de esta rama dentro de Trellai y señalar qué cambiar (w)">
+              <AppWindow className="h-3.5 w-3.5" /> Vista
             </Button>
           )}
           {card.branch && card.column !== "merged" && (
