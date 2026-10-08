@@ -22,7 +22,7 @@ export function withEffort(spec: string, effort: Effort | null): string {
 /**
  * Readable name for an exact model id:
  *   "claude-opus-5-5" → "Opus 5.5" · "claude-haiku-4-5-20251001" → "Haiku 4.5" · "claude-sonnet-5" → "Sonnet 5"
- *   "codex:gpt-5-codex" → "GPT · gpt-5-codex" · "claude-opus-5-5@high" → "Opus 5.5 · Alto"
+ *   "codex:gpt-6.1-sol" → "GPT-6.1-Sol" · "codex:o3" → "GPT · o3" · "claude-opus-5-5@high" → "Opus 5.5 · Alto"
  */
 export function prettyModel(full: string | null | undefined): string {
   const { spec: id, effort } = splitEffort(full);
@@ -34,9 +34,18 @@ export function prettyModel(full: string | null | undefined): string {
 function prettyId(id: string): string {
   if (id.startsWith("codex:")) {
     const m = id.slice(6);
-    return m === "default" ? "GPT (por defecto de Codex)" : `GPT · ${m}`;
+    return m === "default" ? "GPT (por defecto de Codex)" : prettyGpt(m);
   }
   const m = id.match(/^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(\[1m\])?$/i);
   if (!m) return id;
   return `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ""}${m[4] ? " (1M)" : ""}`;
+}
+
+/** "gpt-6.1-sol" → "GPT-6.1-Sol" (how ChatGPT names them); other ids → "GPT · <id>". */
+function prettyGpt(slug: string): string {
+  if (!/^gpt-/i.test(slug)) return `GPT · ${slug}`;
+  return slug
+    .split("-")
+    .map((p, i) => (i === 0 ? "GPT" : p[0] ? p[0].toUpperCase() + p.slice(1) : p))
+    .join("-");
 }

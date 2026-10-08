@@ -19,6 +19,8 @@ Para desarrollar el propio Trellai: `npm run dev` (UI en http://localhost:5317 c
 
 Para añadir un proyecto, elige la carpeta en el explorador que sale al crear uno (las carpetas con git salen en verde; en Mac también tienes el botón **Finder…**). Si eliges una carpeta sin git, Trellai puede inicializarla.
 
+O usa la pestaña **Clonar de GitHub**: pega la URL del repo (o `usuario/repo`) y se clona dentro de la carpeta donde tienes la mayoría de tus proyectos (si aún no hay ninguno, `~/code`; el diálogo muestra la ruta completa y con **Cambiar…** eliges otra, que se recuerda) y se abre su tablero. Si tienes el CLI [`gh`](https://cli.github.com) con sesión iniciada (`gh auth login`), ves la lista de tus repos (también los de tus organizaciones) con buscador y eliges uno con un clic; Trellai no guarda tokens, usa los de `gh` y respeta `gh config get git_protocol` (ssh/https). Si la carpeta ya tiene ese repo, se reutiliza.
+
 Usa tu sesión de Claude Code: si `claude` funciona en tu terminal, Trellai también funciona. También puedes usar `ANTHROPIC_API_KEY`.
 
 ## Cómo funciona
@@ -27,7 +29,7 @@ Usa tu sesión de Claude Code: si `claude` funciona en tu terminal, Trellai tamb
 |---|---|
 | **Backlog** | Ideas sueltas. Nadie las toca. |
 | **Plan** | Escribes la spec en la tarjeta, en markdown. Claude no hace nada aquí. |
-| **Preparation** | Un agente de solo lectura lee la spec y el repo. Si le falta algo importante, te deja preguntas con opciones (la tarjeta se marca en morado: *Te necesita*). Si lo tiene claro, escribe un plan técnico y **mueve la tarjeta sola a Doing**. |
+| **Preparation** | Un agente de solo lectura lee la spec y el repo. Si le falta algo importante, te deja preguntas con opciones (la tarjeta se marca en morado: *Te necesita*). Si lo tiene claro, escribe un plan técnico y la deja *En espera* hasta que la muevas a Doing (o **la mueve sola** si el proyecto tiene activado el paso automático). |
 | **Doing** | Cada tarjeta tiene su propio agente en su propio **git worktree y rama** (`trellai/<slug>`), todos **en paralelo y sin límite**. Al terminar se commitea, se hace rebase sobre la rama base y la tarjeta **pasa sola a To Review**. Si el rebase da conflictos, el agente los resuelve. |
 | **To Review** | Ves el diff. Puedes **pedir cambios** escribiendo en Actividad (vuelve a Doing con tu comentario) o pulsar **Mergear** / arrastrarla a Merged. |
 | **Merged** | `git merge --no-ff` a la rama base y se borran el worktree y la rama. Si hay conflicto, la tarjeta vuelve a Doing para que el agente rebase y resuelva, y luego vuelve a To Review. |
@@ -45,6 +47,8 @@ Usa tu sesión de Claude Code: si `claude` funciona en tu terminal, Trellai tamb
 - **Limpieza.** Cuando una tarjeta sale de Doing se borran sus reservas y sus notas pasan al *historial* (plegado en el canal; los agentes ya no las ven). Tus avisos generales se archivan cuando no queda nadie en Doing, o antes si los archivas tú.
 
 **En cualquier momento** puedes escribir al agente desde Actividad. Si está en mitad de un paso, recibe el mensaje en cuanto lo termina. También puedes **pararlo** o **reintentar**.
+
+**Retroceder (↶).** Cada petición que le haces a una tarjeta en Doing o To Review guarda dónde estaba su rama en ese momento. Pasa el ratón por tu mensaje en Actividad y pulsa ↶: te dice cuántos commits se pierden y, si confirmas, para el agente, hace `git reset --hard` del worktree a ese punto (también descarta lo que no esté commiteado), hace push forzado de la rama y devuelve la tarjeta a la columna en la que estaba (normalmente To Review) sin relanzar el agente. Ese mensaje y los posteriores quedan marcados como deshechos, los checkpoints de los commits borrados vuelven a quedar pendientes y el siguiente mensaje arranca un agente nuevo que mira el `git log`. Solo desde el ordenador que tiene el worktree de la tarjeta; si el rebase final reescribió los commits, cuenta hacia atrás los commits que llevaba por delante de la rama base.
 
 ## GitHub: pull antes de trabajar, push al mergear
 
@@ -70,7 +74,13 @@ Cada ordenador ejecuta su propio Trellai con **sus** modelos y suscripciones, pe
    ```
 4. `npm install` y `npm start`. La primera vez sube todo lo que tengas; en el otro ordenador aparece solo.
 
-Trellai crea sus tablas en un esquema propio (`trellai`), no expuesto en la API pública de Supabase.
+Trellai crea sus tablas en un esquema propio (`trellai`), no expuesto en la API pública de Supabase, así que puede vivir en un proyecto de Supabase que ya uses para otras apps sin tocar sus tablas.
+
+**Nuestra base de datos: Despidator.** El tablero se comparte por el proyecto de Supabase «Despidator» (`uvhhjluakmocxujxvjqh`, eu-west-1), que ya tiene el esquema `trellai` creado (migración `trellai_sync`). Para conectarte:
+
+1. Trellai entra con su propio usuario de Postgres, `trellai_sync` (migración `trellai_sync_role`): es dueño del esquema `trellai` y no puede leer las tablas de las otras apps. Su contraseña la tiene Pedro en su `.env`; para cambiarla, en el SQL editor de Despidator: `ALTER ROLE trellai_sync WITH PASSWORD '…';`.
+2. Pon en tu `.env` la línea de Despidator de `.env.example` con esa contraseña y reinicia Trellai.
+3. En la cabecera aparece el icono de nube en verde. Si antes usabas otra base de datos, al cambiar la URL Trellai sube **todo** tu tablero (proyectos, tarjetas, personas y canal de agentes) a Despidator, y las invitaciones nuevas (enlace, código y la del repo) ya apuntan a Despidator. Quien estuviera en un proyecto compartido contigo por la base de datos vieja tiene que poner también la URL de Despidator.
 
 **Cómo se usa:**
 
@@ -82,6 +92,19 @@ Trellai crea sus tablas en un esquema propio (`trellai`), no expuesto en la API 
 - Los proyectos sin remoto se ven en todos lados, pero sus tarjetas solo pueden trabajarse en el ordenador que tiene el repo.
 
 En la cabecera, el icono de nube con el nombre de este ordenador indica que está sincronizado (en rojo si no llega a la base de datos; los cambios esperan y se suben al volver).
+
+## Trabajar con otras personas
+
+Puedes compartir **un proyecto concreto** con otra persona: los dos veis el mismo tablero, la actividad y el canal de agentes, y vuestros agentes ven las reservas de ficheros y las notas de los del otro. Tus demás proyectos no le llegan, ni los suyos a ti. No hay permisos: todos pueden hacer todo.
+
+- **Tu nombre:** la primera vez, Trellai te pregunta cómo te llamas y tu color. Se ve en la cabecera, en las tarjetas que creas, en tus mensajes y en el canal. Si ya eres alguien en otro de tus ordenadores, elige «Soy …».
+- **Sin hacer nada (repos privados de GitHub):** si tienes una base de datos para compartir (`TRELLAI_DATABASE_URL`), Trellai deja la invitación dentro del propio repo, en una referencia oculta (`refs/trellai/board`) que no se clona ni se ve en GitHub y que solo puede leer quien tenga acceso al repo. Cuando otra persona añade ese repo a su Trellai (o ya lo tenía), su Trellai la encuentra y se une sola: si ya tenía un tablero para ese repo, sus tarjetas pasan al compartido. Se comprueba al añadir un proyecto y cada 10 minutos. En los repos públicos no se publica. Se desactiva por proyecto en **Ajustes de proyecto → Compartir** (o en todo el ordenador con `TRELLAI_AUTOSHARE=0`).
+- **Enlace de invitación:** en **Ajustes de proyecto → Compartir** tienes el enlace listo para copiar. Quien lo abra con su Trellai en marcha se une sola; si no, que pegue el código en **Unirse con código** (barra lateral o «Nuevo proyecto»). Si ya tiene clonado el mismo repo se enlaza solo; si no, el aviso del tablero le deja clonarlo o elegir la carpeta. Sin `TRELLAI_DATABASE_URL`, el panel te pide la URL de una base de datos por la que compartir.
+- **Ojo:** la invitación (enlace, código o la del repo) lleva la URL de la base de datos **con su contraseña**. Trellai solo le sincroniza ese proyecto, pero con esa URL se podrían leer los demás que tengas en esa base de datos. Hay que configurarla en **cada ordenador** (lo que llega por una invitación no se reenvía a tus otros ordenadores).
+- **Quién lo comparte:** en el mismo panel ves a cada persona, sus ordenadores, y puedes **Quitar** a alguien, **Salir** (si entraste con una invitación; no vuelves a entrar sola) o **Dejar de compartir** con todos (también quita la invitación del repo). Quien sale se queda con el tablero tal como estaba. Para cortar el acceso del todo, cambia la contraseña de esa base de datos.
+- Las tarjetas siguen teniendo dueño por ordenador; la etiqueta muestra la persona y su ordenador (p. ej. «Ana · portatil-ana»).
+
+Por dentro: cada fila de `trellai.rows` lleva su proyecto (`project`), y las conexiones de invitación (tabla local `sync_shares`) solo suben y bajan las filas de ese proyecto, más el nombre y color de quienes lo comparten (`people`, `members`).
 
 ## Ver esta rama
 
@@ -102,7 +125,7 @@ Cada agente puede usar **Claude** (con tu sesión de Claude Code) o **GPT** (con
 - En las pestañas del Asistente también puedes cambiarlo al vuelo.
 - Si cambias el modelo de una tarjeta a mitad, el nuevo agente recibe la spec, los checkpoints y mira el `git log` de la rama para seguir donde lo dejó el anterior.
 
-Para usar GPT basta con tener la **app de Codex/ChatGPT** instalada y con sesión iniciada: en Windows Trellai encuentra solo el `codex.exe` que trae (`%LOCALAPPDATA%\OpenAI\Codex\bin\…`), también tras cada actualización. Si no tienes la app, instala la CLI una vez:
+Para usar GPT basta con tener la **app de Codex/ChatGPT** instalada y con sesión iniciada: en Windows Trellai encuentra solo el `codex.exe` que trae (`%LOCALAPPDATA%\OpenAI\Codex\bin\…`); tras actualizar la app, reinicia Trellai. Si no tienes la app, instala la CLI una vez:
 
 ```bash
 npm i -g @openai/codex
@@ -131,6 +154,8 @@ El botón **Apariencia y teclado** de la cabecera permite elegir tema **Claro**,
 
 El tablero tiene búsqueda por título y spec y filtros para tarjetas que te necesitan, pendientes de revisión o con errores. Puedes redimensionar el panel de tarjeta arrastrando su borde izquierdo (o enfocarlo con Tab y usar las flechas) y ampliarlo para leer. Las tarjetas en revisión abren el diff directamente.
 
+**Fondo del tablero** (en los ajustes del proyecto, el botón de deslizadores): ninguno, un **color** (tinte suave) o una **imagen**. Con «Generar imagen», Codex (`codex exec` con tu login de ChatGPT) explora el repo, deduce de qué va el proyecto y dibuja un fondo apaisado y sin texto con su herramienta de imágenes; se guarda en `<repo>/.trellai/background.png`, solo en ese ordenador (en los demás se usa el color, si hay). Se puede cancelar y regenerar; si tu versión de Codex no genera imágenes, lo dice.
+
 Los mensajes sin enviar y las specs pendientes de guardar conservan un borrador local. Al leer mensajes antiguos, los nuevos no desplazan la conversación; aparece un botón para volver al final. Crear una tarjeta requiere Enter o **Añadir**; salir del campo no la crea.
 
 ## Requisitos para Merged
@@ -148,7 +173,7 @@ Puedes ponerlas en un fichero `.env` en la carpeta de Trellai.
 | `PORT` | `4317` | |
 | `HOST` | `127.0.0.1` | Ponlo a `0.0.0.0` para abrirlo desde el móvil en tu red. **Ojo:** los agentes tienen permisos completos. |
 | `TRELLAI_MODEL` | el de tu Claude Code | modelo de Claude cuando el selector dice "Claude (por defecto)" |
-| `TRELLAI_CODEX_BIN` | `codex` | ruta al CLI de Codex si no está en el PATH |
+| `TRELLAI_CODEX_BIN` | `codex` | ruta al CLI de Codex si no está en el PATH (un `.mjs` se ejecuta con node: Codex simulado en tests) |
 | `TRELLAI_DB` | `data/trellai.db` | |
 | `TRELLAI_DATABASE_URL` | — | Postgres (Supabase) para compartir el tablero entre ordenadores |
 | `TRELLAI_MACHINE` | el hostname | nombre de este ordenador en el tablero |

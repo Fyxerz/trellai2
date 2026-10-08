@@ -1,17 +1,20 @@
 import { useMessageDraft, useChatScroll } from "./chat";
 import { readPreference, writePreference } from "./preferences";
 import { registerDraft } from "./drafts";
-import { TagPicker, useProjectTags } from "./tags";
+import { cardTags, TagPicker, useProjectTags } from "./tags";
 import { reportError } from "./notifications";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MachineChip } from "./SyncUI";
-import { COLUMN_LABELS, type Card, type Checkpoint, type Column, type Message, type Project, type Question } from "../../shared/types";
+import { Avatar, Byline, usePeople } from "./People";
+import { COLUMN_LABELS, type Card, type Checkpoint, type Column, type Message, type Project, type Question, type Tag } from "../../shared/types";
 import { ModelPicker, modelLabel } from "./models";
+import { AddImageButton, SpecImages, useChatImages } from "./ImageEditor";
 import { prettyModel } from "../../shared/models";
-import { confirmDeleteCard, togglePreview } from "./Confirm";
+import { confirmDeleteCard, confirmDialog, togglePreview } from "./Confirm";
 import {
   ArrowRight,
   Bot,
+  CornerLeftUp,
   Eye,
   EyeOff,
   FileDiff,
@@ -21,27 +24,42 @@ import {
   GitMerge,
   Hammer,
   MessagesSquare,
+  Network,
   RotateCcw,
   Sparkles,
   Square,
   Terminal,
   Trash2,
+  Undo2,
   X,
 } from "lucide-react";
 import { api, useCardDetail, type Board } from "./api";
-import { Button, ChatHint, chatKeyDown, COLUMN_HEX, COLUMN_ICON, Markdown, Spinner, StatusBadge } from "./ui";
+import { Button, ChatHint, chatKeyDown, COLUMN_HEX, COLUMN_ICON, Markdown, runningLabel, Spinner, StatusBadge } from "./ui";
 
 type Tab = "spec" | "activity" | "diff";
 
-export function CardPanel({ card, board, project, onClose }: { card: Card; board: Board; project?: Project; onClose: () => void }) {
+export function CardPanel({
+  card,
+  board,
+  project,
+  onClose,
+  onOpen,
+}: {
+  card: Card;
+  board: Board;
+  project?: Project;
+  onClose: () => void;
+  /** open another card (its mother or one of its sub-cards) */
+  onOpen?: (id: string) => void;
+}) {
   const previewing = project?.preview_card_id === card.id;
   const { messages, questions, checkpoints, setCheckpoints } = useCardDetail(board, card.id);
   const tags = useProjectTags(card.project_id, board);
   const open = questions.filter((q) => q.answer === null);
-  const defaultTab: Tab = "activity";
+  // Cards still being planned open on their spec; the rest on the activity feed.
+  const defaultTab: Tab = card.column === "plan" ? "spec" : "activity";
   const [tab, setTab] = useState<Tab>(defaultTab);
   useEffect(() => setTab(defaultTab), [card.id]);
-  const [editSignal, setEditSignal] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [width, setWidth] = useState(() => Math.max(400, Math.min(900, Number(readPreference("panel-width", "540")) || 540)));
   const resize = useRef<{ x: number; width: number } | null>(null);
@@ -60,7 +78,6 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
       else if (k === "e") {
         e.preventDefault();
         setTab("spec");
-        setEditSignal((n) => n + 1);
         focus('[data-kb="spec"]');
       } else if (k === "c") {
         e.preventDefault();
@@ -78,7 +95,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
   const move = (column: Column) => api(`/api/cards/${card.id}/move`, { column }).catch((e) => reportError(e.message));
 
   return (
-    <aside aria-label="Detalle de tarjeta" style={{ "--panel-width": `${width}px` } as React.CSSProperties} className={`work-panel ${expanded ? "expanded" : ""} flex h-full shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel shadow-[var(--shadow-lift)]`}>
+    <aside aria-label="Detalle de tarjeta" style={{ "--panel-width": `${width}px` } as React.CSSProperties} className={`work-panel overlay ${expanded ? "expanded" : ""} flex h-full shrink-0 flex-col border-l border-ui-ink/[0.06] bg-panel`}>
       {!expanded && <div role="separator" aria-label="Ancho del panel" aria-orientation="vertical" aria-valuemin={400} aria-valuemax={900} aria-valuenow={width} tabIndex={0} className="panel-resizer" onKeyDown={e => {
         if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); e.stopPropagation(); const next = Math.max(400, Math.min(900, width + (e.key === "ArrowLeft" ? 40 : -40))); setWidth(next); writePreference("panel-width", String(next)); }
       }} onPointerDown={e => { resize.current = { x: e.clientX, width }; e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={e => { if (resize.current) setWidth(Math.max(400, Math.min(900, resize.current.width + resize.current.x - e.clientX))); }} onPointerUp={e => { resize.current = null; writePreference("panel-width", String(width)); e.currentTarget.releasePointerCapture(e.pointerId); }} onPointerCancel={() => { resize.current = null; }} /> }
@@ -87,6 +104,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
           <ColumnChip column={card.column} />
           <StatusBadge card={card} />
           <MachineChip machine={card.machine} />
+          {card.author && <CreatedBy id={card.author} />}
           {card.agent_model && (
             <span
               className="flex items-center gap-1 rounded-md bg-ui-ink/[0.05] px-1.5 py-0.5 text-[11px] text-zinc-300"
@@ -98,7 +116,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
           <ModelPicker
             className="ml-auto"
             value={card.model}
-            inheritLabel={`Modelo del proyecto (${modelLabel(project?.model_dev)})`}
+            inheritLabel={inheritedModelLabel(card, tags, project)}
             title="Modelo que usa el agente de esta tarjeta (preparación y desarrollo). Se aplica en el siguiente paso del agente."
             onChange={(model) => api(`/api/cards/${card.id}`, { model }, "PATCH")}
           />
@@ -106,7 +124,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
             onClick={async () => {
               if (await confirmDeleteCard(card)) api(`/api/cards/${card.id}`, undefined, "DELETE").then(onClose).catch(e => reportError(e.message));
             }}
-            className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-red-500/10 hover:text-red-300"
+            className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-red-500/10 hover:text-danger"
             title="Eliminar tarjeta"
           >
             <Trash2 className="h-4 w-4" />
@@ -119,8 +137,9 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
         <TitleInput card={card} />
         <TagPicker card={card} tags={tags} />
         {card.status_text && card.status !== "running" && (
-          <p className={`mt-1 text-[12.5px] ${card.status === "error" ? "text-red-300" : "text-zinc-400"}`}>{card.status_text}</p>
+          <p className={`mt-1 text-[12.5px] ${card.status === "error" ? "text-danger" : "text-zinc-400"}`}>{card.status_text}</p>
         )}
+        <Family card={card} board={board} onOpen={onOpen} />
         <div className="mt-3 flex flex-wrap items-center gap-2 empty:hidden">
           {card.column === "backlog" && (
             <Button onClick={() => move("plan")}>
@@ -137,6 +156,11 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
               </Button>
             </>
           )}
+          {card.column === "preparation" && card.status !== "running" && (
+            <Button variant={card.status === "ready" ? "primary" : undefined} onClick={() => move("doing")}>
+              <Hammer className="h-3.5 w-3.5" /> Pasar a Doing
+            </Button>
+          )}
           {card.column === "review" && (
             <Button variant="primary" onClick={() => move("merged")}>
               <GitMerge className="h-3.5 w-3.5" /> Mergear
@@ -146,7 +170,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
             <Button
               onClick={() => togglePreview(card, previewing)}
               title={previewing ? "Devolver tu repo a su rama (v)" : "Poner esta rama en tu repo para verla con tu servidor de desarrollo (v)"}
-              className={previewing ? "!bg-teal-400/15 !text-teal-200 !ring-teal-300/30" : ""}
+              className={previewing ? "!bg-teal-400/15 !text-success !ring-teal-300/30" : ""}
             >
               {previewing ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
               {previewing ? "Dejar de ver" : "Ver esta rama"}
@@ -170,7 +194,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
 
       <Checkpoints card={card} items={checkpoints} setItems={setCheckpoints} />
 
-      <nav role="tablist" aria-label="Contenido de tarjeta" className="flex gap-1 border-b border-ui-ink/[0.06] px-5">
+      <nav role="tablist" aria-label="Contenido de tarjeta" className="ui-tabs panel-tabs border-b border-ui-ink/[0.06] px-5">
         {(["spec", "activity", "diff"] as Tab[]).map((t, i) => {
           const Icon = { spec: FileText, activity: MessagesSquare, diff: FileDiff }[t];
           return (
@@ -179,7 +203,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
               role="tab"
               aria-selected={tab === t}
               onClick={() => setTab(t)}
-              className={`-mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-2.5 text-sm transition ${
+              className={`ui-tab -mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-2.5 text-sm transition ${
                 tab === t ? "border-indigo-400 text-zinc-50" : "border-transparent text-zinc-500 hover:text-zinc-300"
               }`}
             >
@@ -193,7 +217,7 @@ export function CardPanel({ card, board, project, onClose }: { card: Card; board
       </nav>
 
       <div className="min-h-0 flex-1">
-        {tab === "spec" && <SpecTab card={card} questions={questions} editSignal={editSignal} />}
+        {tab === "spec" && <SpecTab card={card} board={board} questions={questions} />}
         {tab === "activity" && <Activity card={card} messages={messages} />}
         {tab === "diff" && <DiffTab card={card} />}
       </div>
@@ -218,17 +242,15 @@ function TitleInput({ card }: { card: Card }) {
       if (e.nativeEvent.isComposing) return;
       if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
       if (e.key === "Escape") { e.stopPropagation(); cancel.current = true; setV(card.title); setError(""); e.currentTarget.blur(); }
-    }} className="mt-3 w-full resize-none rounded-lg bg-transparent text-xl leading-snug font-semibold tracking-tight text-zinc-50" />
-    {error && <p role="alert" className="text-xs text-red-300">{error}</p>}
+    }} className="ui-field mt-3 w-full resize-none rounded-lg bg-transparent text-xl leading-snug font-semibold tracking-tight text-zinc-50" />
+    {error && <p role="alert" className="text-xs text-danger">{error}</p>}
   </>;
 }
 
-function SpecTab({ card, questions, editSignal }: { card: Card; questions: Question[]; editSignal: number }) {
+function SpecTab({ card, board, questions }: { card: Card; board: Board; questions: Question[] }) {
   const key = `spec-draft:${card.id}`;
   const initialDraft = readPreference(key, card.spec);
   const [spec, setSpec] = useState(initialDraft);
-  const [editing, setEditing] = useState(!card.spec || initialDraft !== card.spec);
-  useEffect(() => { if (editSignal) setEditing(true); }, [editSignal]);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">(initialDraft === card.spec ? "saved" : "saving");
   const [error, setError] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -273,39 +295,31 @@ function SpecTab({ card, questions, editSignal }: { card: Card; questions: Quest
   return (
     <div className="h-full overflow-y-auto px-5 py-4">
       <div className="mb-2 flex items-center gap-2">
-        <h3 className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">Especificación</h3>
+        <h3 className="ui-section-title">Especificación</h3>
         <span className="text-[11px] text-zinc-600">{{ saved: "Guardado", saving: "Guardando…", error: "Error al guardar" }[saveState]}</span>
-        <button onClick={() => setEditing(!editing)} className="ml-auto text-xs text-indigo-400 hover:underline">
-          {editing ? "Vista previa" : "Editar"}
-        </button>
       </div>
-      {error && <div role="alert" className="mb-3 rounded-lg bg-red-500/10 p-3 text-sm text-red-300">{error} <button className="ml-2 underline" onClick={() => void flush().catch(() => {})}>Reintentar</button></div>}
-      {editing ? (
-        <textarea
-          aria-label="Especificación"
-          onBlur={() => void flush().catch(() => {})}
-          onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) { e.preventDefault(); void flush().catch(() => {}); } }}
-          data-kb="spec"
-          value={spec}
-          onChange={(e) => {
-            setSpec(e.target.value);
-            save(e.target.value);
-          }}
-          placeholder={"Describe la feature como quieras: qué quieres, por qué, cómo debería comportarse, casos raros…\n\nMarkdown soportado."}
-          className="min-h-[50vh] w-full resize-y rounded-lg bg-zinc-900 p-3 font-mono text-sm leading-relaxed text-zinc-200 ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
-        />
-      ) : (
-        <div className="rounded-lg bg-zinc-900/50 p-3 ring-1 ring-zinc-800">
-          {spec ? <Markdown>{spec}</Markdown> : <p className="text-sm text-zinc-500">Sin spec.</p>}
-        </div>
-      )}
+      {error && <div role="alert" className="ui-alert mb-3">{error} <button className="ml-2 underline" onClick={() => void flush().catch(() => {})}>Reintentar</button></div>}
+      <textarea
+        aria-label="Especificación"
+        onBlur={() => void flush().catch(() => {})}
+        onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) { e.preventDefault(); void flush().catch(() => {}); } }}
+        data-kb="spec"
+        value={spec}
+        onChange={(e) => {
+          setSpec(e.target.value);
+          save(e.target.value);
+        }}
+        placeholder={"Describe la feature como quieras: qué quieres, por qué, cómo debería comportarse, casos raros…\n\nMarkdown soportado."}
+        className="ui-field ui-control min-h-[50vh] w-full resize-y rounded-lg bg-zinc-900 p-3 font-mono text-sm leading-relaxed text-zinc-200 ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
+      />
       {card.column !== "backlog" && card.column !== "plan" && (
         <p className="mt-2 text-[11px] text-zinc-500">Si cambias la spec con un agente trabajando, díselo también en Actividad.</p>
       )}
+      <SpecImages card={card} board={board} />
 
       {card.plan && (
         <>
-          <h3 className="mt-6 mb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">Notas de preparación</h3>
+          <h3 className="mt-6 mb-2 ui-section-title">Notas de preparación</h3>
           <div className="rounded-lg bg-violet-500/5 p-3 ring-1 ring-violet-500/20">
             <Markdown>{card.plan}</Markdown>
           </div>
@@ -320,7 +334,7 @@ function SpecTab({ card, questions, editSignal }: { card: Card; questions: Quest
       )}
       {answered.length > 0 && (
         <>
-          <h3 className="mt-6 mb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">Decisiones</h3>
+          <h3 className="mt-6 mb-2 ui-section-title">Decisiones</h3>
           <ul className="space-y-1.5 text-sm">
             {answered.map((q) => (
               <li key={q.id}>
@@ -379,7 +393,7 @@ function Questions({ card, questions }: { card: Card; questions: Question[] }) {
   return (
     <div className="border-b border-violet-500/30 bg-violet-500/[0.07] px-5 py-4">
       <div className="mb-3 flex items-center gap-3">
-        <h3 className="text-sm font-semibold text-violet-200">
+        <h3 className="text-sm font-semibold text-waiting">
           {questions.length === 1 ? "Claude tiene una pregunta" : `Pregunta ${i + 1} de ${questions.length}`}
         </h3>
         {questions.length > 1 && (
@@ -425,7 +439,7 @@ function Questions({ card, questions }: { card: Card; questions: Question[] }) {
         }}
         placeholder={q.options.length ? "…o escribe tu respuesta" : "Escribe tu respuesta"}
         aria-label={`Respuesta a: ${q.question}`}
-        className="mt-2 w-full rounded-md bg-zinc-900 px-2.5 py-1.5 text-sm ring-1 ring-zinc-700 outline-none focus:ring-violet-500"
+        className="ui-field ui-control mt-2 w-full rounded-md bg-zinc-900 px-2.5 py-1.5 text-sm ring-1 ring-zinc-700 outline-none focus:ring-violet-500"
       />
 
       <div className="mt-4 flex items-center gap-2">
@@ -454,6 +468,7 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
   const scroll = useChatScroll(messages.length);
   const busy = useRef(false);
   const [sending, setSending] = useState(false);
+  const images = useChatImages(card);
 
   const placeholder: Record<Column, string> = {
     backlog: "Comentario…",
@@ -466,17 +481,17 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
 
   const send = async () => {
     const t = current.current.trim();
-    if (!t || busy.current) return;
+    if ((!t && !images.ids.length) || images.uploading || busy.current) return;
     busy.current = true; setSending(true);
     const submitted = current.current;
-    try { await api(`/api/cards/${card.id}/message`, { text: t }); if (current.current === submitted) setText(""); }
+    try { await api(`/api/cards/${card.id}/message`, { text: t, attachments: images.ids }); if (current.current === submitted) setText(""); images.clear(); }
     catch (e) { reportError((e as Error).message); }
     finally { busy.current = false; setSending(false); }
   };
 
   return (
     <div className="flex h-full flex-col">
-      <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-4">
+      <div ref={scroll.container} onScroll={scroll.onScroll} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
         {messages.length === 0 && (
           <p className="pt-8 text-center text-sm text-zinc-500">
             {card.column === "plan" || card.column === "backlog"
@@ -485,17 +500,20 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
           </p>
         )}
         {messages.map((m) => (
-          <MessageRow key={m.id} m={m} />
+          <div key={m.id} className={m.undone && m.role !== "user" ? "opacity-40" : undefined} title={m.undone && m.role !== "user" ? "Deshecho al retroceder" : undefined}>
+            <MessageRow m={m} card={card} />
+          </div>
         ))}
         {card.status === "running" && (
-          <div className="flex items-center gap-2 pt-1 text-xs text-amber-300/80">
-            <Spinner /> trabajando…
+          <div className="flex items-center gap-2 pt-1 text-xs text-warning/80">
+            <Spinner /> {runningLabel(card).toLowerCase()}…
           </div>
         )}
         <div ref={scroll.end} />
       </div>
-      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-indigo-300">Nuevos mensajes ↓</button>}
-      <div className="border-t border-zinc-800 p-3">
+      {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-accent">Nuevos mensajes ↓</button>}
+      <div className="border-t border-zinc-800 p-3" onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()} onDrop={images.onDrop}>
+        {images.strip}
         <div className="flex items-end gap-2">
           <textarea
             aria-label="Mensaje al agente"
@@ -503,11 +521,13 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => chatKeyDown(e, send, setText)}
+            onPaste={images.onPaste}
             rows={2}
             placeholder={placeholder[card.column]}
-            className="flex-1 resize-none rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
+            className="ui-field ui-control flex-1 resize-none rounded-lg bg-zinc-900 px-3 py-2 text-sm ring-1 ring-zinc-800 outline-none focus:ring-indigo-600"
           />
-          <Button variant={card.column === "review" ? "primary" : "default"} onClick={send} disabled={!text.trim() || sending}>
+          <AddImageButton onFiles={(f) => void images.add(f)} />
+          <Button variant={card.column === "review" ? "primary" : "default"} onClick={send} disabled={(!text.trim() && !images.ids.length) || images.uploading || sending}>
             {card.column === "review" ? "Pedir cambios" : "Enviar"}
           </Button>
         </div>
@@ -517,7 +537,39 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
   );
 }
 
-function MessageRow({ m }: { m: Message }) {
+/** ↶ on one of your requests: says what gets thrown away, then rewinds the card's branch. */
+async function rewind(card: Card, m: Message) {
+  try {
+    const { commits, dirty } = await api<{ commits: string[]; dirty: boolean }>(`/api/cards/${card.id}/messages/${m.id}/rewind`);
+    const list = commits.slice(0, 8).map((s) => `• ${s}`).join("\n");
+    const body = [
+      commits.length ? `Se borran ${commits.length} commit(s) de la rama:\n${list}${commits.length > 8 ? "\n…" : ""}` : "No hay commits después de este mensaje.",
+      dirty ? "También se descartan los cambios sin commitear del worktree." : "",
+      card.status === "running" ? "El agente se detiene." : "",
+      m.column_before && m.column_before !== card.column ? `La tarjeta vuelve a ${COLUMN_LABELS[m.column_before]}.` : "",
+    ].filter(Boolean).join("\n\n");
+    if (!(await confirmDialog({ title: "¿Retroceder a antes de este mensaje?", body, confirmLabel: "Retroceder", danger: commits.length > 0 || dirty }))) return;
+    await api(`/api/cards/${card.id}/messages/${m.id}/rewind`, {});
+  } catch (e) {
+    reportError((e as Error).message);
+  }
+}
+
+/** "creada por Ana" in the card header (only once there's more than one person). */
+function CreatedBy({ id }: { id: string }) {
+  const { byId, people } = usePeople();
+  if (people.length < 2 || !byId[id]) return null;
+  return <span className="whitespace-nowrap text-[11px] text-zinc-500" title={`Creada por ${byId[id].name}`}>creada por <Byline id={id} /></span>;
+}
+
+/** Who sent a request, next to their bubble (only once there's more than one person). */
+function MessageAuthor({ id }: { id: string | null }) {
+  const { people } = usePeople();
+  if (!id || people.length < 2) return null;
+  return <Avatar id={id} size={20} className="mt-1" />;
+}
+
+function MessageRow({ m, card }: { m: Message; card: Card }) {
   if (m.role === "tool")
     return (
       <div className="flex min-w-0 items-center gap-1.5 pl-1 font-mono text-[11px] text-zinc-500" title={m.content}>
@@ -527,20 +579,32 @@ function MessageRow({ m }: { m: Message }) {
     );
   if (m.role === "system")
     return (
-      <div className="flex items-start gap-2 border-l-2 border-ui-ink/[0.08] py-0.5 pl-2.5 text-[12px] whitespace-pre-wrap text-zinc-400">
+      <div className="border-l-2 border-ui-ink/[0.08] py-0.5 pl-2.5 text-[12px] break-words whitespace-pre-wrap text-zinc-400">
         <InlineCode text={m.content} />
       </div>
     );
   if (m.role === "user")
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-indigo-500/15 px-3.5 py-2 text-sm text-zinc-100 ring-1 ring-indigo-400/20">
+      <div className={`group flex items-start justify-end gap-1.5 ${m.undone ? "opacity-50" : ""}`}>
+        {m.head_sha && !m.undone && card.column !== "merged" && (
+          <button
+            onClick={() => rewind(card, m)}
+            title="Retroceder: volver la rama a como estaba antes de este mensaje"
+            aria-label="Retroceder a antes de este mensaje"
+            className="ui-reveal mt-1.5 rounded p-1 text-zinc-500 opacity-0 transition group-hover:opacity-100 hover:bg-zinc-800 hover:text-zinc-200 focus:opacity-100"
+          >
+            <Undo2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+        <div className="ui-message max-w-[90%] rounded-2xl rounded-br-md bg-indigo-500/15 px-3.5 py-2 text-sm text-zinc-100 ring-1 ring-indigo-400/20">
           <Markdown>{m.content}</Markdown>
+          {m.undone && <div className="mt-1 text-[11px] text-zinc-400">↶ deshecho</div>}
         </div>
+        <MessageAuthor id={m.author} />
       </div>
     );
   return (
-    <div className="rounded-lg px-1 py-1 text-zinc-200">
+    <div className="ui-message rounded-lg px-1 py-1 text-zinc-200">
       <Markdown>{m.content}</Markdown>
     </div>
   );
@@ -558,19 +622,19 @@ function DiffTab({ card }: { card: Card }) {
 
   if (!card.worktree)
     return <p className="p-6 text-sm text-zinc-500">{card.column === "merged" ? "Ya está mergeada." : "Todavía no hay rama de trabajo."}</p>;
-  if (!data) return <div className="p-6 text-zinc-500"><Spinner /></div>;
+  if (!data) return <div role="status" className="flex items-center gap-2 p-6 text-sm text-zinc-400"><Spinner /> Cargando cambios?</div>;
   return (
     <div className="h-full overflow-y-auto px-4 py-3">
       <div className="mb-3 flex items-center gap-2 text-xs text-zinc-400">
         {files.length} fichero(s)
-        <button onClick={load} className="ml-auto text-indigo-400 hover:underline">Refrescar</button>
+        <button onClick={load} className="ml-auto text-accent hover:underline">Refrescar</button>
       </div>
-      {files.length === 0 && <p className="text-sm text-zinc-500">Sin cambios todavía.</p>}
+      {files.length === 0 && <p className="ui-empty">Sin cambios todavía.</p>}
       {files.map((f) => (
-        <details key={f.name} open={files.length <= 8} className="mb-3 overflow-hidden rounded-lg ring-1 ring-zinc-800">
+        <details key={f.name} className="mb-3 overflow-hidden rounded-lg ring-1 ring-zinc-800">
           <summary className="cursor-pointer bg-zinc-900 px-3 py-1.5 font-mono text-xs text-zinc-300">
             {f.name}
-            <span className="ml-2 text-emerald-400">+{f.add}</span> <span className="text-red-400">−{f.del}</span>
+            <span className="ml-2 text-success">+{f.add}</span> <span className="text-danger">−{f.del}</span>
           </summary>
           <pre className="overflow-x-auto bg-zinc-950 py-1 font-mono text-[13px] leading-relaxed">
             {f.lines.map((l, i) => (
@@ -578,11 +642,11 @@ function DiffTab({ card }: { card: Card }) {
                 key={i}
                 className={
                   l.startsWith("+")
-                    ? "bg-emerald-500/10 px-3 text-emerald-200"
+                    ? "bg-emerald-500/10 px-3 text-success"
                     : l.startsWith("-")
-                      ? "bg-red-500/10 px-3 text-red-200"
+                      ? "bg-red-500/10 px-3 text-danger"
                       : l.startsWith("@@")
-                        ? "px-3 text-indigo-400/70"
+                        ? "px-3 text-accent/70"
                         : "px-3 text-zinc-400"
                 }
               >
@@ -637,13 +701,13 @@ function Checkpoints({ card, items, setItems }: { card: Card; items: Checkpoint[
   return (
     <section className="border-b border-zinc-800 px-5 py-3">
       <button onClick={() => setCollapsed(!collapsed)} className="flex w-full items-center gap-2 text-left">
-        <h3 className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">Checkpoints</h3>
+        <h3 className="ui-section-title">Checkpoints</h3>
         {items.length > 0 && (
           <>
             <span className="text-xs text-zinc-500">
               {done}/{items.length}
             </span>
-            <div className="h-1 flex-1 overflow-hidden rounded-full bg-zinc-800">
+            <div className="ui-progress flex-1">
               <div className={`h-full rounded-full transition-all ${pct === 100 ? "bg-emerald-400" : "bg-indigo-400"}`} style={{ width: `${pct}%` }} />
             </div>
           </>
@@ -670,9 +734,9 @@ function Checkpoints({ card, items, setItems }: { card: Card; items: Checkpoint[
             aria-label="Añadir checkpoint"
             data-kb="checkpoint"
             placeholder={items.length ? "+ Añadir checkpoint…" : "+ Añade los pasos que quieres ver hechos (Enter). Claude también añadirá los suyos."}
-            className="mt-1 w-full rounded-md bg-transparent px-2 py-1.5 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 hover:bg-zinc-900 focus:bg-zinc-900 focus:ring-1 focus:ring-zinc-700"
+            className="ui-field ui-control mt-1 w-full rounded-md bg-transparent px-2 py-1.5 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 hover:bg-zinc-900 focus:bg-zinc-900 focus:ring-1 focus:ring-zinc-700"
           />
-          {error && <p role="alert" className="mt-1 text-xs text-red-300">{error}</p>}
+          {error && <p role="alert" className="mt-1 text-xs text-danger">{error}</p>}
         </>
       )}
     </section>
@@ -695,8 +759,8 @@ function CheckpointRow({ c, onToggle }: { c: Checkpoint; onToggle: () => void })
     finally { busy.current = false; }
   };
   return (
-    <li className="group flex items-start gap-2 rounded-md px-2 py-1 hover:bg-zinc-900">
-      <input type="checkbox" checked={c.done} onChange={onToggle} className="mt-[3px] h-3.5 w-3.5 shrink-0 cursor-pointer accent-emerald-500" />
+    <li className="checkpoint-row group flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-zinc-900">
+      <input type="checkbox" checked={c.done} onChange={onToggle} className="ui-field mt-[3px] h-3.5 w-3.5 shrink-0 cursor-pointer accent-emerald-500" />
       {editing ? (
         <input
           autoFocus
@@ -712,7 +776,7 @@ function CheckpointRow({ c, onToggle }: { c: Checkpoint; onToggle: () => void })
               setEditing(false);
             }
           }}
-          className="flex-1 bg-transparent text-sm text-zinc-100 outline-none"
+          className="ui-field flex-1 bg-transparent text-sm text-zinc-100 outline-none"
         />
       ) : (
         <button onClick={() => { canceled.current = false; setEditing(true); }} className={`flex-1 cursor-text text-left text-sm leading-snug ${c.done ? "text-zinc-500 line-through" : "text-zinc-200"}`}>
@@ -720,13 +784,13 @@ function CheckpointRow({ c, onToggle }: { c: Checkpoint; onToggle: () => void })
         </button>
       )}
       {c.source === "agent" && (
-        <span className="mt-0.5 shrink-0 rounded bg-violet-500/10 px-1.5 text-[10px] text-violet-300/80" title="Añadido por Claude">
+        <span className="mt-0.5 shrink-0 rounded bg-violet-500/10 px-1.5 text-[10px] text-waiting/80" title="Añadido por Claude">
           Claude
         </span>
       )}
       <button
         onClick={() => api(`/api/checkpoints/${c.id}`, undefined, "DELETE").catch(e => reportError(e.message))}
-        className="shrink-0 text-xs text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-red-300"
+        className="ui-reveal shrink-0 text-xs text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-danger"
         title="Eliminar"
       >
         ✕
@@ -753,6 +817,47 @@ function InlineCode({ text }: { text: string }) {
   );
 }
 
+/** The card preparation split this one from, or the sub-cards it was split into. */
+function Family({ card, board, onOpen }: { card: Card; board: Board; onOpen?: (id: string) => void }) {
+  const mother = card.parent_id ? board.cards[card.parent_id] : undefined;
+  const kids = Object.values(board.cards)
+    .filter((c) => c.parent_id === card.id)
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  if (!mother && !kids.length) return null;
+  const link = "truncate text-left text-zinc-200 underline-offset-2 hover:text-sky-300 hover:underline";
+  if (mother)
+    return (
+      <p className="mt-2 flex min-w-0 items-center gap-1.5 text-[12.5px] text-zinc-400">
+        <CornerLeftUp className="h-3.5 w-3.5 shrink-0 text-sky-300" /> Sub-tarjeta de
+        <button className={link} onClick={() => onOpen?.(mother.id)} title="Abrir la tarjeta madre">
+          {mother.title}
+        </button>
+      </p>
+    );
+  const merged = kids.filter((k) => k.column === "merged").length;
+  return (
+    <div className="mt-3 rounded-lg bg-ui-ink/[0.03] px-3 py-2 ring-1 ring-ui-ink/[0.06]">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-zinc-300">
+        <Network className="h-3.5 w-3.5 text-sky-300" /> Sub-tarjetas
+        <span className={`tabular ml-auto text-[11px] ${merged === kids.length ? "text-success" : "text-zinc-500"}`}>
+          {merged}/{kids.length} mergeadas
+        </span>
+      </div>
+      <ul className="space-y-1">
+        {kids.map((k) => (
+          <li key={k.id} className="flex min-w-0 items-center gap-2 text-[12.5px]">
+            <ColumnChip column={k.column} />
+            <button className={`${link} min-w-0 flex-1 ${k.column === "merged" ? "line-through decoration-zinc-600" : ""}`} onClick={() => onOpen?.(k.id)}>
+              {k.title}
+            </button>
+            {k.status !== "idle" && <StatusBadge card={k} />}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function ColumnChip({ column }: { column: Column }) {
   const Icon = COLUMN_ICON[column];
   return (
@@ -761,4 +866,10 @@ function ColumnChip({ column }: { column: Column }) {
       {COLUMN_LABELS[column]}
     </span>
   );
+}
+
+/** What the card's dev agent uses when the card has no model of its own: the first tag added to it that has a model, else the project's. */
+function inheritedModelLabel(card: Card, tags: Tag[], project: Project | null | undefined) {
+  const tag = cardTags(card, tags).find((t) => t.model);
+  return tag ? `Modelo de la etiqueta «${tag.name}», la primera con modelo (${modelLabel(tag.model)})` : `Modelo del proyecto (${modelLabel(project?.model_dev)})`;
 }

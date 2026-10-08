@@ -50,7 +50,7 @@ beforeAll(async () => {
   writeFileSync(join(repo, "SHARED.md"), "# Shared\n");
   sh("git add -A && git commit -qm init");
 
-  server = spawn("npx", ["tsx", "server/index.ts"], {
+  server = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
     env: { ...process.env, PORT: String(PORT), TRELLAI_DB: join(dir, "t.db"), TRELLAI_FAKE_AGENT: "1", TRELLAI_FAKE_DELAY: "60" },
     stdio: "pipe",
   });
@@ -70,7 +70,39 @@ afterAll(() => {
   server?.kill();
 });
 
+describe("new folder from the folder browser", () => {
+  it("creates an empty folder and turns it into a project", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "trellai-mkdir-"));
+    const { path } = await api<{ path: string }>("/api/fs/mkdir", { parent, name: "mi-app" });
+    expect(path).toBe(join(parent, "mi-app"));
+    expect(existsSync(path)).toBe(true);
+    await expect(api("/api/fs/mkdir", { parent, name: "mi-app" })).rejects.toThrow(/Ya existe/);
+    for (const bad of ["", "  ", "a/b", "a\\b", "..", "que?", "fin."]) {
+      await expect(api("/api/fs/mkdir", { parent, name: bad })).rejects.toThrow();
+    }
+    expect(existsSync(join(parent, "a"))).toBe(false);
+    const p = await api<any>("/api/projects", { repo_path: path, name: "mi-app", init: true });
+    expect(p.name).toBe("mi-app");
+    expect(p.base_branch).toBe("main");
+    expect(sh("git log --format=%s", path)).toBe("Initial commit");
+    expect(await api<Card[]>(`/api/projects/${p.id}/cards`)).toEqual([]);
+  });
+});
+
 describe("board flow", () => {
+  it("by default a prepared card waits in preparation until moved to doing", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Perfil", spec: "Página de perfil", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "preparation" });
+    const ready = await waitFor(c.id, (x) => x.status === "ready");
+    expect(ready.column).toBe("preparation");
+    expect((await api<any[]>(`/api/cards/${c.id}/checkpoints`)).length).toBeGreaterThan(0);
+    await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    // the rest of the flow tests run with the automatic move on
+    const p = await api<any>(`/api/projects/${projectId}`, { auto_doing: true }, "PATCH");
+    expect(p.auto_doing).toBe(true);
+  });
+
   it("clear spec: preparation → doing → review automatically", async () => {
     const c = await api<Card>("/api/cards", { project_id: projectId, title: "Login con email", spec: "Añadir login", column: "plan" });
     await api(`/api/cards/${c.id}/checkpoints`, { text: "Pantalla de login" });
@@ -98,6 +130,57 @@ describe("board flow", () => {
     expect(qs).toHaveLength(1);
     await api(`/api/cards/${c.id}/answers`, { answers: { [qs[0].id]: "Simple" } });
     await waitFor(c.id, (x) => x.column === "review");
+  });
+
+  it("medium card: preparation plans parts for parallel subagents", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Informe", spec: "parallel", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "preparation" });
+    const done = await waitFor(c.id, (x) => x.column === "review");
+    expect(done.plan).toContain("## Reparto en paralelo");
+    expect(done.plan).toContain("**Backend**");
+    expect(done.parent_id).toBeNull();
+  });
+
+  it("big card: split into sub-cards that run at once, mother closes when all are merged", async () => {
+    const m = await api<Card>("/api/cards", { project_id: projectId, title: "Tienda", spec: "split en dos", column: "plan" });
+    await api(`/api/cards/${m.id}/move`, { column: "preparation" });
+    const mother = await waitFor(m.id, (x) => x.status === "ready");
+    expect(mother.column).toBe("preparation");
+    expect(mother.status_text).toMatch(/2 sub-tarjetas/);
+    const kids = (await api<Card[]>(`/api/projects/${projectId}/cards`)).filter((x) => x.parent_id === m.id);
+    expect(kids.map((k) => k.title).sort()).toEqual(["Tienda A", "Tienda B"]);
+    // auto_doing is on: both go to Doing by themselves and end in review
+    const done = await Promise.all(kids.map((k) => waitFor(k.id, (x) => x.column === "review" && x.status === "idle", 15000)));
+    for (const k of done) {
+      expect(k.plan).toContain("Sub-tarjetas hermanas");
+      expect(k.checkpoints_total).toBe(1);
+    }
+    expect(done[0].plan).toContain(done[1].title);
+    // the mother runs no agent, even when moved to Doing by hand
+    await api(`/api/cards/${m.id}/move`, { column: "doing" });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(await card(m.id)).toMatchObject({ column: "doing", status: "ready", branch: null });
+
+    await api(`/api/cards/${kids[0].id}/move`, { column: "merged" });
+    await waitFor(kids[0].id, (x) => x.status_text.startsWith("Merge "));
+    expect((await card(m.id)).column).toBe("doing");
+    await api(`/api/cards/${kids[1].id}/move`, { column: "merged" });
+    await waitFor(kids[1].id, (x) => x.status_text.startsWith("Merge "));
+    await waitFor(m.id, (x) => x.column === "merged" && x.status === "idle");
+  }, 30000);
+
+  it("without the automatic move, sub-cards wait in preparation", async () => {
+    await api(`/api/projects/${projectId}`, { auto_doing: false }, "PATCH");
+    try {
+      const m = await api<Card>("/api/cards", { project_id: projectId, title: "Panel", spec: "split", column: "plan" });
+      await api(`/api/cards/${m.id}/move`, { column: "preparation" });
+      await waitFor(m.id, (x) => x.status === "ready");
+      const kids = (await api<Card[]>(`/api/projects/${projectId}/cards`)).filter((x) => x.parent_id === m.id);
+      expect(kids).toHaveLength(2);
+      expect(kids.every((k) => k.column === "preparation" && k.status === "ready")).toBe(true);
+    } finally {
+      await api(`/api/projects/${projectId}`, { auto_doing: true }, "PATCH");
+    }
   });
 
   it("parallel agents, notes, merge, and conflict resolution", async () => {
@@ -144,6 +227,38 @@ describe("board flow", () => {
     await waitFor(c.id, (x) => x.column === "review");
     const msgs = await api<any[]>(`/api/cards/${c.id}/messages`);
     expect(msgs.some((m) => m.role === "user" && m.content === "Cambia el título")).toBe(true);
+  });
+
+  it("↶ rewinds the branch to before a requested change", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Retroceso", spec: "x", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    const first = await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    const before = sh("git rev-parse HEAD", first.worktree!);
+
+    await api(`/api/cards/${c.id}/message`, { text: "Añade un botón" });
+    await waitFor(c.id, (x) => x.column === "doing");
+    const after = await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    expect(sh("git rev-parse HEAD", after.worktree!)).not.toBe(before);
+    expect(existsSync(join(after.worktree!, "features", "anade-un-boton.md"))).toBe(true);
+
+    const request = (await api<any[]>(`/api/cards/${c.id}/messages`)).find((m) => m.role === "user" && m.content === "Añade un botón");
+    expect(request).toMatchObject({ head_sha: before, column_before: "review", undone: false });
+    const preview = await api(`/api/cards/${c.id}/messages/${request.id}/rewind`);
+    expect(preview.commits.length).toBeGreaterThan(0);
+
+    writeFileSync(join(after.worktree!, "basura.txt"), "sin commitear\n");
+    const r = await api(`/api/cards/${c.id}/messages/${request.id}/rewind`, {});
+    expect(r.commits).toBe(preview.commits.length);
+
+    const back = await card(c.id);
+    expect(back).toMatchObject({ column: "review", status: "idle", session_id: null });
+    expect(sh("git rev-parse HEAD", back.worktree!)).toBe(before);
+    expect(sh("git status --porcelain", back.worktree!)).toBe("");
+    expect(existsSync(join(back.worktree!, "features", "anade-un-boton.md"))).toBe(false);
+    const msgs = await api<any[]>(`/api/cards/${c.id}/messages`);
+    expect(msgs.find((m) => m.id === request.id).undone).toBe(true);
+    expect(msgs.filter((m) => m.created_at > request.created_at && !m.undone).some((m) => m.content.startsWith("↶ Retrocedido"))).toBe(true);
+    await expect(api(`/api/cards/${c.id}/messages/${request.id}/rewind`, {})).rejects.toThrow(/deshecho/);
   });
 
   it("assistant turns a message into cards", async () => {
@@ -211,5 +326,122 @@ describe("board flow", () => {
     expect(by(done.branch!).worktree).toBeTruthy();
     expect(by("suelta-vieja")).toMatchObject({ merged: true, card: null });
     sh("git branch -D suelta-vieja");
+  });
+
+  it("deletes branches from the menu: protected ones, unmerged, worktrees, remote and per-branch errors", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Rama en curso", spec: "x", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    const active = await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    const tmp = mkdtempSync(join(tmpdir(), "trellai-ramas-"));
+    const origin = join(tmp, "origin.git");
+    sh(`git init -q --bare ${JSON.stringify(origin)}`, tmp);
+    sh(`git remote add origin ${JSON.stringify(origin)}`);
+    sh("git push -q origin main~1:refs/heads/remota-mergeada");
+    sh("git branch vieja-mergeada main~1");
+    const wtMerged = join(tmp, "wt-mergeada");
+    sh(`git worktree add -q -b con-worktree ${JSON.stringify(wtMerged)} main`);
+    const wtLoose = join(tmp, "wt-suelta");
+    sh(`git worktree add -q -b sin-mergear ${JSON.stringify(wtLoose)} main`);
+    for (const n of [1, 2]) sh(`git commit -q --allow-empty -m suelta${n}`, wtLoose);
+    writeFileSync(join(wtLoose, "SUCIO.md"), "sin commitear\n");
+    try {
+      const list = await api<any>(`/api/projects/${projectId}/branches`);
+      const by = (n: string) => list.branches.find((b: any) => b.name === n);
+      expect(by("main").locked).toMatch(/rama base/);
+      expect(by(active.branch!).locked).toMatch(/en curso/);
+      expect(by("remota-mergeada")).toMatchObject({ local: false, remote: true, merged: true, locked: null });
+      expect(by("con-worktree")).toMatchObject({ merged: true, worktree: expect.any(String), dirty: false });
+      expect(by("sin-mergear")).toMatchObject({ merged: false, unmerged: 2, dirty: true });
+
+      await expect(api(`/api/projects/${projectId}/branches/delete`, { name: "main", force: true })).rejects.toThrow(/rama base/);
+      await expect(api(`/api/projects/${projectId}/branches/delete`, { name: active.branch, force: true })).rejects.toThrow(/en curso/);
+      await expect(api(`/api/projects/${projectId}/branches/delete`, { name: "sin-mergear" })).rejects.toThrow(/2 commit/);
+
+      // GitHub unreachable: the remote one fails, the local ones are deleted anyway
+      sh(`git remote set-url origin ${JSON.stringify(join(tmp, "no-existe.git"))}`);
+      const r1 = await api<any>(`/api/projects/${projectId}/branches/cleanup`, {});
+      const res = (n: string) => r1.results.find((x: any) => x.name === n);
+      expect(res("vieja-mergeada")).toMatchObject({ ok: true });
+      expect(res("con-worktree")).toMatchObject({ ok: true });
+      expect(res("remota-mergeada")).toMatchObject({ ok: false, error: expect.stringMatching(/No pude borrarla/) });
+      expect(res("sin-mergear")).toBeUndefined();
+      expect(res("main")).toBeUndefined();
+      expect(existsSync(wtMerged)).toBe(false);
+      expect(sh("git branch --list vieja-mergeada con-worktree")).toBe("");
+
+      sh(`git remote set-url origin ${JSON.stringify(origin)}`);
+      const r2 = await api<any>(`/api/projects/${projectId}/branches/cleanup`, { names: ["remota-mergeada"] });
+      expect(r2.results).toEqual([{ name: "remota-mergeada", ok: true }]);
+      expect(sh("git ls-remote --heads origin")).not.toContain("remota-mergeada");
+
+      expect(await api(`/api/projects/${projectId}/branches/delete`, { name: "sin-mergear", force: true })).toMatchObject({ ok: true });
+      expect(existsSync(wtLoose)).toBe(false);
+      const after = await api<any>(`/api/projects/${projectId}/branches`);
+      const left = after.branches.map((b: any) => b.name);
+      expect(left).toEqual(expect.arrayContaining(["main", active.branch]));
+      for (const n of ["vieja-mergeada", "con-worktree", "remota-mergeada", "sin-mergear"]) expect(left).not.toContain(n);
+    } finally {
+      sh("git remote remove origin");
+    }
+  });
+});
+
+describe("images on a card", () => {
+  // 1×1 transparent PNG
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
+  it("upload, list, serve, annotate, copy and delete", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Con imagen", spec: "x" });
+    await expect(api(`/api/cards/${c.id}/attachments`, { name: "a.bmp", data: "data:image/bmp;base64,AAAA" })).rejects.toThrow(/Formato/);
+    const a = await api<any>(`/api/cards/${c.id}/attachments`, { name: "pantalla.png", data: `data:image/png;base64,${PNG}` });
+    expect(a).toMatchObject({ card_id: c.id, name: "pantalla.png", mime: "image/png", annotations: [], has_annotated: false });
+    expect(a.data).toBeUndefined(); // lists stay light
+    expect(await api<any[]>(`/api/cards/${c.id}/attachments`)).toHaveLength(1);
+
+    const img = await fetch(`${URL}/api/attachments/${a.id}/image`);
+    expect(img.headers.get("content-type")).toBe("image/png");
+    expect(Buffer.from(await img.arrayBuffer()).toString("base64")).toBe(PNG);
+
+    const annotations = [{ x: 0.1, y: 0.2, w: 0.5, h: 2, comment: "Este botón más grande" }, { x: 0, y: 0, w: 0, h: 0, comment: "vacía" }];
+    const upd = await api<any>(`/api/attachments/${a.id}`, { annotations, annotated: `data:image/png;base64,${PNG}` }, "PATCH");
+    expect(upd.annotations).toEqual([{ x: 0.1, y: 0.2, w: 0.5, h: 0.8, comment: "Este botón más grande" }]);
+    expect(upd.has_annotated).toBe(true);
+    expect((await fetch(`${URL}/api/attachments/${a.id}/image?annotated=1`)).status).toBe(200);
+
+    const copy = await api<Card>(`/api/cards/${c.id}/copy`, { project_id: projectId });
+    const copied = await api<any[]>(`/api/cards/${copy.id}/attachments`);
+    expect(copied).toHaveLength(1);
+    expect(copied[0]).toMatchObject({ name: "pantalla.png", has_annotated: true, annotations: upd.annotations });
+
+    await api(`/api/attachments/${a.id}`, undefined, "DELETE");
+    expect(await api<any[]>(`/api/cards/${c.id}/attachments`)).toHaveLength(0);
+    // deleting the card takes its images with it
+    await api(`/api/cards/${copy.id}`, undefined, "DELETE");
+    expect((await fetch(`${URL}/api/attachments/${copied[0].id}/image`)).status).toBe(404);
+  });
+
+  it("writes the images where the agent can read them", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Imagen al agente", spec: "x", column: "plan" });
+    const a = await api<any>(`/api/cards/${c.id}/attachments`, { name: "Mi captura.png", data: `data:image/png;base64,${PNG}` });
+    await api(`/api/attachments/${a.id}`, { annotations: [{ x: 0, y: 0, w: 0.5, h: 0.5, comment: "aquí" }], annotated: `data:image/png;base64,${PNG}` }, "PATCH");
+    await api(`/api/cards/${c.id}/move`, { column: "preparation" });
+    await waitFor(c.id, (x) => x.column === "review");
+    const dir = join(repo, ".trellai", "attachments", c.id);
+    expect(readFileSync(join(dir, "1-mi-captura.png")).toString("base64")).toBe(PNG);
+    expect(existsSync(join(dir, "1-mi-captura.anotada.png"))).toBe(true);
+    expect(sh("git status --porcelain")).not.toContain("attachments");
+  });
+
+  it("asking for changes with only an image", async () => {
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Cambio con imagen", spec: "x", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    await expect(api(`/api/cards/${c.id}/message`, { text: " " })).rejects.toThrow(/vacío/);
+    const a = await api<any>(`/api/cards/${c.id}/attachments`, { name: "fallo.png", data: `data:image/png;base64,${PNG}` });
+    await api(`/api/cards/${c.id}/message`, { text: "", attachments: [a.id] });
+    await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    const msgs = await api<any[]>(`/api/cards/${c.id}/messages`);
+    expect(msgs.some((m) => m.role === "user" && m.content === `![fallo.png](/api/attachments/${a.uid}/image)`)).toBe(true);
+    expect((await fetch(`${URL}/api/attachments/${a.uid}/image`)).headers.get("content-type")).toBe("image/png");
   });
 });

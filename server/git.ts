@@ -51,7 +51,7 @@ export function slugify(s: string): string {
 }
 
 /** Keep `.trellai/` out of the user's repo without touching tracked files. */
-function ensureExcluded(repo: string) {
+export function ensureExcluded(repo: string) {
   const gitDir = resolve(repo, git(repo, ["rev-parse", "--git-common-dir"]));
   const exclude = join(gitDir, "info", "exclude");
   mkdirSync(join(gitDir, "info"), { recursive: true });
@@ -331,6 +331,10 @@ export interface BranchInfo {
   current: boolean;
   /** checked out in a worktree (a card's agent) */
   worktree: string | null;
+  /** that worktree has uncommitted changes */
+  dirty: boolean;
+  /** commits not in the base branch (0 when merged) */
+  unmerged: number;
   sha: string;
   subject: string;
   date: string;
@@ -357,19 +361,39 @@ export function listBranches(repo: string, base: string): { head: string; detach
     const isLocal = ref.startsWith("refs/heads/");
     const name = isLocal ? ref.slice(11) : ref.slice(`refs/remotes/${remote}/`.length);
     if (!isLocal && name === "HEAD") continue;
-    const b = byName.get(name) ?? { name, local: false, remote: false, ahead: 0, behind: 0, merged: true, current: false, worktree: worktrees.get(name) ?? null, sha, subject, date };
+    const b = byName.get(name) ?? { name, local: false, remote: false, ahead: 0, behind: 0, merged: true, current: false, worktree: worktrees.get(name) ?? null, dirty: false, unmerged: 0, sha, subject, date };
     if (isLocal) Object.assign(b, { local: true, sha, subject, date, current: !detached && name === head });
     else b.remote = true;
     b.merged &&= merged.has(ref);
     byName.set(name, b);
   }
   for (const b of byName.values()) {
+    if (!b.merged) {
+      const refs = [...(b.local ? [`refs/heads/${b.name}`] : []), ...(b.remote ? [`refs/remotes/${remote}/${b.name}`] : [])];
+      b.unmerged = Number(git(repo, ["rev-list", "--count", ...refs, "--not", base], { allowFail: true })) || 0;
+    }
+    if (b.worktree) b.dirty = existsSync(b.worktree) && git(b.worktree, ["status", "--porcelain"], { allowFail: true }).length > 0;
     if (!b.local || !b.remote) continue;
     const [ahead, behind] = git(repo, ["rev-list", "--left-right", "--count", `refs/heads/${b.name}...refs/remotes/${remote}/${b.name}`], { allowFail: true }).split(/\s+/).map(Number);
     b.ahead = ahead || 0;
     b.behind = behind || 0;
   }
   return { head: detached ? git(repo, ["rev-parse", "--short", "HEAD"], { allowFail: true }) : head, detached, remote, branches: [...byName.values()] };
+}
+
+/**
+ * Delete a local branch and the worktree it is checked out in (if any), from the branch menu.
+ * Callers have already checked it is merged into base or that the user accepted losing commits;
+ * uncommitted changes in the worktree are refused unless `force`.
+ */
+export function deleteLocalBranch(repo: string, branch: string, opts: { worktree: string | null; force: boolean }) {
+  if (opts.worktree && existsSync(opts.worktree)) {
+    if (!opts.force && git(opts.worktree, ["status", "--porcelain"], { allowFail: true }).length > 0)
+      throw new Error(`Su carpeta de trabajo (${opts.worktree}) tiene cambios sin commitear.`);
+    git(repo, ["worktree", "remove", "--force", opts.worktree]);
+  }
+  git(repo, ["worktree", "prune"], { allowFail: true });
+  if (shaOf(repo, `refs/heads/${branch}`)) git(repo, ["branch", "-D", branch]);
 }
 
 /** Diff of a branch vs base without a worktree (a card running on another computer). */
@@ -380,4 +404,82 @@ export function diffBranch(repo: string, base: string, branch: string): { diff: 
     diff: git(repo, ["diff", "--no-color", mb, branch], { allowFail: true }),
     files: git(repo, ["diff", "--name-only", mb, branch], { allowFail: true }).split("\n").filter(Boolean),
   };
+}
+
+/** `ancestor` is reachable from `ref` (or is it). */
+export function isAncestor(cwd: string, ancestor: string, ref = "HEAD"): boolean {
+  return gitOk(cwd, ["merge-base", "--is-ancestor", ancestor, ref]);
+}
+
+/** Subjects of the commits in `from..to`, newest first. */
+export function commitSubjects(cwd: string, from: string, to = "HEAD"): string[] {
+  return git(cwd, ["log", "--format=%s", `${from}..${to}`], { allowFail: true }).split("\n").filter(Boolean);
+}
+
+/** Put the worktree exactly at `ref`: drops later commits, uncommitted edits and untracked (non-ignored) files. */
+export function resetHard(cwd: string, ref: string) {
+  git(cwd, ["reset", "--hard", "-q", ref]);
+  git(cwd, ["clean", "-fdq"]);
+}
+
+/** "origin" if it exists, else the first remote, else null. */
+export function remoteNameSync(repo: string): string | null {
+  const names = git(repo, ["remote"], { allowFail: true }).split("\n").filter(Boolean);
+  return names.includes("origin") ? "origin" : (names[0] ?? null);
+}
+
+/** Where a branch exists: in refs/heads and/or on the remote. */
+export function branchWhere(repo: string, branch: string): { local: boolean; remote: boolean } {
+  const r = remoteNameSync(repo);
+  return {
+    local: !!shaOf(repo, `refs/heads/${branch}`),
+    remote: !!r && !!shaOf(repo, `refs/remotes/${r}/${branch}`),
+  };
+}
+
+/** Local + remote branch names (no `HEAD`), locals first. Nothing is fetched here. */
+export function branchNames(repo: string): { local: string[]; remote: string[] } {
+  const r = remoteNameSync(repo);
+  const list = (ref: string, prefix: string) =>
+    git(repo, ["for-each-ref", "--sort=-committerdate", "--format=%(refname)", ref], { allowFail: true })
+      .split("\n")
+      .filter(Boolean)
+      .map((x) => x.slice(prefix.length))
+      .filter((x) => x && x !== "HEAD");
+  const local = list("refs/heads", "refs/heads/");
+  const remote = r ? list(`refs/remotes/${r}`, `refs/remotes/${r}/`).filter((x) => !local.includes(x)) : [];
+  return { local, remote };
+}
+
+/** The branch a new project should use as base: the remote's default, then main, then master, then any local branch. Never `HEAD`. */
+export function defaultBranch(repo: string): string | null {
+  const r = remoteNameSync(repo);
+  if (r) {
+    const head = git(repo, ["symbolic-ref", "--quiet", `refs/remotes/${r}/HEAD`], { allowFail: true });
+    const name = head.replace(`refs/remotes/${r}/`, "");
+    if (name && name !== head && name !== "HEAD") return name;
+  }
+  for (const b of ["main", "master"]) {
+    const w = branchWhere(repo, b);
+    if (w.local || w.remote) return b;
+  }
+  const { local, remote } = branchNames(repo);
+  return local[0] ?? remote[0] ?? null;
+}
+
+/** Why `branch` can't be a project's base branch (Spanish), or null if it can. */
+export function baseBranchProblem(repo: string, branch: string): string | null {
+  if (!branch) return "Elige una rama base.";
+  if (branch === "HEAD") return "«HEAD» no es una rama: elige una rama de verdad como base.";
+  const w = branchWhere(repo, branch);
+  if (!w.local && !w.remote) return `La rama «${branch}» no existe en este repo.`;
+  return null;
+}
+
+/** Make sure `branch` exists locally: if it's only on the remote, create the local one tracking it. */
+export function ensureLocalBranch(repo: string, branch: string) {
+  if (shaOf(repo, `refs/heads/${branch}`)) return;
+  const r = remoteNameSync(repo);
+  if (!r || !shaOf(repo, `refs/remotes/${r}/${branch}`)) throw new Error(`La rama «${branch}» no existe en este repo.`);
+  git(repo, ["branch", "--track", branch, `${r}/${branch}`]);
 }

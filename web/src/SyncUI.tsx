@@ -1,17 +1,32 @@
-import { ArrowDown, ArrowUp, ChevronDown, Cloud, CloudOff, FolderGit2, GitBranch, GitMerge, Laptop, Download, RefreshCw } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, Cloud, CloudOff, CloudUpload, FolderGit2, GitBranch, Laptop, Download, Lock, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { COLUMN_LABELS, type Column, type Project } from "../../shared/types";
 import { api, useSync, type Board } from "./api";
-import { notice } from "./Confirm";
+import { confirmDialog, notice } from "./Confirm";
+import { CreateGithubRepo } from "./CreateGithubRepo";
 import { FolderPicker } from "./FolderPicker";
+import { Avatar, usePeople } from "./People";
 import { Button, COLUMN_ACCENT, Spinner, timeAgo } from "./ui";
 
 interface GitStatus {
   remote: string | null;
   ok: boolean;
   message?: string;
+  /** "https": the remote is GitHub over SSH and SSH isn't set up here; offer «Usar HTTPS» */
+  fix?: "https";
   ahead: number;
   behind: number;
+}
+
+/** Switch origin to HTTPS (gh's login) after an SSH error. Resolves true if it now connects. */
+async function useHttps(projectId: string): Promise<boolean> {
+  try {
+    await api(`/api/projects/${projectId}/use-https`, {});
+    return true;
+  } catch (e) {
+    notice("No pude pasar a HTTPS", (e as Error).message);
+    return false;
+  }
 }
 
 interface BranchRow {
@@ -23,10 +38,22 @@ interface BranchRow {
   merged: boolean;
   current: boolean;
   worktree: string | null;
+  /** its worktree has uncommitted changes */
+  dirty: boolean;
+  /** commits not in the base branch */
+  unmerged: number;
   sha: string;
   subject: string;
   date: string;
   card: { id: string; title: string; column: Column } | null;
+  /** why it can't be deleted from here (base, current, card in progress) */
+  locked: string | null;
+}
+
+interface DeleteResult {
+  name: string;
+  ok: boolean;
+  error?: string;
 }
 
 interface BranchList {
@@ -35,21 +62,35 @@ interface BranchList {
   remote: string | null;
   remoteLabel: string | null;
   base: string;
-  fetch: { ok: boolean; message?: string };
+  /** the base is `HEAD` or a branch that no longer exists */
+  baseMissing: boolean;
+  fetch: { ok: boolean; message?: string; fix?: "https" };
   branches: BranchRow[];
 }
 
 /** Base branch pill in the header, with ↓/↑ against GitHub. Click to see every branch (and sync). */
-export function BranchStatus({ project, board, onOpenCard }: { project: Project; board: Board; onOpenCard: (id: string) => void }) {
+export function BranchStatus({
+  project,
+  board,
+  onOpenCard,
+  onProjectChange,
+}: {
+  project: Project;
+  board: Board;
+  onOpenCard: (id: string) => void;
+  onProjectChange: () => unknown;
+}) {
   const [st, setSt] = useState<GitStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
-    const away = (e: PointerEvent) => !root.current?.contains(e.target as Node) && setOpen(false);
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const away = (e: PointerEvent) =>
+      !root.current?.contains(e.target as Node) && !(e.target as Element).closest?.("[data-modal]") && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && !document.querySelector("[data-modal]") && setOpen(false);
     document.addEventListener("pointerdown", away);
     document.addEventListener("keydown", esc);
     return () => {
@@ -66,16 +107,17 @@ export function BranchStatus({ project, board, onOpenCard }: { project: Project;
     const load = () => api<GitStatus>(`/api/projects/${project.id}/git`).then((s) => alive && setSt(s)).catch(() => {});
     load();
     const t = setInterval(load, 60_000);
-    // a merge here or on another computer moves things
+    // a merge here or on another computer moves things; "git": pulled automatically
     const off = board.on((e) => {
-      if (e.type === "sync" || (e.type === "card" && e.card.column === "merged")) setTimeout(load, 1500);
+      if (e.type === "git") load();
+      else if (e.type === "sync" || (e.type === "card" && e.card.column === "merged")) setTimeout(load, 1500);
     });
     return () => {
       alive = false;
       clearInterval(t);
       off();
     };
-  }, [project.id, project.repo_path]);
+  }, [project.id, project.repo_path, project.base_branch]);
 
   const out = st && (st.ahead > 0 || st.behind > 0);
   const sync = async () => {
@@ -85,6 +127,18 @@ export function BranchStatus({ project, board, onOpenCard }: { project: Project;
       setSt(await api<GitStatus>(`/api/projects/${project.id}/git`));
     } catch (e) {
       notice("No pude sincronizar con GitHub", (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fixHttps = async () => {
+    setBusy(true);
+    try {
+      if (await useHttps(project.id)) {
+        setSt(await api<GitStatus>(`/api/projects/${project.id}/git`));
+        onProjectChange();
+      }
     } finally {
       setBusy(false);
     }
@@ -101,7 +155,7 @@ export function BranchStatus({ project, board, onOpenCard }: { project: Project;
           : `${project.repo_path} · al día con ${st.remote}`;
 
   return (
-    <div ref={root} className="relative ml-1 hidden lg:block">
+    <div ref={root} className="relative ml-1 hidden items-center lg:flex">
       <button
         onClick={() => project.repo_path && setOpen((v) => !v)}
         title={`${title}${project.repo_path ? " — clic para ver las ramas" : ""}`}
@@ -117,13 +171,13 @@ export function BranchStatus({ project, board, onOpenCard }: { project: Project;
         ) : (
           <>
             {st && st.behind > 0 && (
-              <span className="flex items-center text-amber-300">
+              <span className="flex items-center text-warning">
                 <ArrowDown className="h-3 w-3" />
                 {st.behind}
               </span>
             )}
             {st && st.ahead > 0 && (
-              <span className="flex items-center text-sky-300">
+              <span className="flex items-center text-info">
                 <ArrowUp className="h-3 w-3" />
                 {st.ahead}
               </span>
@@ -133,6 +187,39 @@ export function BranchStatus({ project, board, onOpenCard }: { project: Project;
         )}
         <ChevronDown className={`h-3 w-3 transition ${open ? "rotate-180" : ""}`} />
       </button>
+      {st?.remote && !st.ok && st.fix === "https" && (
+        <button
+          onClick={fixHttps}
+          disabled={busy}
+          title={`${st.message}
+
+Cambia origin a https://github.com/… y usa tu sesión de gh para conectar.`}
+          className="ml-1 flex items-center gap-1 rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[11px] text-amber-300 ring-1 ring-amber-500/30 transition hover:bg-amber-500/20"
+        >
+          <CloudOff className="h-3 w-3" />
+          Usar HTTPS
+        </button>
+      )}
+      {st && !st.remote && project.repo_path && (
+        <button
+          onClick={() => setCreating(true)}
+          title="Este repo no tiene remoto: créalo en tu cuenta de GitHub y súbelo"
+          className="ml-1 flex items-center gap-1 rounded-md bg-indigo-500/10 px-1.5 py-0.5 text-[11px] text-indigo-300 ring-1 ring-indigo-500/30 transition hover:bg-indigo-500/20"
+        >
+          <CloudUpload className="h-3 w-3" />
+          Crear repo en GitHub
+        </button>
+      )}
+      {creating && (
+        <CreateGithubRepo
+          project={project}
+          onClose={() => setCreating(false)}
+          onCreated={() => {
+            api<GitStatus>(`/api/projects/${project.id}/git`).then(setSt).catch(() => {});
+            onProjectChange();
+          }}
+        />
+      )}
       {open && (
         <BranchMenu
           project={project}
@@ -140,6 +227,8 @@ export function BranchStatus({ project, board, onOpenCard }: { project: Project;
           title={title}
           syncing={busy}
           onSync={out ? sync : undefined}
+          onFixHttps={fixHttps}
+          onProjectChange={onProjectChange}
           onOpenCard={(id) => {
             setOpen(false);
             onOpenCard(id);
@@ -156,6 +245,8 @@ function BranchMenu({
   title,
   syncing,
   onSync,
+  onFixHttps,
+  onProjectChange,
   onOpenCard,
 }: {
   project: Project;
@@ -163,10 +254,22 @@ function BranchMenu({
   title: string;
   syncing: boolean;
   onSync?: () => void;
+  onFixHttps: () => Promise<void>;
+  onProjectChange: () => unknown;
   onOpenCard: (id: string) => void;
 }) {
   const [list, setList] = useState<BranchList | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** branches being deleted right now */
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  /** last delete error per branch */
+  const [failed, setFailed] = useState<Record<string, string>>({});
+  const reload = useRef<() => void>(() => {});
+  /** the "Cambiar" picker for the base branch */
+  const [choosing, setChoosing] = useState(false);
+  const [newBase, setNewBase] = useState("");
+  const [savingBase, setSavingBase] = useState(false);
+  const [baseError, setBaseError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -174,6 +277,7 @@ function BranchMenu({
       api<BranchList>(`/api/projects/${project.id}/branches`)
         .then((l) => alive && (setList(l), setError(null)))
         .catch((e) => alive && setError((e as Error).message));
+    reload.current = load;
     load();
     // reload when a card gets a branch or changes column (merged, discarded…) or another computer pushed;
     // agents' status updates don't count
@@ -184,7 +288,7 @@ function BranchMenu({
       t = setTimeout(load, 800);
     };
     const off = board.on((e) => {
-      if (e.type === "sync") soon();
+      if (e.type === "sync" || e.type === "git") soon();
       else if (e.type === "card") {
         const key = `${e.card.branch}|${e.card.column}`;
         if (seen.has(e.card.id) && seen.get(e.card.id) !== key) soon();
@@ -202,6 +306,102 @@ function BranchMenu({
   const base = branches.filter((b) => b.name === list?.base).map((b) => ({ ...b, merged: false }));
   const cards = branches.filter((b) => b.name !== list?.base && b.card);
   const others = branches.filter((b) => b.name !== list?.base && !b.card);
+  const cleanable = branches.filter((b) => b.merged && !b.locked && b.name !== list?.base);
+  const where = (b: BranchRow) =>
+    !list?.remoteLabel ? "en este ordenador" : b.local && b.remote ? `en este ordenador y en ${list.remoteLabel}` : b.local ? "en este ordenador" : `en ${list.remoteLabel}`;
+
+  const run = async (names: string[], call: () => Promise<DeleteResult[]>) => {
+    setBusy((s) => new Set([...s, ...names]));
+    setFailed((f) => Object.fromEntries(Object.entries(f).filter(([n]) => !names.includes(n))));
+    let results: DeleteResult[];
+    try {
+      results = await call();
+    } catch (e) {
+      results = names.map((name) => ({ name, ok: false, error: (e as Error).message }));
+    }
+    setFailed((f) => ({ ...f, ...Object.fromEntries(results.filter((r) => !r.ok).map((r) => [r.name, r.error ?? "No se pudo borrar"])) }));
+    setBusy((s) => new Set([...s].filter((n) => !names.includes(n))));
+    reload.current();
+  };
+
+  const remove = async (b: BranchRow) => {
+    const lines = [`Se borrará ${where(b)}.`];
+    if (!b.merged) lines.push(`⚠️ Tiene ${b.unmerged} commit(s) que no están en ${list?.base}: se perderán.`);
+    if (b.worktree) lines.push(`También se quitará su carpeta de trabajo (${b.worktree}).`);
+    if (b.dirty) lines.push("⚠️ Esa carpeta tiene cambios sin commitear: se perderán.");
+    const ok = await confirmDialog({
+      title: `¿Borrar la rama ${b.name}?`,
+      body: lines.join("\n"),
+      confirmLabel: "Borrar rama",
+      danger: true,
+    });
+    if (!ok) return;
+    const force = !b.merged || b.dirty;
+    await run([b.name], () =>
+      fetch(`/api/projects/${project.id}/branches/delete`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: b.name, force }),
+      }).then(async (r) => [(await r.json()) as DeleteResult]),
+    );
+  };
+
+  const cleanup = async () => {
+    const dirty = cleanable.filter((b) => b.dirty);
+    const ok = await confirmDialog({
+      title: `¿Borrar ${cleanable.length} rama(s) ya mergeada(s)?`,
+      body: [
+        `Ya están en ${list?.base}; se borrarán en este ordenador${list?.remoteLabel ? ` y en ${list.remoteLabel}` : ""}, con sus carpetas de trabajo:`,
+        ...cleanable.map((b) => `• ${b.name}${b.worktree ? " (con carpeta de trabajo)" : ""}${b.dirty ? " ⚠️ cambios sin guardar: se saltará" : ""}`),
+        ...(dirty.length ? ["", "Las que tienen cambios sin guardar no se borran: hazlo una a una si quieres perderlos."] : []),
+      ].join("\n"),
+      confirmLabel: "Borrar todas",
+      danger: true,
+    });
+    if (!ok) return;
+    await run(
+      cleanable.map((b) => b.name),
+      () => api<{ results: DeleteResult[] }>(`/api/projects/${project.id}/branches/cleanup`, { names: cleanable.map((b) => b.name) }).then((r) => r.results),
+    );
+  };
+  const changeBase = async () => {
+    if (!newBase || newBase === list?.base) return setChoosing(false);
+    const active = Object.values(board.cards).filter((k) => k.project_id === project.id && ACTIVE_COLUMNS.includes(k.column));
+    if (active.length) {
+      const ok = await confirmDialog({
+        title: `¿Cambiar la rama base a ${newBase}?`,
+        body: [
+          `Hay ${active.length} tarjeta(s) en curso que salieron de ${list?.base}:`,
+          ...active.map((k) => `• ${k.title} (${COLUMN_LABELS[k.column]})`),
+          "",
+          `No se tocan ahora: al mergearlas se rebasarán sobre ${newBase}.`,
+        ].join("\n"),
+        confirmLabel: "Cambiar rama base",
+      });
+      if (!ok) return;
+    }
+    setSavingBase(true);
+    setBaseError(null);
+    try {
+      await api(`/api/projects/${project.id}`, { base_branch: newBase }, "PATCH");
+      await onProjectChange();
+      setChoosing(false);
+      reload.current();
+    } catch (e) {
+      setBaseError((e as Error).message);
+    } finally {
+      setSavingBase(false);
+    }
+  };
+  const startChoosing = () => {
+    setNewBase(list && !list.baseMissing ? list.base : (branches.find((b) => b.local)?.name ?? ""));
+    setBaseError(null);
+    setChoosing(true);
+  };
+  const localNames = branches.filter((b) => b.local).map((b) => b.name);
+  const remoteNames = branches.filter((b) => !b.local && b.remote).map((b) => b.name);
+
+  const rowProps = { remote: list?.remoteLabel ?? null, base: list?.base ?? "", busy, failed, onDelete: remove, onOpenCard };
 
   return (
     <div className="absolute top-full left-0 z-40 mt-1.5 w-[26rem] rounded-xl bg-zinc-900 p-1.5 font-sans shadow-[var(--shadow-pop)] ring-1 ring-ui-ink/[0.1]">
@@ -220,21 +420,100 @@ function BranchMenu({
         )}
       </div>
       {list && !list.fetch.ok && (
-        <div className="mx-1 mb-1.5 rounded-lg bg-red-400/10 px-2.5 py-1.5 text-[11px] text-red-200">
+        <div className="mx-1 mb-1.5 rounded-lg bg-red-400/10 px-2.5 py-1.5 text-[11px] text-danger">
           {list.fetch.message} Lo que ves de {list.remoteLabel} puede no estar al día.
+          {list.fetch.fix === "https" && (
+            <div className="mt-1.5">
+              <Button onClick={() => onFixHttps().then(() => reload.current())} disabled={syncing}>
+                {syncing ? <Spinner className="h-3.5 w-3.5" /> : <Cloud className="h-3.5 w-3.5" />}
+                Usar HTTPS
+              </Button>
+            </div>
+          )}
         </div>
       )}
       {error ? (
-        <div className="px-2 py-3 text-[12px] text-red-300">{error}</div>
+        <div className="px-2 py-3 text-[12px] text-danger">{error}</div>
       ) : !list ? (
         <div className="flex items-center gap-2 px-2 py-3 text-[12px] text-zinc-500">
           <Spinner className="h-3.5 w-3.5" /> Cargando ramas…
         </div>
       ) : (
         <div className="max-h-[60vh] overflow-y-auto">
-          <BranchGroup label="Rama base" rows={base} remote={list.remoteLabel} onOpenCard={onOpenCard} />
-          <BranchGroup label="De tarjetas" rows={cards} remote={list.remoteLabel} onOpenCard={onOpenCard} />
-          <BranchGroup label="Otras" rows={others} remote={list.remoteLabel} onOpenCard={onOpenCard} />
+          {cleanable.length > 0 && (
+            <div className="mx-1 mb-1.5 flex items-center gap-2 rounded-lg bg-ui-ink/[0.03] px-2.5 py-1.5">
+              <span className="min-w-0 flex-1 text-[11.5px] text-zinc-400">
+                {cleanable.length} rama(s) ya están en {list.base}
+              </span>
+              <Button size="sm" variant="danger" onClick={cleanup} disabled={cleanable.some((b) => busy.has(b.name))}>
+                <Trash2 className="h-3.5 w-3.5" />
+                Limpiar ramas mergeadas
+              </Button>
+            </div>
+          )}
+          <BranchGroup
+            label="Rama base"
+            rows={base}
+            action={
+              !choosing && (
+                <button onClick={startChoosing} className="rounded px-1.5 text-[11px] font-medium tracking-normal text-accent normal-case hover:bg-ui-ink/[0.06]">
+                  Cambiar
+                </button>
+              )
+            }
+            {...rowProps}
+          >
+            {list.baseMissing && (
+              <div className="mx-1 mb-1.5 rounded-lg bg-amber-400/10 px-2.5 py-1.5 text-[11px] text-warning">
+                {list.base === "HEAD" ? "La rama base es «HEAD», que no es una rama de verdad." : `La rama base «${list.base}» ya no existe.`} Elige otra con «Cambiar».
+              </div>
+            )}
+            {choosing && (
+              <div className="mx-1 mb-1.5 space-y-1.5 rounded-lg bg-ui-ink/[0.03] px-2.5 py-2">
+                <div className="flex items-center gap-1.5">
+                  <select
+                    aria-label="Nueva rama base"
+                    value={newBase}
+                    onChange={(e) => setNewBase(e.target.value)}
+                    className="ui-field ui-control min-w-0 flex-1 rounded-md bg-zinc-950 px-2 py-1 font-mono text-[12px] text-zinc-100 ring-1 ring-zinc-700 outline-none focus:ring-indigo-500"
+                  >
+                    {!newBase && <option value="">Elige una rama…</option>}
+                    {localNames.length > 0 && (
+                      <optgroup label="En este ordenador">
+                        {localNames.map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {remoteNames.length > 0 && (
+                      <optgroup label={`Solo en ${list.remoteLabel ?? "el remoto"}`}>
+                        {remoteNames.map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </select>
+                  <Button size="sm" variant="primary" onClick={changeBase} disabled={savingBase || !newBase || newBase === list.base}>
+                    {savingBase && <Spinner className="h-3.5 w-3.5" />}
+                    Usar como base
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setChoosing(false)} disabled={savingBase}>
+                    Cancelar
+                  </Button>
+                </div>
+                {remoteNames.includes(newBase) && (
+                  <div className="text-[10.5px] text-zinc-500">Solo está en {list.remoteLabel ?? "el remoto"}: se creará la rama local que la sigue.</div>
+                )}
+                {baseError && <div className="text-[11px] text-danger">{baseError}</div>}
+              </div>
+            )}
+          </BranchGroup>
+          <BranchGroup label="De tarjetas" rows={cards} {...rowProps} />
+          <BranchGroup label="Otras" rows={others} {...rowProps} />
           {branches.length === 1 && <div className="px-2 pt-1 pb-2 text-[11.5px] text-zinc-500">No hay más ramas.</div>}
         </div>
       )}
@@ -242,43 +521,66 @@ function BranchMenu({
   );
 }
 
-function BranchGroup({ label, rows, remote, onOpenCard }: { label: string; rows: BranchRow[]; remote: string | null; onOpenCard: (id: string) => void }) {
-  if (!rows.length) return null;
+interface RowProps {
+  remote: string | null;
+  base: string;
+  busy: Set<string>;
+  failed: Record<string, string>;
+  onDelete: (b: BranchRow) => void;
+  onOpenCard: (id: string) => void;
+}
+
+function BranchGroup({
+  label,
+  rows,
+  action,
+  children,
+  ...props
+}: { label: string; rows: BranchRow[]; action?: React.ReactNode; children?: React.ReactNode } & RowProps) {
+  if (!rows.length && !action && !children) return null;
   return (
     <div className="mb-1">
-      <div className="px-2 pt-1.5 pb-1 text-[10.5px] font-semibold tracking-wide text-zinc-600 uppercase">
-        {label} · {rows.length}
+      <div className="flex items-center px-2 pt-1.5 pb-1 text-[10.5px] font-semibold tracking-wide text-zinc-600 uppercase">
+        <span className="flex-1">
+          {label} · {rows.length}
+        </span>
+        {action}
       </div>
+      {children}
       <ul>
         {rows.map((b) => (
-          <BranchItem key={b.name} b={b} remote={remote} onOpenCard={onOpenCard} />
+          <BranchItem key={b.name} b={b} {...props} />
         ))}
       </ul>
     </div>
   );
 }
 
-function BranchItem({ b, remote, onOpenCard }: { b: BranchRow; remote: string | null; onOpenCard: (id: string) => void }) {
+const ACTIVE_COLUMNS: Column[] = ["plan", "preparation", "doing", "review"];
+
+const TAG = "shrink-0 rounded px-1 text-[10px] leading-4";
+
+function BranchItem({ b, remote, base, busy, failed, onDelete, onOpenCard }: { b: BranchRow } & RowProps) {
   const where = !remote ? null : b.local && b.remote ? null : b.local ? "solo aquí" : `solo en ${remote}`;
+  const deleting = busy.has(b.name);
+  const error = failed[b.name];
   const body = (
     <>
-      <GitBranch className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${b.current ? "text-teal-300" : "text-zinc-600"}`} />
+      <GitBranch className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${b.current ? "text-success" : "text-zinc-600"}`} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <span className={`truncate font-mono text-[11.5px] ${b.current ? "text-teal-200" : "text-zinc-200"}`}>{b.name}</span>
-          {b.current && <span className="shrink-0 rounded bg-teal-400/12 px-1 text-[10px] leading-4 font-semibold text-teal-200">actual</span>}
-          {b.worktree && <span className="shrink-0 rounded bg-amber-400/10 px-1 text-[10px] leading-4 text-amber-200" title={b.worktree}>worktree</span>}
-          {where && <span className="shrink-0 rounded bg-ui-ink/[0.06] px-1 text-[10px] leading-4 text-zinc-400">{where}</span>}
-          {b.merged && !b.current && <GitMerge className="h-3 w-3 shrink-0 text-zinc-500" aria-label="Ya está en la rama base" />}
+          <span className={`truncate font-mono text-[11.5px] ${b.current ? "text-success" : "text-zinc-200"}`}>{b.name}</span>
+          {b.current && <span className={`${TAG} bg-teal-400/12 font-semibold text-success`}>actual</span>}
+          {where && <span className={`${TAG} bg-ui-ink/[0.06] text-zinc-400`}>{where}</span>}
           <span className="ml-auto flex shrink-0 items-center gap-1 font-mono text-[10.5px]">
             {b.behind > 0 && (
-              <span className="flex items-center text-amber-300" title={`${b.behind} commit(s) en ${remote} que no tienes`}>
+              <span className="flex items-center text-warning" title={`${b.behind} commit(s) en ${remote} que no tienes`}>
                 <ArrowDown className="h-3 w-3" />
                 {b.behind}
               </span>
             )}
             {b.ahead > 0 && (
-              <span className="flex items-center text-sky-300" title={`${b.ahead} commit(s) sin subir a ${remote}`}>
+              <span className="flex items-center text-info" title={`${b.ahead} commit(s) sin subir a ${remote}`}>
                 <ArrowUp className="h-3 w-3" />
                 {b.ahead}
               </span>
@@ -296,18 +598,63 @@ function BranchItem({ b, remote, onOpenCard }: { b: BranchRow; remote: string | 
             b.subject
           )}
         </div>
+        {b.name !== base && (b.merged || b.unmerged > 0 || b.worktree) && (
+          <div className="mt-0.5 flex flex-wrap items-center gap-1">
+            {b.merged ? (
+              <span className={`${TAG} bg-emerald-400/10 text-success`} title={`Todos sus commits ya están en ${base}`}>
+                mergeada
+              </span>
+            ) : (
+              b.unmerged > 0 && (
+                <span className={`${TAG} bg-amber-400/10 text-warning`} title={`Commits que no están en ${base}`}>
+                  {b.unmerged} commit{b.unmerged === 1 ? "" : "s"} sin mergear
+                </span>
+              )
+            )}
+            {b.worktree && (
+              <span className={`${TAG} bg-sky-400/10 text-info`} title={b.worktree}>
+                tiene carpeta de trabajo
+              </span>
+            )}
+            {b.dirty && (
+              <span className={`${TAG} bg-red-400/10 text-danger`} title={b.worktree ?? ""}>
+                cambios sin guardar
+              </span>
+            )}
+          </div>
+        )}
+        {b.locked && b.name !== base && <div className="mt-0.5 text-[10.5px] text-zinc-600">{b.locked}</div>}
+        {error && <div className="mt-0.5 text-[11px] text-danger">{error}</div>}
       </div>
     </>
   );
   return (
-    <li>
+    <li className={`flex items-start rounded-lg transition hover:bg-ui-ink/[0.05] ${deleting ? "opacity-50" : ""}`}>
       {b.card ? (
-        <button onClick={() => onOpenCard(b.card!.id)} className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-ui-ink/[0.05]" title="Abrir la tarjeta">
+        <button onClick={() => onOpenCard(b.card!.id)} className="flex min-w-0 flex-1 items-start gap-2 py-1.5 pl-2 text-left" title="Abrir la tarjeta">
           {body}
         </button>
       ) : (
-        <div className="flex items-start gap-2 rounded-lg px-2 py-1.5">{body}</div>
+        <div className="flex min-w-0 flex-1 items-start gap-2 py-1.5 pl-2">{body}</div>
       )}
+      <div className="flex w-8 shrink-0 justify-center pt-1.5">
+        {deleting ? (
+          <Spinner className="h-3.5 w-3.5" />
+        ) : b.locked ? (
+          <span className="p-0.5 text-zinc-700" title={`No se puede borrar: ${b.locked}`} aria-label={`No se puede borrar: ${b.locked}`}>
+            <Lock className="h-3 w-3" />
+          </span>
+        ) : (
+          <button
+            onClick={() => onDelete(b)}
+            className="rounded p-0.5 text-zinc-600 transition hover:bg-red-500/10 hover:text-danger"
+            title="Borrar esta rama"
+            aria-label={`Borrar la rama ${b.name}`}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
     </li>
   );
 }
@@ -315,20 +662,25 @@ function BranchItem({ b, remote, onOpenCard }: { b: BranchRow; remote: string | 
 /** Small cloud chip: board shared with your other computers. */
 export function SyncIndicator() {
   const s = useSync();
-  if (!s?.enabled) return null;
-  const Icon = s.ok ? Cloud : CloudOff;
+  if (!s?.active) return null;
+  const shares = s.shares ?? [];
+  const broken = shares.filter((x) => !x.ok && x.error);
+  const ok = (!s.enabled || s.ok) && !broken.length;
+  const Icon = ok ? Cloud : CloudOff;
+  const lines = [
+    s.enabled
+      ? s.ok
+        ? `Tablero compartido entre tus ordenadores. Este es "${s.machine}".${s.last_sync ? ` Última sincronización: hace ${timeAgo(s.last_sync)}.` : ""}`
+        : `Sin conexión con la base de datos de tus ordenadores: ${s.error}. Sigues trabajando en local; se sincroniza al volver.${s.pending ? ` (${s.pending} cambios pendientes)` : ""}`
+      : `Este ordenador es "${s.machine}".`,
+    ...(shares.length ? [`${shares.length} proyecto(s) compartido(s) con otras personas.`] : []),
+    ...broken.map((x) => `Sin conexión con ${x.host}: ${x.error}`),
+  ];
   return (
-    <span
-      className={`hidden items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] md:flex ${s.ok ? "text-zinc-500" : "text-red-300"}`}
-      title={
-        s.ok
-          ? `Tablero compartido entre tus ordenadores. Este es "${s.machine}".${s.last_sync ? ` Última sincronización: hace ${timeAgo(s.last_sync)}.` : ""}`
-          : `Sin conexión con la base de datos compartida: ${s.error}. Sigues trabajando en local; se sincroniza al volver.${s.pending ? ` (${s.pending} cambios pendientes)` : ""}`
-      }
-    >
+    <span className={`hidden items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] md:flex ${ok ? "text-zinc-500" : "text-danger"}`} title={lines.join("\n")}>
       <Icon className="h-3.5 w-3.5" />
       {s.machine}
-      {!s.ok && s.pending > 0 && <span className="tabular">· {s.pending}</span>}
+      {s.enabled && !s.ok && s.pending > 0 && <span className="tabular">· {s.pending}</span>}
     </span>
   );
 }
@@ -336,11 +688,17 @@ export function SyncIndicator() {
 /** "en mac-casa" chip for cards whose agent/worktree is on another computer. */
 export function MachineChip({ machine, className = "" }: { machine: string | null; className?: string }) {
   const s = useSync();
-  if (!machine || !s?.enabled || machine === s.machine) return null;
+  const { people, meId } = usePeople();
+  if (!machine || !s?.active || machine === s.machine) return null;
+  const who = people.find((p) => p.machines.includes(machine));
+  const someoneElse = who && who.id !== meId;
   return (
-    <span className={`inline-flex items-center gap-1 rounded-md bg-sky-400/10 px-1.5 text-[10.5px] leading-4 text-sky-200 ${className}`} title={`Su agente y su worktree están en ${machine}`}>
-      <Laptop className="h-3 w-3" />
-      {machine}
+    <span
+      className={`inline-flex items-center gap-1 rounded-md bg-sky-400/10 px-1.5 text-[10.5px] leading-4 text-info ${className}`}
+      title={`Su agente y su worktree están en ${machine}${someoneElse ? `, el ordenador de ${who.name}` : ""}`}
+    >
+      {someoneElse ? <Avatar person={who} size={12} /> : <Laptop className="h-3 w-3" />}
+      {someoneElse ? `${who.name} · ${machine}` : machine}
     </span>
   );
 }
@@ -368,7 +726,7 @@ export function UnlinkedBanner({ project, onLinked }: { project: Project; onLink
   return (
     <div className="mx-4 mb-3 rounded-xl bg-sky-400/[0.06] p-4 ring-1 ring-sky-300/15">
       <div className="flex flex-wrap items-center gap-3">
-        <FolderGit2 className="h-5 w-5 shrink-0 text-sky-300" />
+        <FolderGit2 className="h-5 w-5 shrink-0 text-info" />
         <div className="min-w-0 flex-1">
           <div className="text-[13.5px] font-medium text-zinc-100">Este proyecto no está en este ordenador</div>
           <div className="mt-0.5 text-[12px] text-zinc-400">

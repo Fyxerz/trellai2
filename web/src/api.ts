@@ -58,12 +58,17 @@ export function useProjects() {
 }
 
 export interface SyncStatus {
+  /** TRELLAI_DATABASE_URL: the board is shared between your computers */
   enabled: boolean;
+  /** any sync at all (your computers, or projects shared with you through a code) */
+  active: boolean;
   machine: string;
   ok: boolean;
   error: string | null;
   last_sync: string | null;
   pending: number;
+  /** projects synced through an invitation code */
+  shares: { id: string; project_id: string; host: string; ok: boolean; error: string | null; last_sync: string | null }[];
 }
 
 /** Board sync status + this computer's name (shared by every component). */
@@ -187,7 +192,9 @@ export function useCardDetail(board: Board, cardId: string | null) {
     loadC();
     const off = board.on((e) => {
       if (e.type === "message" && e.message.card_id === cardId)
-        setMessages((prev) => (prev.some((m) => m.id === e.message.id) ? prev : [...prev, e.message]));
+        setMessages((prev) =>
+          prev.some((m) => m.id === e.message.id) ? prev.map((m) => (m.id === e.message.id ? e.message : m)) : [...prev, e.message],
+        );
       if (e.type === "questions" && e.cardId === cardId) loadQ();
       if (e.type === "checkpoints" && e.cardId === cardId) loadC();
       if (e.type === "card" && e.card.id === cardId) loadQ();

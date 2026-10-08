@@ -3,7 +3,9 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import type {
+  Annotation,
   AssistantMessage,
+  Attachment,
   Card,
   Checkpoint,
   Claim,
@@ -12,13 +14,15 @@ import type {
   Message,
   MessageRole,
   ModelRole,
+  Member,
   Note,
+  Person,
   Project,
   Question,
   Tag,
 } from "../shared/types.js";
 
-const DB_PATH = resolve(process.env.TRELLAI_DB ?? "data/trellai.db");
+export const DB_PATH = resolve(process.env.TRELLAI_DB ?? "data/trellai.db");
 mkdirSync(dirname(DB_PATH), { recursive: true });
 
 export const db = new Database(DB_PATH);
@@ -91,6 +95,17 @@ CREATE TABLE IF NOT EXISTS assistant_messages (
   card_id TEXT,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  data TEXT NOT NULL,
+  annotated TEXT,
+  annotations TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_card ON attachments(card_id);
 CREATE INDEX IF NOT EXISTS idx_assistant_project ON assistant_messages(project_id);
 CREATE INDEX IF NOT EXISTS idx_checkpoints_card ON checkpoints(card_id);
 CREATE INDEX IF NOT EXISTS idx_cards_project ON cards(project_id);
@@ -129,16 +144,54 @@ addColumn("cards", "tags", "tags TEXT NOT NULL DEFAULT '[]'");
 addColumn("cards", "agent_model", "agent_model TEXT");
 /** When the card entered Merged (the board groups that column by day). */
 addColumn("cards", "merged_at", "merged_at TEXT");
+db.exec(`UPDATE cards SET status = 'ready' WHERE status = 'waiting' AND status_text LIKE 'Lista —%'`);
 db.exec(`UPDATE cards SET merged_at = updated_at WHERE "column" = 'merged' AND merged_at IS NULL`);
 /** JSON Claim[]: what the card's agent is touching while in Doing. */
 addColumn("cards", "claims", "claims TEXT NOT NULL DEFAULT '[]'");
+/** Card this one was split from in Preparation (the mother closes when all its sub-cards are merged). */
+addColumn("cards", "parent_id", "parent_id TEXT");
 /** JSON string[]: files a note is about, and cards it's addressed to ([] = everyone). */
 addColumn("notes", "files", "files TEXT NOT NULL DEFAULT '[]'");
 addColumn("notes", "targets", "targets TEXT NOT NULL DEFAULT '[]'");
 addColumn("notes", "archived", "archived INTEGER NOT NULL DEFAULT 0");
+/** Your requests on a card: where its branch was when you sent them, to rewind there (↶). */
+addColumn("messages", "head_sha", "head_sha TEXT");
+addColumn("messages", "head_ahead", "head_ahead INTEGER");
+addColumn("messages", "column_before", "column_before TEXT");
+/** 1 = undone by a rewind. */
+addColumn("messages", "undone", "undone INTEGER NOT NULL DEFAULT 0");
+/** Board background: 'none' | 'color' | 'image'; its color; and when the image was generated (per computer). */
+addColumn("projects", "bg_mode", "bg_mode TEXT NOT NULL DEFAULT 'none'");
+addColumn("projects", "bg_color", "bg_color TEXT");
+addColumn("projects", "bg_image", "bg_image TEXT");
+/** 1 = a card that finishes preparation moves to Doing by itself (off by default). */
+addColumn("projects", "auto_doing", "auto_doing INTEGER NOT NULL DEFAULT 0");
+
+/** Who wrote it (Person.id): the card's creator, and whoever's Trellai wrote a message or note. */
+for (const t of ["cards", "messages", "notes"]) addColumn(t, "author", "author TEXT");
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS people (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL,
+  machines TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS members (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  person_id TEXT NOT NULL,
+  joined_at TEXT NOT NULL,
+  left_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_members_project ON members(project_id);
+-- this computer's own settings (never synced)
+CREATE TABLE IF NOT EXISTS local_kv (k TEXT PRIMARY KEY, v TEXT);
+`);
 
 /** Tables whose rows use a local INTEGER id; `uid` identifies them across computers. */
-export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages"] as const;
+export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages", "attachments"] as const;
 for (const t of UID_TABLES) {
   addColumn(t, "uid", "uid TEXT");
   db.exec(`UPDATE ${t} SET uid = lower(hex(randomblob(8))) WHERE uid IS NULL`);
@@ -150,10 +203,10 @@ const now = () => new Date().toISOString();
 
 // ---------- projects ----------
 
-type ProjectRow = Omit<Project, "tags"> & { tags: string };
+type ProjectRow = Omit<Project, "tags" | "auto_doing"> & { tags: string; auto_doing: number };
 
 function toProject(row: ProjectRow | undefined): Project | undefined {
-  return row && { ...row, tags: safeJson<Tag[]>(row.tags, []) };
+  return row && { ...row, tags: safeJson<Tag[]>(row.tags, []), auto_doing: !!row.auto_doing };
 }
 
 export function listProjects(): Project[] {
@@ -170,11 +223,11 @@ export function setProjectTags(id: string, tags: Tag[]): Tag[] {
 }
 
 /** The project's tag with this name (case-insensitive), created if missing. */
-export function ensureTag(projectId: string, name: string, color: string): Tag {
+export function ensureTag(projectId: string, name: string, color: string, model: string | null = null): Tag {
   const tags = getProject(projectId)!.tags;
   const found = tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
   if (found) return found;
-  const tag = { id: nanoid(8), name, color };
+  const tag: Tag = { id: nanoid(8), name, color, model };
   setProjectTags(projectId, [...tags, tag]);
   return tag;
 }
@@ -189,10 +242,12 @@ export function createProject(p: { name: string; repo_path: string; base_branch:
 
 export function updateProject(
   id: string,
-  patch: Partial<Pick<Project, "name" | "base_branch" | "repo_path" | "remote_url" | ModelRole>>,
+  patch: Partial<Pick<Project, "name" | "base_branch" | "repo_path" | "remote_url" | ModelRole | "bg_mode" | "bg_color" | "bg_image" | "auto_doing">>,
 ): Project {
-  const allowed = ["name", "base_branch", "repo_path", "remote_url", "model_prep", "model_dev", "model_plan", "model_do", "model_ui"];
-  const entries = Object.entries(patch).filter(([k, v]) => allowed.includes(k) && v !== undefined);
+  const allowed = ["name", "base_branch", "repo_path", "remote_url", "model_prep", "model_dev", "model_plan", "model_do", "model_ui", "bg_mode", "bg_color", "bg_image", "auto_doing"];
+  const entries = Object.entries(patch)
+    .filter(([k, v]) => allowed.includes(k) && v !== undefined)
+    .map(([k, v]) => [k, k === "auto_doing" ? (v ? 1 : 0) : v] as const);
   if (entries.length) {
     const sets = entries.map(([k]) => `${k} = @${k}`).join(", ");
     db.prepare(`UPDATE projects SET ${sets} WHERE id = @id`).run({ id, ...Object.fromEntries(entries) });
@@ -246,16 +301,16 @@ export function getCard(id: string): Card | undefined {
   return toCard(db.prepare(`${CARD_SELECT} WHERE c.id = ?`).get(id) as CardRow | undefined);
 }
 
-export function createCard(c: { project_id: string; title: string; spec?: string; column?: Column }): Card {
+export function createCard(c: { project_id: string; title: string; spec?: string; column?: Column; parent_id?: string | null }): Card {
   const column = c.column ?? "backlog";
   const max = db
     .prepare('SELECT MAX(position) AS m FROM cards WHERE project_id = ? AND "column" = ?')
     .get(c.project_id, column) as { m: number | null };
   const id = nanoid(10);
   db.prepare(
-    `INSERT INTO cards (id, project_id, title, spec, "column", position, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, c.project_id, c.title, c.spec ?? "", column, (max.m ?? -1) + 1, now(), now());
+    `INSERT INTO cards (id, project_id, title, spec, "column", position, parent_id, author, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, c.project_id, c.title, c.spec ?? "", column, (max.m ?? -1) + 1, c.parent_id ?? null, meId(), now(), now());
   return getCard(id)!;
 }
 
@@ -278,6 +333,7 @@ export interface CardPatch {
   tags?: string[];
   claims?: Claim[];
   agent_model?: string | null;
+  parent_id?: string | null;
 }
 
 export function updateCard(id: string, patch: CardPatch): Card {
@@ -289,6 +345,11 @@ export function updateCard(id: string, patch: CardPatch): Card {
     db.prepare(`UPDATE cards SET ${sets}, updated_at = @updated_at WHERE id = @id`).run(params);
   }
   return getCard(id)!;
+}
+
+/** Sub-cards split from this card. */
+export function childCards(parentId: string): Card[] {
+  return (db.prepare(`${CARD_SELECT} WHERE c.parent_id = ? ORDER BY c.created_at, c.rowid`).all(parentId) as CardRow[]).map((r) => toCard(r)!);
 }
 
 export function deleteCard(id: string) {
@@ -318,6 +379,10 @@ export function pushPendingInput(id: string, text: string) {
   db.prepare("UPDATE cards SET pending_input = ? WHERE id = ?").run(JSON.stringify(list), id);
 }
 
+export function clearPendingInput(id: string) {
+  db.prepare("UPDATE cards SET pending_input = '[]' WHERE id = ?").run(id);
+}
+
 export function takePendingInput(id: string): string[] {
   const row = db.prepare("SELECT pending_input FROM cards WHERE id = ?").get(id) as
     | { pending_input: string }
@@ -331,14 +396,41 @@ export function takePendingInput(id: string): string[] {
 
 export function addMessage(cardId: string, role: MessageRole, content: string): Message {
   const created_at = now();
+  const author = meId();
   const r = db
-    .prepare("INSERT INTO messages (uid, card_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)")
-    .run(uid(), cardId, role, content, created_at);
-  return { id: Number(r.lastInsertRowid), card_id: cardId, role, content, created_at };
+    .prepare("INSERT INTO messages (uid, card_id, role, content, author, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(uid(), cardId, role, content, author, created_at);
+  return { id: Number(r.lastInsertRowid), card_id: cardId, role, content, created_at, head_sha: null, head_ahead: null, column_before: null, undone: false, author };
 }
 
+type MessageRow = Omit<Message, "undone"> & { undone: number; uid: string };
+const toMessage = ({ uid: _u, ...r }: MessageRow): Message => ({ ...r, undone: !!r.undone });
+
 export function listMessages(cardId: string): Message[] {
-  return db.prepare("SELECT * FROM messages WHERE card_id = ? ORDER BY created_at, id").all(cardId) as Message[];
+  return (db.prepare("SELECT * FROM messages WHERE card_id = ? ORDER BY created_at, id").all(cardId) as MessageRow[]).map(toMessage);
+}
+
+export function getMessage(id: number): Message | undefined {
+  const r = db.prepare("SELECT * FROM messages WHERE id = ?").get(id) as MessageRow | undefined;
+  return r && toMessage(r);
+}
+
+/** Where the card's branch was when this message was sent (see `rewindTo`). */
+export function setMessageHead(id: number, head: { sha: string; ahead: number; column: Column }): Message {
+  db.prepare("UPDATE messages SET head_sha = ?, head_ahead = ?, column_before = ? WHERE id = ?").run(head.sha, head.ahead, head.column, id);
+  return getMessage(id)!;
+}
+
+/** Mark this message and everything after it on the card as undone; returns the ones that changed. */
+export function markUndoneFrom(cardId: string, from: Message): Message[] {
+  const ids = (
+    db
+      .prepare("SELECT id FROM messages WHERE card_id = ? AND undone = 0 AND (created_at > ? OR (created_at = ? AND id >= ?))")
+      .all(cardId, from.created_at, from.created_at, from.id) as { id: number }[]
+  ).map((r) => r.id);
+  const stmt = db.prepare("UPDATE messages SET undone = 1 WHERE id = ?");
+  db.transaction(() => ids.forEach((id) => stmt.run(id)))();
+  return ids.map((id) => getMessage(id)!);
 }
 
 // ---------- questions ----------
@@ -381,8 +473,8 @@ export function addNote(
   { files = [], targets = [] }: { files?: string[]; targets?: string[] } = {},
 ): Note {
   const r = db
-    .prepare("INSERT INTO notes (uid, project_id, card_id, content, files, targets, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(uid(), projectId, cardId, content, JSON.stringify(files), JSON.stringify(targets), now());
+    .prepare("INSERT INTO notes (uid, project_id, card_id, content, files, targets, author, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(uid(), projectId, cardId, content, JSON.stringify(files), JSON.stringify(targets), meId(), now());
   return getNote(Number(r.lastInsertRowid))!;
 }
 
@@ -505,4 +597,143 @@ export function takeAssistantPending(projectId: string, mode: AssistantMode): st
   if (!r) return [];
   db.prepare(`UPDATE projects SET ${PENDING_COL[mode]} = '[]' WHERE id = ?`).run(projectId);
   return safeJson<string[]>(r.p, []);
+}
+
+// ---------- attachments (images on a card; base64 so they travel with the sync) ----------
+
+const ATTACHMENT_COLS = "id, uid, card_id, name, mime, annotations, annotated IS NOT NULL AS has_annotated, created_at";
+type AttachmentRow = Omit<Attachment, "annotations" | "has_annotated"> & { annotations: string; has_annotated: number };
+const toAttachment = (r: AttachmentRow): Attachment => ({ ...r, annotations: safeJson(r.annotations, []), has_annotated: !!r.has_annotated });
+
+export function listAttachments(cardId: string): Attachment[] {
+  return (
+    db.prepare(`SELECT ${ATTACHMENT_COLS} FROM attachments WHERE card_id = ? ORDER BY created_at, id`).all(cardId) as AttachmentRow[]
+  ).map(toAttachment);
+}
+
+export function getAttachment(id: number): Attachment | undefined {
+  const r = db.prepare(`SELECT ${ATTACHMENT_COLS} FROM attachments WHERE id = ?`).get(id) as AttachmentRow | undefined;
+  return r && toAttachment(r);
+}
+
+/** By uid: the same image on every computer (chat messages link to it this way). */
+export function getAttachmentByUid(uid: string): Attachment | undefined {
+  const r = db.prepare(`SELECT ${ATTACHMENT_COLS} FROM attachments WHERE uid = ?`).get(uid) as AttachmentRow | undefined;
+  return r && toAttachment(r);
+}
+
+/** The image bytes (base64), or the copy with the boxes drawn on it. */
+export function attachmentData(id: number, annotated = false): string | null {
+  const r = db.prepare("SELECT data, annotated FROM attachments WHERE id = ?").get(id) as { data: string; annotated: string | null } | undefined;
+  return r ? (annotated ? r.annotated : r.data) : null;
+}
+
+export function addAttachment(
+  cardId: string,
+  a: { name: string; mime: string; data: string; annotated?: string | null; annotations?: Annotation[] },
+): Attachment {
+  const r = db
+    .prepare("INSERT INTO attachments (uid, card_id, name, mime, data, annotated, annotations, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(uid(), cardId, a.name, a.mime, a.data, a.annotated ?? null, JSON.stringify(a.annotations ?? []), now());
+  return getAttachment(Number(r.lastInsertRowid))!;
+}
+
+/** `annotated: null` drops the drawn copy (e.g. no boxes left). */
+export function updateAttachment(id: number, patch: { annotations?: Annotation[]; annotated?: string | null; name?: string }): Attachment | undefined {
+  if (patch.annotations !== undefined) db.prepare("UPDATE attachments SET annotations = ? WHERE id = ?").run(JSON.stringify(patch.annotations), id);
+  if (patch.annotated !== undefined) db.prepare("UPDATE attachments SET annotated = ? WHERE id = ?").run(patch.annotated, id);
+  if (patch.name !== undefined) db.prepare("UPDATE attachments SET name = ? WHERE id = ?").run(patch.name, id);
+  return getAttachment(id);
+}
+
+export function deleteAttachment(id: number) {
+  db.prepare("DELETE FROM attachments WHERE id = ?").run(id);
+}
+
+/** Copy a card's images to another card (duplicating a card). */
+export function copyAttachments(fromCardId: string, toCardId: string) {
+  const rows = db.prepare("SELECT name, mime, data, annotated, annotations FROM attachments WHERE card_id = ? ORDER BY created_at, id").all(fromCardId) as {
+    name: string;
+    mime: string;
+    data: string;
+    annotated: string | null;
+    annotations: string;
+  }[];
+  for (const r of rows) addAttachment(toCardId, { ...r, annotations: safeJson(r.annotations, []) });
+}
+
+// ---------- people (who uses Trellai) and project members ----------
+
+export function localGet(k: string): string | undefined {
+  return (db.prepare("SELECT v FROM local_kv WHERE k = ?").get(k) as { v: string } | undefined)?.v;
+}
+export function localSet(k: string, v: string | null) {
+  if (v === null) db.prepare("DELETE FROM local_kv WHERE k = ?").run(k);
+  else db.prepare("INSERT OR REPLACE INTO local_kv (k, v) VALUES (?, ?)").run(k, v);
+}
+
+type PersonRow = Omit<Person, "machines"> & { machines: string };
+const toPerson = (r: PersonRow): Person => ({ ...r, machines: safeJson(r.machines, []) });
+
+export function listPeople(): Person[] {
+  return (db.prepare("SELECT * FROM people ORDER BY name").all() as PersonRow[]).map(toPerson);
+}
+
+export function getPerson(id: string): Person | undefined {
+  const r = db.prepare("SELECT * FROM people WHERE id = ?").get(id) as PersonRow | undefined;
+  return r && toPerson(r);
+}
+
+/** The person using this computer (set the first time Trellai opens; null until then). */
+export function meId(): string | null {
+  return localGet("me") ?? null;
+}
+export function me(): Person | undefined {
+  const id = meId();
+  return id ? getPerson(id) : undefined;
+}
+
+/** Create or update this computer's person (`adopt`: "I'm this person already", from another computer). */
+export function setMe(p: { name: string; color: string; adopt?: string }, machine: string): Person {
+  const id = (p.adopt && getPerson(p.adopt) ? p.adopt : meId()) ?? nanoid(10);
+  const existing = getPerson(id);
+  const machines = [...new Set([...(existing?.machines ?? []), machine])];
+  db.prepare("INSERT OR REPLACE INTO people (id, name, color, machines, updated_at) VALUES (?, ?, ?, ?, ?)").run(
+    id,
+    p.name,
+    p.color,
+    JSON.stringify(machines),
+    now(),
+  );
+  localSet("me", id);
+  return getPerson(id)!;
+}
+
+/** Make sure this computer is listed under its person (e.g. after TRELLAI_MACHINE changes). */
+export function registerMachine(machine: string) {
+  const p = me();
+  if (p && !p.machines.includes(machine))
+    db.prepare("UPDATE people SET machines = ?, updated_at = ? WHERE id = ?").run(JSON.stringify([...p.machines, machine]), now(), p.id);
+}
+
+/** Whose computer is it (by Card.machine). */
+export function personOnMachine(machine: string | null): Person | undefined {
+  return machine ? listPeople().find((p) => p.machines.includes(machine)) : undefined;
+}
+
+export function listMembers(projectId: string): Member[] {
+  return db.prepare("SELECT * FROM members WHERE project_id = ? ORDER BY joined_at").all(projectId) as Member[];
+}
+
+/** (Re)join: `left_at` back to null. */
+export function joinProject(projectId: string, personId: string): Member {
+  const id = `${projectId}:${personId}`;
+  const existing = db.prepare("SELECT * FROM members WHERE id = ?").get(id) as Member | undefined;
+  if (!existing) db.prepare("INSERT INTO members (id, project_id, person_id, joined_at) VALUES (?, ?, ?, ?)").run(id, projectId, personId, now());
+  else if (existing.left_at) db.prepare("UPDATE members SET left_at = NULL, joined_at = ? WHERE id = ?").run(now(), id);
+  return db.prepare("SELECT * FROM members WHERE id = ?").get(id) as Member;
+}
+
+export function leaveProject(projectId: string, personId: string) {
+  db.prepare("UPDATE members SET left_at = ? WHERE id = ? AND left_at IS NULL").run(now(), `${projectId}:${personId}`);
 }

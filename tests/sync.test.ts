@@ -21,7 +21,7 @@ interface Machine {
 
 async function start(name: string, dir: string, dbUrl: string, delay: number): Promise<Machine> {
   const port = 4900 + Math.floor(Math.random() * 900);
-  const proc = spawn("npx", ["tsx", "server/index.ts"], {
+  const proc = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
     env: {
       ...process.env,
       PORT: String(port),
@@ -190,5 +190,66 @@ describe.skipIf(!PG)("two computers", { timeout: 40000 }, () => {
     await until(cardOn(A, c.id), (x) => !x);
     await until(async () => existsSync(wt), (e) => !e);
     await until(async () => sh("git branch --list 'trellai/ajustes*'", origin), (b) => b === "");
+  });
+});
+
+describe.skipIf(!PG)("moving TRELLAI_DATABASE_URL to another database", { timeout: 40000 }, () => {
+  let dir: string, repo: string;
+  const dbs = [`trellai_old_${Date.now()}`, `trellai_new_${Date.now()}`];
+  const urlOf = (name: string) => PG!.replace(/\/[^/]*$/, `/${name}`);
+  let M: Machine | undefined;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), "trellai-move-"));
+    const origin = join(dir, "origin.git");
+    repo = join(dir, "repo");
+    sh(`git init -q --bare -b main ${origin}`, dir);
+    sh(`git clone -q ${origin} ${repo}`, dir);
+    sh(`git config user.email t@t && git config user.name t`, repo);
+    writeFileSync(join(repo, "README.md"), "# hola\n");
+    sh("git add -A && git commit -qm init && git push -q origin main", repo);
+    const admin = postgres(PG!, { onnotice: () => {} });
+    for (const d of dbs) await admin.unsafe(`CREATE DATABASE ${d}`);
+    await admin.end();
+  }, 30000);
+
+  afterAll(async () => {
+    M?.proc.kill();
+    await new Promise((r) => setTimeout(r, 300));
+    const admin = postgres(PG!, { onnotice: () => {} });
+    for (const d of dbs) await admin.unsafe(`DROP DATABASE IF EXISTS ${d} WITH (FORCE)`).catch(() => {});
+    await admin.end();
+  });
+
+  it("uploads the whole board to the new database, not just new changes", async () => {
+    M = await start("mac-casa", dir, urlOf(dbs[0]), 60);
+    const p = await api<Project>(M, "/api/projects", { repo_path: repo });
+    const c = await api<Card>(M, "/api/cards", { project_id: p.id, title: "Vieja", spec: "x", column: "plan" });
+    await until(() => api<any>(M!, "/api/sync"), (s) => s.ok && s.pending === 0);
+    M.proc.kill();
+    await new Promise((r) => setTimeout(r, 300));
+
+    M = await start("mac-casa", dir, urlOf(dbs[1]), 60);
+    const fresh = postgres(urlOf(dbs[1]), { onnotice: () => {} });
+    try {
+      const keys = await until(
+        async () => {
+          try {
+            return (await fresh.unsafe(`SELECT tbl, key FROM trellai.rows`)).map((r) => `${r.tbl}:${r.key}`);
+          } catch {
+            return [] as string[]; // schema not created yet
+          }
+        },
+        (k) => k.includes(`projects:${p.id}`) && k.includes(`cards:${c.id}`),
+      );
+      expect(keys).toContain(`cards:${c.id}`);
+      // and it keeps pulling from the new one (its cursor started over)
+      await fresh.unsafe(
+        `INSERT INTO trellai.rows (tbl, key, data, origin, project) SELECT 'cards', 'otra', replace(replace(data, '${c.id}', 'otra'), 'Vieja', 'Desde fuera'), 'otro~1', project FROM trellai.rows WHERE tbl = 'cards' AND key = '${c.id}'`,
+      );
+      await until(() => api<Card[]>(M!, `/api/projects/${p.id}/cards`), (cs) => cs.some((x) => x.title === "Desde fuera"));
+    } finally {
+      await fresh.end();
+    }
   });
 });

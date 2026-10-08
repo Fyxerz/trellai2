@@ -88,3 +88,46 @@ describe("preferences and project names", () => {
     expect(projectName("Mi proyecto")).toBe("Mi proyecto");
   });
 });
+
+describe("previewed card pinned on top", async () => {
+  const { columnCards, storedIndex } = await import("../web/src/Board");
+  const mk = (id: string, position: number) => ({ id, column: "doing", position }) as unknown as import("../shared/types").Card;
+  const cards = Object.fromEntries([mk("a", 0), mk("b", 1), mk("p", 2), mk("c", 3)].map((c) => [c.id, c]));
+  const ids = (l: { id: string }[]) => l.map((c) => c.id).join("");
+
+  it("shows the previewed card first and the rest in stored order", () => {
+    expect(ids(columnCards(cards, "doing", "p"))).toBe("pabc");
+    expect(ids(columnCards(cards, "doing"))).toBe("abpc");
+  });
+
+  it("maps screen indexes to stored ones around the pinned card", () => {
+    // screen without "c": p a b → drop c at screen 1 (before a) → stored before a
+    expect(storedIndex(cards, "doing", "p", "c", 1)).toBe(0);
+    expect(storedIndex(cards, "doing", "p", "c", 0)).toBe(0);
+    // screen without "a": p b c → between b and c (index 2) → before c in b p c
+    expect(storedIndex(cards, "doing", "p", "a", 2)).toBe(2);
+    // at the end (index 3) → stored at the end
+    expect(storedIndex(cards, "doing", "p", "a", 3)).toBe(3);
+  });
+});
+
+describe("merging cards on top of merged", async () => {
+  const { columnCards, mergedDays, storedIndex, MERGING } = await import("../web/src/Board");
+  const mk = (id: string, day: number, status = "idle") =>
+    ({ id, column: "merged", position: 0, status, merged_at: `2026-10-0${day}T12:00:00`, updated_at: "" }) as unknown as import("../shared/types").Card;
+  const cards = Object.fromEntries([mk("a", 4), mk("b", 3), mk("m", 2, "running"), mk("c", 2), mk("n", 1, "running")].map((c) => [c.id, c]));
+  const ids = (l: { id: string }[]) => l.map((c) => c.id).join("");
+
+  it("shows every card being merged first, then the rest newest first", () => {
+    expect(ids(columnCards(cards, "merged"))).toBe("mnabc");
+    expect(mergedDays(columnCards(cards, "merged")).map((g) => g.day === MERGING ? `*${ids(g.cards)}` : ids(g.cards)).join(" ")).toBe("*mn a b c");
+    // once the merge is over the card is back in its usual place
+    expect(ids(columnCards({ ...cards, m: { ...cards.m, status: "idle" } }, "merged"))).toBe("nabmc");
+  });
+
+  it("drops next to the same neighbour", () => {
+    // screen without "c": m n a b → before a (index 2)
+    expect(storedIndex(cards, "merged", null, "c", 2)).toBe(2);
+    expect(storedIndex(cards, "merged", null, "c", 4)).toBe(4);
+  });
+});

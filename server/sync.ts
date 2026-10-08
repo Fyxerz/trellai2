@@ -1,25 +1,31 @@
 /**
- * Share the board between your computers through a Postgres database (Supabase).
+ * Share the board through Postgres databases (Supabase): between your computers, and
+ * single projects with other people.
  *
  * Each computer keeps working on its own SQLite file (fast, works offline) and runs
  * agents with its own subscriptions. SQLite triggers record every change in
  * `sync_outbox`; every couple of seconds we push those rows to one generic table in
  * Postgres (`trellai.rows`) and pull what the other computers wrote.
  *
- * - Rows are whole records (JSON). Last write wins — fine for one person.
+ * Connections:
+ * - "own": TRELLAI_DATABASE_URL — your computers. Everything travels.
+ * - one per invitation (`sync_shares`): someone else's database (or yours, given to
+ *   someone). Only the rows of that project travel, plus the people who share it.
+ *
+ * - Rows are whole records (JSON). Last write wins.
  * - Some columns are per-computer and never leave it: the repo path, worktrees, agent
  *   session ids, queued input, "Ver esta rama" state.
  * - `rev` is a global counter assigned under an advisory lock, so a pull cursor never
  *   skips a row that commits late.
- *
- * Off unless TRELLAI_DATABASE_URL is set.
+ * - Rows that came in through one connection are not relayed to the others: paste an
+ *   invitation on each computer that should see the project.
  */
 import postgres from "postgres";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, join } from "node:path";
-import type { Card } from "../shared/types.js";
+import { homedir, tmpdir } from "node:os";
+import { basename, join, relative, resolve } from "node:path";
+import type { Card, Project } from "../shared/types.js";
 import * as db from "./db.js";
 import { emitSync } from "./events.js";
 import * as git from "./git.js";
@@ -28,6 +34,24 @@ import { MACHINE } from "./machine.js";
 const URL = process.env.TRELLAI_DATABASE_URL?.trim() || "";
 const INTERVAL = Number(process.env.TRELLAI_SYNC_MS ?? 2000);
 const LOCK_ID = 7_741_100;
+
+/**
+ * The tests make throwaway repos in the temp dir (trellai-e2e-…, trellai-clone-…). A test server that
+ * inherited TRELLAI_DATABASE_URL once uploaded them to the real board, so the real board (its database
+ * isn't a temp file) never shares them nor takes them in, and drops the ones it already has.
+ */
+const insideTmp = (p: string) => {
+  const rel = relative(resolve(tmpdir()), resolve(p));
+  return !!rel && !rel.startsWith("..") && !/^[a-z]:/i.test(rel);
+};
+const TEST_SERVER = insideTmp(db.DB_PATH);
+export const isTestRepo = (p: unknown): boolean =>
+  !TEST_SERVER &&
+  typeof p === "string" &&
+  !!p &&
+  ((insideTmp(p) && /^trellai-/.test(relative(resolve(tmpdir()), resolve(p)))) || /[\\/](temp|tmp|T)[\\/]trellai-[a-z]+-[^\\/]+[\\/]/i.test(p));
+/** Bumped when the remote schema changes, so every database is migrated again. */
+const SCHEMA = 2;
 
 /** Columns that stay on this computer. */
 const LOCAL: Record<string, string[]> = {
@@ -41,10 +65,11 @@ const LOCAL: Record<string, string[]> = {
     "assistant_pending",
     "direct_session_id",
     "direct_pending",
+    "bg_image", // the image file lives in this computer's .trellai/
   ],
   cards: ["worktree", "session_id", "prep_session_id", "pending_input"],
 };
-const TABLES = ["projects", "cards", ...db.UID_TABLES] as const;
+const TABLES = ["projects", "people", "cards", "members", ...db.UID_TABLES] as const;
 type Table = (typeof TABLES)[number];
 const isUidTable = (t: string) => (db.UID_TABLES as readonly string[]).includes(t);
 const keyCol = (t: string) => (isUidTable(t) ? "uid" : "id");
@@ -56,16 +81,43 @@ CREATE TABLE IF NOT EXISTS sync_state (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS sync_flag (applying INTEGER NOT NULL);
 -- rows whose parent (card/project) hasn't arrived yet
 CREATE TABLE IF NOT EXISTS sync_deferred (tbl TEXT NOT NULL, key TEXT NOT NULL, row TEXT NOT NULL, since TEXT NOT NULL, PRIMARY KEY (tbl, key));
+-- invitations pasted (or made with a database other than TRELLAI_DATABASE_URL) on this computer
+CREATE TABLE IF NOT EXISTS sync_shares (id TEXT PRIMARY KEY, url TEXT NOT NULL, project_id TEXT NOT NULL, created_at TEXT NOT NULL);
 `);
+const addCol = (t: string, c: string, ddl: string) => {
+  if (!(sqlite.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).some((x) => x.name === c)) sqlite.exec(`ALTER TABLE ${t} ADD COLUMN ${ddl}`);
+};
+/** The row's project when it changed (a deleted row can't be looked up anymore). */
+addCol("sync_outbox", "project", "project TEXT");
+/** Which connection a deferred row came from. */
+addCol("sync_deferred", "conn", "conn TEXT NOT NULL DEFAULT 'own'");
 if (!sqlite.prepare("SELECT 1 FROM sync_flag").get()) sqlite.exec("INSERT INTO sync_flag VALUES (0)");
 sqlite.exec("UPDATE sync_flag SET applying = 0");
 
 const getState = (k: string) => (sqlite.prepare("SELECT v FROM sync_state WHERE k = ?").get(k) as { v: string } | undefined)?.v;
 const setState = (k: string, v: string) => sqlite.prepare("INSERT OR REPLACE INTO sync_state (k, v) VALUES (?, ?)").run(k, v);
 
+/** Who wrote a row, in `trellai.rows.origin`: unique even if two people's computers share a name. */
+const ORIGIN = (() => {
+  let id = getState("install_id");
+  if (!id) setState("install_id", (id = randomBytes(4).toString("hex")));
+  return `${MACHINE}~${id}`;
+})();
+/** Before ORIGIN existed rows were tagged with the bare machine name. */
+const isMine = (origin: string) => origin === ORIGIN || origin === MACHINE;
+
 const columnsOf = (t: string) => (sqlite.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
 /** Columns that travel between computers. */
 const sharedCols = (t: string) => columnsOf(t).filter((c) => !(LOCAL[t] ?? []).includes(c) && !(isUidTable(t) && c === "id"));
+
+/** SQL for a row's project inside a trigger (`R` = NEW or OLD). */
+function projectExpr(t: string, R: string): string {
+  if (t === "projects") return `${R}.id`;
+  const cols = columnsOf(t);
+  if (cols.includes("project_id")) return `${R}.project_id`;
+  if (cols.includes("card_id")) return `(SELECT project_id FROM cards WHERE id = ${R}.card_id)`;
+  return "NULL";
+}
 
 /** (Re)create the change-capture triggers — after migrations, so new columns are included. */
 function installTriggers() {
@@ -75,13 +127,24 @@ function installTriggers() {
       .map((c) => `"${c}"`)
       .join(", ");
     const when = "WHEN (SELECT applying FROM sync_flag) = 0";
+    const ins = (R: string) => `INSERT INTO sync_outbox (tbl, key, project) VALUES ('${t}', ${R}.${k}, ${projectExpr(t, R)});`;
     sqlite.exec(`
       DROP TRIGGER IF EXISTS sync_${t}_ins; DROP TRIGGER IF EXISTS sync_${t}_upd; DROP TRIGGER IF EXISTS sync_${t}_del;
-      CREATE TRIGGER sync_${t}_ins AFTER INSERT ON ${t} ${when} BEGIN INSERT INTO sync_outbox (tbl, key) VALUES ('${t}', NEW.${k}); END;
-      CREATE TRIGGER sync_${t}_upd AFTER UPDATE OF ${cols} ON ${t} ${when} BEGIN INSERT INTO sync_outbox (tbl, key) VALUES ('${t}', NEW.${k}); END;
-      CREATE TRIGGER sync_${t}_del AFTER DELETE ON ${t} ${when} BEGIN INSERT INTO sync_outbox (tbl, key) VALUES ('${t}', OLD.${k}); END;
+      CREATE TRIGGER sync_${t}_ins AFTER INSERT ON ${t} ${when} BEGIN ${ins("NEW")} END;
+      CREATE TRIGGER sync_${t}_upd AFTER UPDATE OF ${cols} ON ${t} ${when} BEGIN ${ins("NEW")} END;
+      CREATE TRIGGER sync_${t}_del AFTER DELETE ON ${t} ${when} BEGIN ${ins("OLD")} END;
     `);
   }
+}
+let triggersOn = false;
+
+/** The project a local row belongs to (people belong to none). */
+function projectOfRow(t: string, key: string, row: Record<string, unknown> | undefined): string | undefined {
+  if (t === "projects") return key;
+  if (!row) return undefined;
+  if (row.project_id) return row.project_id as string;
+  if (row.card_id) return db.getCard(row.card_id as string)?.project_id;
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,33 +165,118 @@ export function onSync(h: SyncHooks) {
 }
 
 // ---------------------------------------------------------------------------
-// Status
+// Connections
 // ---------------------------------------------------------------------------
 
-export interface SyncStatus {
-  enabled: boolean;
-  machine: string;
+interface ConnStatus {
   ok: boolean;
   error: string | null;
   last_sync: string | null;
-  pending: number;
 }
-const status: SyncStatus = { enabled: !!URL, machine: MACHINE, ok: false, error: null, last_sync: null, pending: 0 };
+
+interface Conn extends ConnStatus {
+  /** "own" or the share's id */
+  id: string;
+  url: string;
+  /** only this project travels (null = everything) */
+  project: string | null;
+  sql: postgres.Sql | null;
+  busy: Promise<void> | null;
+  kick: boolean;
+}
+
+const conns = new Map<string, Conn>();
+const newConn = (id: string, url: string, project: string | null): Conn => ({
+  id,
+  url,
+  project,
+  sql: null,
+  busy: null,
+  kick: false,
+  ok: false,
+  error: null,
+  last_sync: null,
+});
+if (URL) conns.set("own", newConn("own", URL, null));
+
+/** State keys: the own connection keeps the names it always had. */
+const sk = (c: Conn, k: string) => (c.id === "own" ? k : `share:${c.id}:${k}`);
+const pushedSeq = (c: Conn) => Number(getState(sk(c, "pushed")) ?? 0);
+
+const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
+/** A database without its password: changing the password doesn't make it another database. */
+export const dbId = (url: string) => sha(url.trim().replace(/^([a-z]+:\/\/[^:@/]+):[^@]*@/, "$1@").replace(/\?.*$/, ""));
+
+/**
+ * The own connection's state (seeded, cursors…) belongs to one database. Pointing TRELLAI_DATABASE_URL
+ * to another one (e.g. a new Supabase) starts over: take what's there and upload the whole board.
+ */
+function resetOwnIfMoved() {
+  if (!URL) return;
+  const id = dbId(URL);
+  const was = getState("own_db");
+  if (was === id) return;
+  // Before "own_db" existed, "migrated" remembered the database (hash of the full URL).
+  const legacy = getState("migrated")?.split(":")[0];
+  if (was || (legacy && legacy !== sha(URL))) {
+    console.log(`[sync] base de datos nueva (${hostOf(URL)}): se sube todo el tablero`);
+    for (const k of ["migrated", "seeded", "cursor"]) sqlite.prepare("DELETE FROM sync_state WHERE k = ?").run(k);
+    // The first sync sends every row, so what's in the outbox is already covered.
+    const max = (sqlite.prepare("SELECT MAX(seq) AS m FROM sync_outbox").get() as { m: number | null }).m ?? 0;
+    setState("pushed", String(max));
+    sqlite.prepare("DELETE FROM sync_deferred WHERE conn = 'own'").run();
+  }
+  setState("own_db", id);
+}
+resetOwnIfMoved();
+
+interface ShareRow {
+  id: string;
+  url: string;
+  project_id: string;
+  created_at: string;
+}
+const listShares = () => sqlite.prepare("SELECT * FROM sync_shares ORDER BY created_at").all() as ShareRow[];
+
+/** "db.xxx.supabase.co" — for showing where a project is shared, never the password. */
+export function hostOf(url: string): string {
+  return url.match(/@([^/:?]+)/)?.[1] ?? url.replace(/^[a-z]+:\/\//, "").split(/[/?]/)[0];
+}
+
+export interface SyncStatus extends ConnStatus {
+  /** TRELLAI_DATABASE_URL is set (your computers share the board) */
+  enabled: boolean;
+  /** any connection at all (own or invitations) */
+  active: boolean;
+  machine: string;
+  pending: number;
+  shares: ({ id: string; project_id: string; host: string } & ConnStatus)[];
+}
 export function syncStatus(): SyncStatus {
-  status.pending = (sqlite.prepare("SELECT COUNT(*) AS n FROM sync_outbox").get() as { n: number }).n;
-  return { ...status };
+  const own = conns.get("own");
+  const pending = own ? (sqlite.prepare("SELECT COUNT(*) AS n FROM sync_outbox WHERE seq > ?").get(pushedSeq(own)) as { n: number }).n : 0;
+  return {
+    enabled: !!own,
+    active: conns.size > 0,
+    machine: MACHINE,
+    ok: own?.ok ?? false,
+    error: own?.error ?? null,
+    last_sync: own?.last_sync ?? null,
+    pending,
+    shares: [...conns.values()]
+      .filter((c) => c.project)
+      .map((c) => ({ id: c.id, project_id: c.project!, host: hostOf(c.url), ok: c.ok, error: c.error, last_sync: c.last_sync })),
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Push / pull
 // ---------------------------------------------------------------------------
 
-let sql: postgres.Sql | null = null;
-
-function connect() {
-  const local = /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(URL);
-  const explicitSsl = /[?&]sslmode=/.test(URL);
-  return postgres(URL, {
+function connect(url: string) {
+  const local = /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
+  const explicitSsl = /[?&]sslmode=/.test(url);
+  return postgres(url, {
     max: 2,
     idle_timeout: 30,
     connect_timeout: 15,
@@ -153,6 +301,8 @@ async function migrateRemote(s: postgres.Sql) {
       PRIMARY KEY (tbl, key)
     );
     CREATE INDEX IF NOT EXISTS rows_rev_idx ON trellai.rows (rev);
+    ALTER TABLE trellai.rows ADD COLUMN IF NOT EXISTS project text;
+    CREATE INDEX IF NOT EXISTS rows_project_idx ON trellai.rows (project, rev);
     ALTER TABLE trellai.rows ENABLE ROW LEVEL SECURITY;
   `);
 }
@@ -168,32 +318,111 @@ function serialize(t: string, row: Record<string, unknown>): string {
   return JSON.stringify(out);
 }
 
-async function push(s: postgres.Sql): Promise<number> {
-  const batch = sqlite.prepare("SELECT seq, tbl, key FROM sync_outbox ORDER BY seq LIMIT 500").all() as {
+/** People who share `projectId` (and so may travel through its invitation). */
+function memberIds(projectId: string): Set<string> {
+  return new Set(db.listMembers(projectId).map((m) => m.person_id));
+}
+
+interface Outgoing {
+  tbl: string;
+  key: string;
+  data: string | null;
+  deleted: boolean;
+  origin: string;
+  project: string | null;
+}
+
+/** Write rows to a connection. Through an invitation, only its project's rows go. */
+async function write(c: Conn, items: { tbl: string; key: string; project?: string | null }[]): Promise<number> {
+  const s = c.sql!;
+  const members = c.project ? memberIds(c.project) : null;
+  const me = db.meId();
+  const rows: Outgoing[] = [];
+  /** deleted rows whose project we can no longer tell: only if the remote row is the share's */
+  const orphans: { tbl: string; key: string }[] = [];
+  const testProjects = new Set(db.listProjects().filter((p) => isTestRepo(p.repo_path)).map((p) => p.id));
+  for (const { tbl, key, project } of items) {
+    const row = readRow(tbl, key);
+    const pid = project ?? projectOfRow(tbl, key, row) ?? null;
+    if (pid && row && testProjects.has(pid)) continue;
+    if (c.project) {
+      if (tbl === "people") {
+        if (key !== me && !members!.has(key)) continue;
+      } else if (!pid) {
+        if (!row) orphans.push({ tbl, key });
+        continue;
+      } else if (pid !== c.project) continue;
+    }
+    rows.push({ tbl, key, data: row ? serialize(tbl, row) : null, deleted: !row, origin: ORIGIN, project: tbl === "people" ? null : pid });
+  }
+  if (!rows.length && !orphans.length) return 0;
+  await s.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(${LOCK_ID})`;
+    for (let i = 0; i < rows.length; i += 100) {
+      await tx`
+        INSERT INTO trellai.rows ${tx(rows.slice(i, i + 100), "tbl", "key", "data", "deleted", "origin", "project")}
+        ON CONFLICT (tbl, key) DO UPDATE SET
+          data = EXCLUDED.data, deleted = EXCLUDED.deleted, origin = EXCLUDED.origin,
+          project = COALESCE(EXCLUDED.project, trellai.rows.project),
+          rev = nextval('trellai.rev_seq'), updated_at = now()`;
+    }
+    for (const o of orphans) {
+      await tx`
+        UPDATE trellai.rows SET data = NULL, deleted = true, origin = ${ORIGIN}, rev = nextval('trellai.rev_seq'), updated_at = now()
+        WHERE tbl = ${o.tbl} AND key = ${o.key} AND project = ${c.project} AND NOT deleted`;
+    }
+  });
+  return rows.length + orphans.length;
+}
+
+/** Drop outbox rows every connection has pushed. */
+function trimOutbox() {
+  if (!conns.size) return;
+  const min = Math.min(...[...conns.values()].map(pushedSeq));
+  sqlite.prepare("DELETE FROM sync_outbox WHERE seq <= ?").run(min);
+}
+
+async function push(c: Conn): Promise<number> {
+  const from = pushedSeq(c);
+  const batch = sqlite.prepare("SELECT seq, tbl, key, project FROM sync_outbox WHERE seq > ? ORDER BY seq LIMIT 500").all(from) as {
     seq: number;
     tbl: string;
     key: string;
+    project: string | null;
   }[];
   if (!batch.length) return 0;
-  const latest = new Map<string, { tbl: string; key: string }>();
+  const latest = new Map<string, { tbl: string; key: string; project: string | null }>();
   for (const r of batch) {
-    latest.delete(`${r.tbl}\0${r.key}`);
-    latest.set(`${r.tbl}\0${r.key}`, r);
+    const id = `${r.tbl}\0${r.key}`;
+    const project = r.project ?? latest.get(id)?.project ?? null;
+    latest.delete(id);
+    latest.set(id, { tbl: r.tbl, key: r.key, project });
   }
-  const rows = [...latest.values()].map(({ tbl, key }) => {
-    const row = readRow(tbl, key);
-    return { tbl, key, data: row ? serialize(tbl, row) : null, deleted: !row, origin: MACHINE };
-  });
-  await s.begin(async (tx) => {
-    await tx`SELECT pg_advisory_xact_lock(${LOCK_ID})`;
-    await tx`
-      INSERT INTO trellai.rows ${tx(rows, "tbl", "key", "data", "deleted", "origin")}
-      ON CONFLICT (tbl, key) DO UPDATE SET
-        data = EXCLUDED.data, deleted = EXCLUDED.deleted, origin = EXCLUDED.origin,
-        rev = nextval('trellai.rev_seq'), updated_at = now()`;
-  });
-  sqlite.prepare("DELETE FROM sync_outbox WHERE seq <= ?").run(batch[batch.length - 1].seq);
-  return rows.length;
+  await write(c, [...latest.values()]);
+  setState(sk(c, "pushed"), String(batch[batch.length - 1].seq));
+  trimOutbox();
+  return batch.length;
+}
+
+/** Every row of a project (an invitation's first push, or before inviting through your own database). */
+function projectItems(projectId: string): { tbl: string; key: string; project: string }[] {
+  const out: { tbl: string; key: string; project: string }[] = [{ tbl: "projects", key: projectId, project: projectId }];
+  const cards = (sqlite.prepare("SELECT id FROM cards WHERE project_id = ?").all(projectId) as { id: string }[]).map((r) => r.id);
+  out.push(...cards.map((key) => ({ tbl: "cards", key, project: projectId })));
+  for (const t of ["members", ...db.UID_TABLES]) {
+    const k = keyCol(t);
+    const cols = columnsOf(t);
+    const keys = cols.includes("project_id")
+      ? (sqlite.prepare(`SELECT ${k} AS k FROM ${t} WHERE project_id = ?`).all(projectId) as { k: string }[])
+      : (sqlite.prepare(`SELECT ${k} AS k FROM ${t} WHERE card_id IN (SELECT id FROM cards WHERE project_id = ?)`).all(projectId) as { k: string }[]);
+    out.push(...keys.map((r) => ({ tbl: t, key: r.k, project: projectId })));
+  }
+  return out;
+}
+
+function peopleItems(projectId: string | null): { tbl: string; key: string }[] {
+  const ids = projectId ? [...memberIds(projectId), db.meId()].filter((x): x is string => !!x) : db.listPeople().map((p) => p.id);
+  return [...new Set(ids)].filter((id) => db.getPerson(id)).map((key) => ({ tbl: "people", key }));
 }
 
 interface RemoteRow {
@@ -205,39 +434,56 @@ interface RemoteRow {
   rev: string;
 }
 
-async function pull(s: postgres.Sql): Promise<number> {
+async function pull(c: Conn): Promise<number> {
+  const s = c.sql!;
   let total = 0;
   for (;;) {
-    const cursor = getState("cursor") ?? "0";
-    const rows = await s<RemoteRow[]>`
-      SELECT tbl, key, data, deleted, origin, rev FROM trellai.rows
-      WHERE rev > ${cursor} ORDER BY rev LIMIT 1000`;
-    if (!rows.length) return total + retryDeferred();
-    total += apply(rows);
-    setState("cursor", String(rows[rows.length - 1].rev));
-    if (rows.length < 1000) return total + retryDeferred();
+    const cursor = getState(sk(c, "cursor")) ?? "0";
+    const rows = c.project
+      ? await s<RemoteRow[]>`
+          SELECT tbl, key, data, deleted, origin, rev FROM trellai.rows
+          WHERE rev > ${cursor} AND (project = ${c.project} OR (tbl = 'people' AND key IN (
+            SELECT (data::json)->>'person_id' FROM trellai.rows WHERE tbl = 'members' AND project = ${c.project} AND data IS NOT NULL)))
+          ORDER BY rev LIMIT 1000`
+      : await s<RemoteRow[]>`
+          SELECT tbl, key, data, deleted, origin, rev FROM trellai.rows
+          WHERE rev > ${cursor} ORDER BY rev LIMIT 1000`;
+    if (!rows.length) return total + retryDeferred(c);
+    total += apply(c, rows);
+    setState(sk(c, "cursor"), String(rows[rows.length - 1].rev));
+    if (rows.length < 1000) return total + retryDeferred(c);
   }
 }
 
 /** Children that arrived before their card: try again now. Give up after a day. */
-function retryDeferred(): number {
-  const rows = sqlite.prepare("SELECT row FROM sync_deferred").all() as { row: string }[];
+function retryDeferred(c: Conn): number {
+  const rows = sqlite.prepare("SELECT row FROM sync_deferred WHERE conn = ?").all(c.id) as { row: string }[];
   if (!rows.length) return 0;
   sqlite.prepare("DELETE FROM sync_deferred WHERE since < ?").run(new Date(Date.now() - 86_400_000).toISOString());
-  return apply(rows.map((r) => JSON.parse(r.row) as RemoteRow), true);
+  return apply(
+    c,
+    rows.map((r) => JSON.parse(r.row) as RemoteRow),
+    true,
+  );
 }
 
-const ORDER: Record<string, number> = { projects: 0, cards: 1 };
+const ORDER: Record<string, number> = { projects: 0, people: 0, cards: 1, members: 1 };
 
-/** Find the repo on this computer for a project created on another one. */
+/** Find the repo on this computer for a project created on another one (or by someone else). */
 function guessRepo(hint: unknown, remoteUrl: unknown): string {
   if (process.env.TRELLAI_GUESS_REPOS === "0") return "";
+  // Already on the board with the same remote (e.g. your own project for that GitHub repo).
+  if (remoteUrl) {
+    const twin = db.listProjects().find((p) => p.repo_path && existsSync(p.repo_path) && git.sameRemoteSync(p.remote_url, String(remoteUrl)));
+    if (twin) return twin.repo_path;
+  }
   const cands = new Set<string>();
   if (typeof hint === "string" && hint) {
     cands.add(hint);
     cands.add(hint.replace(/^\/(Users|home)\/[^/]+/, homedir()));
     cands.add(join(homedir(), "code", basename(hint)));
   }
+  if (remoteUrl) cands.add(join(homedir(), "code", String(remoteUrl).replace(/\.git$/, "").split(/[/:]/).pop()!));
   for (const c of cands) {
     try {
       if (!existsSync(c) || !git.isRepo(c)) continue;
@@ -250,32 +496,34 @@ function guessRepo(hint: unknown, remoteUrl: unknown): string {
   return "";
 }
 
-function apply(rows: RemoteRow[], retrying = false): number {
+function apply(c: Conn, rows: RemoteRow[], retrying = false): number {
   // Parents first, so a card's messages never land before the card.
   rows = [...rows].sort((a, b) => (ORDER[a.tbl] ?? 2) - (ORDER[b.tbl] ?? 2));
   const projectsTouched = new Set<string>();
   const after: (() => void)[] = [];
   let applied = 0;
   const pendingKeys = new Set(
-    (sqlite.prepare("SELECT DISTINCT tbl, key FROM sync_outbox").all() as { tbl: string; key: string }[]).map((r) => `${r.tbl}\0${r.key}`),
+    (sqlite.prepare("SELECT DISTINCT tbl, key FROM sync_outbox WHERE seq > ?").all(pushedSeq(c)) as { tbl: string; key: string }[]).map(
+      (r) => `${r.tbl}\0${r.key}`,
+    ),
   );
 
   const tx = sqlite.transaction(() => {
     sqlite.exec("UPDATE sync_flag SET applying = 1");
     try {
       for (const r of rows) {
-        if (r.origin === MACHINE) continue; // our own write coming back
+        if (isMine(r.origin)) continue; // our own write coming back
         if (!(TABLES as readonly string[]).includes(r.tbl)) continue;
         if (pendingKeys.has(`${r.tbl}\0${r.key}`)) continue; // we have a newer local change on its way up
         try {
-          if (applyOne(r, projectsTouched, after)) applied++;
+          if (applyOne(c, r, projectsTouched, after)) applied++;
           sqlite.prepare("DELETE FROM sync_deferred WHERE tbl = ? AND key = ?").run(r.tbl, r.key);
         } catch (err) {
           const msg = (err as Error).message;
           if (/FOREIGN KEY/i.test(msg)) {
             sqlite
-              .prepare("INSERT OR IGNORE INTO sync_deferred (tbl, key, row, since) VALUES (?, ?, ?, ?)")
-              .run(r.tbl, r.key, JSON.stringify(r), new Date().toISOString());
+              .prepare("INSERT OR IGNORE INTO sync_deferred (tbl, key, row, since, conn) VALUES (?, ?, ?, ?, ?)")
+              .run(r.tbl, r.key, JSON.stringify(r), new Date().toISOString(), c.id);
             if (!retrying) sqlite.prepare("UPDATE sync_deferred SET row = ? WHERE tbl = ? AND key = ?").run(JSON.stringify(r), r.tbl, r.key);
           } else console.warn(`[sync] skip ${r.tbl}/${r.key}: ${msg}`);
         }
@@ -296,16 +544,17 @@ function apply(rows: RemoteRow[], retrying = false): number {
   return applied;
 }
 
-function applyOne(r: RemoteRow, touched: Set<string>, after: (() => void)[]): boolean {
+function applyOne(c: Conn, r: RemoteRow, touched: Set<string>, after: (() => void)[]): boolean {
   const t = r.tbl as Table;
   const k = keyCol(t);
   const existing = readRow(t, r.key);
-  const projectOf = (row: Record<string, unknown> | undefined) =>
-    t === "projects" ? (row?.id as string) : (row?.project_id as string) ?? (row?.card_id ? db.getCard(row.card_id as string)?.project_id : undefined);
+  // Through an invitation only its project (and its people) may change here.
+  const outside = (pid: string | undefined) => !!c.project && t !== "people" && pid !== undefined && pid !== c.project;
+  if (outside(projectOfRow(t, r.key, existing))) return false;
 
   if (r.deleted || !r.data) {
     if (!existing) return false;
-    const pid = projectOf(existing);
+    const pid = projectOfRow(t, r.key, existing);
     if (t === "cards") {
       const before = db.getCard(r.key);
       sqlite.prepare("DELETE FROM cards WHERE id = ?").run(r.key);
@@ -321,14 +570,16 @@ function applyOne(r: RemoteRow, touched: Set<string>, after: (() => void)[]): bo
   }
 
   const data = JSON.parse(r.data) as Record<string, unknown>;
+  if (outside(projectOfRow(t, r.key, data))) return false;
+  if (t === "projects" && !existing && isTestRepo(data.repo_hint)) return false; // its cards find no project: deferred until they expire
   const allowed = new Set(sharedCols(t));
-  const cols = Object.keys(data).filter((c) => allowed.has(c) && c !== k);
-  const values = cols.map((c) => data[c] ?? null);
+  const cols = Object.keys(data).filter((col) => allowed.has(col) && col !== k);
+  const values = cols.map((col) => data[col] ?? null);
   const before = t === "cards" ? db.getCard(r.key) : undefined;
 
   if (existing) {
     if (cols.length) {
-      sqlite.prepare(`UPDATE ${t} SET ${cols.map((c) => `"${c}" = ?`).join(", ")} WHERE ${k} = ?`).run(...values, r.key);
+      sqlite.prepare(`UPDATE ${t} SET ${cols.map((col) => `"${col}" = ?`).join(", ")} WHERE ${k} = ?`).run(...values, r.key);
     }
   } else {
     const extra: Record<string, unknown> = {};
@@ -336,13 +587,14 @@ function applyOne(r: RemoteRow, touched: Set<string>, after: (() => void)[]): bo
     const allCols = [k, ...cols, ...Object.keys(extra)];
     const allVals = [r.key, ...values, ...Object.values(extra)];
     sqlite
-      .prepare(`INSERT INTO ${t} (${allCols.map((c) => `"${c}"`).join(", ")}) VALUES (${allCols.map(() => "?").join(", ")})`)
+      .prepare(`INSERT INTO ${t} (${allCols.map((col) => `"${col}"`).join(", ")}) VALUES (${allCols.map(() => "?").join(", ")})`)
       .run(...allVals);
   }
 
   const row = readRow(t, r.key);
-  const pid = projectOf(row);
+  const pid = projectOfRow(t, r.key, row);
   if (pid) touched.add(pid);
+  if (t === "people") for (const p of db.listProjects()) touched.add(p.id); // names/colors on every board
   if (t === "cards") {
     const now = db.getCard(r.key);
     after.push(() => hooks.card?.(before, now));
@@ -350,6 +602,17 @@ function applyOne(r: RemoteRow, touched: Set<string>, after: (() => void)[]): bo
   if (t === "messages" && !existing && row) {
     const m = { card_id: row.card_id as string, role: row.role as string, content: row.content as string };
     after.push(() => hooks.message?.(m));
+  }
+  // Someone took us out of this shared project: stop syncing it.
+  if (t === "members" && c.project && row?.person_id === db.meId() && row?.left_at) {
+    const id = c.id;
+    const pid = c.project;
+    after.push(() =>
+      setImmediate(() => {
+        markLeft(pid, true);
+        dropShare(id);
+      }),
+    );
   }
   return true;
 }
@@ -359,74 +622,323 @@ function applyOne(r: RemoteRow, touched: Set<string>, after: (() => void)[]): bo
 // ---------------------------------------------------------------------------
 
 let timer: NodeJS.Timeout | null = null;
-let busy = false;
-let kick = false;
 
-async function tick() {
-  if (busy) {
-    kick = true;
-    return;
-  }
-  busy = true;
+async function runTick(c: Conn) {
   try {
-    sql ??= connect();
-    const urlHash = createHash("sha256").update(URL).digest("hex").slice(0, 16);
-    if (getState("migrated") !== urlHash) {
-      await migrateRemote(sql);
-      setState("migrated", urlHash);
+    c.sql ??= connect(c.url);
+    const urlHash = `${sha(c.url)}:${SCHEMA}`;
+    if (getState(sk(c, "migrated")) !== urlHash) {
+      await migrateRemote(c.sql);
+      setState(sk(c, "migrated"), urlHash);
     }
-    await push(sql);
-    await pull(sql);
-    if (getState("seeded") !== "1") {
-      // First time on this computer: send everything we have (after taking what's there).
-      const tx = sqlite.transaction(() => {
-        for (const t of TABLES) sqlite.exec(`INSERT INTO sync_outbox (tbl, key) SELECT '${t}', ${keyCol(t)} FROM ${t}`);
-        setState("seeded", "1");
-      });
-      tx();
-      await push(sql);
+    await push(c);
+    await pull(c);
+    if (getState(sk(c, "seeded")) !== "1") {
+      // First time: send what we have (after taking what's there).
+      const items = c.project ? [...projectItems(c.project), ...peopleItems(c.project)] : TABLES.flatMap((t) => allKeys(t));
+      for (let i = 0; i < items.length; i += 500) await write(c, items.slice(i, i + 500));
+      setState(sk(c, "seeded"), "1");
     }
-    while ((sqlite.prepare("SELECT COUNT(*) AS n FROM sync_outbox").get() as { n: number }).n > 0) {
-      if (!(await push(sql))) break;
+    while ((sqlite.prepare("SELECT COUNT(*) AS n FROM sync_outbox WHERE seq > ?").get(pushedSeq(c)) as { n: number }).n > 0) {
+      if (!(await push(c))) break;
     }
-    if (!status.ok) console.log(`[sync] conectado como "${MACHINE}"`);
-    status.ok = true;
-    status.error = null;
-    status.last_sync = new Date().toISOString();
+    if (!c.ok) console.log(c.project ? `[sync] invitación ${hostOf(c.url)} conectada` : `[sync] conectado como "${MACHINE}"`);
+    c.ok = true;
+    c.error = null;
+    c.last_sync = new Date().toISOString();
   } catch (err) {
     const msg = (err as Error).message;
-    if (status.error !== msg) console.warn("[sync]", msg);
-    status.ok = false;
-    status.error = msg;
+    if (c.error !== msg) console.warn(`[sync${c.project ? ` ${hostOf(c.url)}` : ""}]`, msg);
+    c.ok = false;
+    c.error = msg;
     // A dead connection is rebuilt on the next tick.
-    const old = sql;
-    sql = null;
+    const old = c.sql;
+    c.sql = null;
     old?.end({ timeout: 1 }).catch(() => {});
-  } finally {
-    busy = false;
-    if (kick) {
-      kick = false;
-      setImmediate(tick);
-    }
   }
 }
 
+const allKeys = (t: string) =>
+  (sqlite.prepare(`SELECT ${keyCol(t)} AS k FROM ${t}`).all() as { k: string }[]).map((r) => ({ tbl: t, key: r.k }));
+
+function tickConn(c: Conn): Promise<void> {
+  if (c.busy) {
+    c.kick = true;
+    return c.busy;
+  }
+  c.busy = runTick(c).finally(() => {
+    c.busy = null;
+    if (c.kick && conns.get(c.id) === c) {
+      c.kick = false;
+      setImmediate(() => tickConn(c));
+    }
+  });
+  return c.busy;
+}
+
+async function tick() {
+  await Promise.all([...conns.values()].map(tickConn));
+}
+
+function ensureRunning() {
+  if (!conns.size) return;
+  if (!triggersOn) {
+    installTriggers();
+    triggersOn = true;
+  }
+  if (!timer) timer = setInterval(tick, INTERVAL);
+}
+
 export function startSync() {
-  if (!URL) return;
-  installTriggers();
-  tick();
-  timer = setInterval(tick, INTERVAL);
+  for (const s of listShares()) if (s.url !== URL) conns.set(s.id, newConn(s.id, s.url, s.project_id));
+  ensureRunning();
+  dropTestProjects();
+  if (conns.size) tick();
+}
+
+/** Delete the test projects that leaked onto the board (and, through the sync, from everyone's). */
+function dropTestProjects() {
+  for (const p of db.listProjects()) {
+    if (!isTestRepo(p.repo_path)) continue;
+    console.log(`[sync] borrando el proyecto de prueba "${p.name}" (${p.repo_path})`);
+    db.deleteProject(p.id);
+  }
 }
 
 /** Sync right now (e.g. before handing a card to another computer). */
 export function syncNow(): Promise<void> {
-  if (!URL) return Promise.resolve();
   return tick();
 }
 
 export async function stopSync() {
   if (timer) clearInterval(timer);
-  await sql?.end({ timeout: 2 });
+  timer = null;
+  await Promise.all([...conns.values()].map((c) => c.sql?.end({ timeout: 2 })));
 }
 
-export const syncEnabled = () => !!URL;
+export const syncEnabled = () => conns.size > 0;
+
+// ---------------------------------------------------------------------------
+// Sharing a project with other people
+// ---------------------------------------------------------------------------
+
+const CODE_PREFIX = "trellai1.";
+
+interface Invite {
+  /** Postgres URL */
+  db: string;
+  /** project id (the same on every computer) */
+  project: string;
+  /** "owner/name" (GitHub) or the remote URL */
+  repo: string;
+  name: string;
+  /** who made it */
+  by: string;
+}
+
+/** "git@github.com:o/r.git" → "o/r"; other remotes stay as they are. */
+export function repoSlug(remote: string): string {
+  const m = remote.trim().match(/github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i);
+  return m ? `${m[1]}/${m[2]}` : remote.trim();
+}
+
+export function encodeInvite(i: Invite): string {
+  return CODE_PREFIX + Buffer.from(JSON.stringify(i)).toString("base64url");
+}
+
+export function decodeInvite(code: string): Invite | null {
+  const raw = code.trim().replace(/\s+/g, "");
+  if (!raw.startsWith(CODE_PREFIX)) return null;
+  try {
+    const i = JSON.parse(Buffer.from(raw.slice(CODE_PREFIX.length), "base64url").toString("utf8")) as Invite;
+    return typeof i.db === "string" && typeof i.project === "string" ? i : null;
+  } catch {
+    return null;
+  }
+}
+
+const sameDb = (a: string, b: string) => !!a && !!b && a.trim() === b.trim();
+
+/** Why this project can't be shared from here ("" = it can). */
+export function inviteProblem(project: Project): string {
+  if (!project.remote_url) return "El proyecto necesita un remoto (GitHub) para que la otra persona tenga el mismo repo.";
+  if (!db.me()) return "Pon antes tu nombre (arriba a la derecha).";
+  return "";
+}
+
+/** Add an invitation connection and sync it once. */
+async function addShare(url: string, projectId: string): Promise<Conn> {
+  const existing = listShares().find((s) => sameDb(s.url, url) && s.project_id === projectId);
+  const id = existing?.id ?? randomBytes(6).toString("hex");
+  if (!existing) {
+    // Joining someone else's project: what's here of it came from them, don't send it back.
+    if (!db.getProject(projectId)) setState(`share:${id}:seeded`, "1");
+    sqlite.prepare("INSERT INTO sync_shares (id, url, project_id, created_at) VALUES (?, ?, ?, ?)").run(id, url.trim(), projectId, new Date().toISOString());
+    // Only what changes from now on goes through the outbox; the project itself goes in the first push.
+    const max = (sqlite.prepare("SELECT MAX(seq) AS m FROM sync_outbox").get() as { m: number | null }).m ?? 0;
+    setState(`share:${id}:pushed`, String(max));
+  }
+  let c = conns.get(id);
+  if (!c) conns.set(id, (c = newConn(id, url.trim(), projectId)));
+  ensureRunning();
+  await tickConn(c);
+  return c;
+}
+
+/** Stop syncing an invitation (the project stays here as it is). */
+export function dropShare(id: string) {
+  const c = conns.get(id);
+  conns.delete(id);
+  c?.sql?.end({ timeout: 1 }).catch(() => {});
+  sqlite.prepare("DELETE FROM sync_shares WHERE id = ?").run(id);
+  sqlite.prepare("DELETE FROM sync_state WHERE k LIKE ?").run(`share:${id}:%`);
+  sqlite.prepare("DELETE FROM sync_deferred WHERE conn = ?").run(id);
+  trimOutbox();
+  if (c?.project) emitSync(c.project);
+}
+
+/** The invitation connection this computer uses for a project, if any. */
+export function shareOf(projectId: string): { id: string; host: string } | null {
+  const c = [...conns.values()].find((x) => x.project === projectId);
+  return c ? { id: c.id, host: hostOf(c.url) } : null;
+}
+
+/**
+ * Make an invitation code for a project. `dbUrl` = another database than TRELLAI_DATABASE_URL
+ * (this computer then syncs the project through it too).
+ */
+export async function createInvite(projectId: string, dbUrl?: string): Promise<string> {
+  const project = db.getProject(projectId);
+  if (!project) throw new Error("Proyecto no encontrado");
+  const problem = inviteProblem(project);
+  if (problem) throw new Error(problem);
+  const me = db.me()!;
+  const existing = shareOf(projectId);
+  const url = dbUrl?.trim() || (existing ? conns.get(existing.id)!.url : URL);
+  if (!url) throw new Error("Hace falta una base de datos Postgres (Supabase) para compartir: pega su URL.");
+  if (!/^postgres(ql)?:\/\//.test(url)) throw new Error("Eso no parece una URL de Postgres (postgres://…).");
+  db.joinProject(projectId, me.id);
+  if (sameDb(url, URL)) {
+    // Rows written before invitations existed don't say their project: send the project again.
+    const own = conns.get("own")!;
+    await tickConn(own);
+    if (!own.ok) throw new Error(`No conecto con la base de datos: ${own.error}`);
+    own.sql ??= connect(own.url);
+    await write(own, [...projectItems(projectId), ...peopleItems(null)]);
+  } else {
+    const c = await addShare(url, projectId);
+    if (!c.ok) {
+      if (!existing) dropShare(c.id);
+      throw new Error(`No conecto con esa base de datos: ${c.error}`);
+    }
+  }
+  const code = encodeInvite({ db: url, project: projectId, repo: repoSlug(project.remote_url!), name: basename(project.name), by: me.name });
+  db.localSet(`invite:${projectId}`, code);
+  markLeft(projectId, false);
+  return code;
+}
+
+/** The last invitation made here for a project (made once, then reused). */
+export const cachedInvite = (projectId: string) => {
+  const code = db.localGet(`invite:${projectId}`);
+  return code && !staleInvite(code) ? code : null;
+};
+
+/** An invitation of ours that points to a database this computer no longer syncs the project through. */
+export function staleInvite(code: string): boolean {
+  const inv = decodeInvite(code);
+  if (!inv) return true;
+  const share = shareOf(inv.project);
+  const current = share ? conns.get(share.id)!.url : URL;
+  return !current || dbId(inv.db) !== dbId(current);
+}
+
+/** You left (or were taken out of) a shared project: don't join it again by yourself. */
+export const leftShare = (projectId: string) => db.localGet(`share-left:${projectId}`) === "1";
+function markLeft(projectId: string, left: boolean) {
+  db.localSet(`share-left:${projectId}`, left ? "1" : null);
+}
+
+/**
+ * Your own board for a repo that turned out to be shared: move its cards, notes, chats and
+ * tags into the shared project and drop it.
+ */
+function mergeProject(fromId: string, intoId: string) {
+  const from = db.getProject(fromId);
+  const into = db.getProject(intoId);
+  if (!from || !into || fromId === intoId) return;
+  const tx = sqlite.transaction(() => {
+    const tagMap = new Map(from.tags.map((t) => [t.id, db.ensureTag(intoId, t.name, t.color, t.model ?? null).id]));
+    const cards = db.listCards(fromId);
+    for (const card of cards) {
+      const max = (sqlite.prepare('SELECT MAX(position) AS m FROM cards WHERE project_id = ? AND "column" = ?').get(intoId, card.column) as { m: number | null }).m;
+      sqlite
+        .prepare("UPDATE cards SET project_id = ?, position = ?, tags = ? WHERE id = ?")
+        .run(intoId, (max ?? -1) + 1, JSON.stringify(card.tags.map((t) => tagMap.get(t)).filter(Boolean)), card.id);
+    }
+    sqlite.prepare("UPDATE notes SET project_id = ? WHERE project_id = ?").run(intoId, fromId);
+    sqlite.prepare("UPDATE assistant_messages SET project_id = ? WHERE project_id = ?").run(intoId, fromId);
+    if (!into.repo_path && from.repo_path) sqlite.prepare("UPDATE projects SET repo_path = ? WHERE id = ?").run(from.repo_path, intoId);
+    // The cards' messages, checkpoints… didn't change, so the triggers didn't see them: send them too.
+    if (triggersOn && cards.length) {
+      const ids = cards.map((c) => c.id);
+      const marks = ids.map(() => "?").join(", ");
+      for (const t of ["messages", "questions", "checkpoints", "attachments"])
+        sqlite.prepare(`INSERT INTO sync_outbox (tbl, key, project) SELECT '${t}', uid, ? FROM ${t} WHERE card_id IN (${marks})`).run(intoId, ...ids);
+    }
+    db.deleteProject(fromId);
+  });
+  tx();
+  emitSync(intoId);
+}
+
+/** Paste an invitation: sync that project from now on. Returns it once it's here. */
+export async function joinWithCode(code: string, opts: { mergeFrom?: string } = {}): Promise<Project> {
+  const inv = decodeInvite(code);
+  if (!inv) throw new Error("Ese código no es una invitación de Trellai (empieza por «trellai1.»).");
+  const me = db.me();
+  if (!me) throw new Error("Pon antes tu nombre (arriba a la derecha).");
+  if (sameDb(inv.db, URL)) {
+    // Your own database: you have it already.
+    await tickConn(conns.get("own")!);
+  } else {
+    const fresh = !shareOf(inv.project);
+    const c = await addShare(inv.db, inv.project);
+    if (!c.ok || !db.getProject(inv.project)) {
+      if (fresh) dropShare(c.id);
+      throw new Error(c.ok ? "En esa base de datos ya no está el proyecto de la invitación (¿lo borraron?)." : `No conecto con la base de datos de la invitación: ${c.error}`);
+    }
+  }
+  const project = db.getProject(inv.project);
+  if (!project) throw new Error("No encuentro el proyecto de la invitación.");
+  db.joinProject(project.id, me.id);
+  markLeft(project.id, false);
+  if (opts.mergeFrom) mergeProject(opts.mergeFrom, project.id);
+  // so our name and color travel with the member row
+  sqlite.prepare("UPDATE people SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), me.id);
+  await syncNow();
+  return db.getProject(project.id)!;
+}
+
+/** Take someone out of a shared project (yourself = leave: this computer stops syncing it). */
+export async function removeMember(projectId: string, personId: string) {
+  db.leaveProject(projectId, personId);
+  await syncNow();
+  if (personId === db.meId()) {
+    markLeft(projectId, true);
+    const s = shareOf(projectId);
+    if (s) dropShare(s.id);
+  }
+  emitSync(projectId);
+}
+
+/** Everyone out (including you): the project goes back to being only yours. */
+export async function stopSharing(projectId: string) {
+  for (const m of db.listMembers(projectId)) if (!m.left_at) db.leaveProject(projectId, m.person_id);
+  markLeft(projectId, true);
+  db.localSet(`invite:${projectId}`, null);
+  await syncNow();
+  const s = shareOf(projectId);
+  if (s) dropShare(s.id);
+  emitSync(projectId);
+}

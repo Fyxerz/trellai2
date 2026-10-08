@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { AssistantMessage, Card, Message, Note, ServerEvent, Tag } from "../shared/types.js";
+import type { AssistantMessage, BgStatus, Card, Message, Note, ServerEvent, Tag } from "../shared/types.js";
 import { getCard } from "./db.js";
 
 /** Per-project event bus feeding the SSE stream. */
@@ -46,6 +46,10 @@ export function emitCheckpoints(projectId: string, cardId: string) {
   emitCard(cardId); // counters on the card
 }
 
+export function emitAttachments(projectId: string, cardId: string) {
+  emit(projectId, { type: "attachments", cardId });
+}
+
 export function emitAssistantMessage(message: AssistantMessage) {
   emit(message.project_id, { type: "assistant_message", message });
 }
@@ -62,8 +66,17 @@ export function emitTags(projectId: string, tags: Tag[]) {
   emit(projectId, { type: "tags", tags });
 }
 
+export function emitBackground(projectId: string, status: BgStatus) {
+  emit(projectId, { type: "background", status });
+}
+
 export function emitSync(projectId: string) {
   emit(projectId, { type: "sync" });
+}
+
+/** The base branch moved (automatic pull): refresh the header's ahead/behind. */
+export function emitGit(projectId: string) {
+  emit(projectId, { type: "git" });
 }
 
 /** For every open board, whatever the project. */
