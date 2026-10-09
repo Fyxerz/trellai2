@@ -13,6 +13,7 @@
 import { execFile } from "node:child_process";
 import type { Project } from "../shared/types.js";
 import * as db from "./db.js";
+import { withGitHubAuth } from "./remote.js";
 import { cachedInvite, createInvite, decodeInvite, joinWithCode, leftShare, repoSlug, shareOf, staleInvite, syncStatus } from "./sync.js";
 
 const REF = "refs/trellai/board";
@@ -44,7 +45,7 @@ function git(cwd: string, args: string[], input?: string): Promise<{ ok: boolean
 
 /** The invitation published in the repo's origin, if any. */
 async function readRemote(repo: string): Promise<string | null> {
-  const ls = await git(repo, ["ls-remote", "origin", REF]);
+  const ls = await withGitHubAuth(repo, () => git(repo, ["ls-remote", "origin", REF]));
   if (!ls.ok || !ls.out) return null;
   const f = await git(repo, ["fetch", "--quiet", "--no-tags", "origin", `+${REF}:${REF}`]);
   if (!f.ok) return null;
@@ -61,16 +62,17 @@ async function publish(repo: string, code: string, replace = false): Promise<boo
   const commit = await git(repo, ["commit-tree", tree.out, "-m", "Trellai: tablero compartido"]);
   if (!commit.ok) return false;
   // never forced (unless it's our own, outdated one): the first one to publish wins, the others join it
-  const push = await git(repo, ["push", "--quiet", "origin", `${replace ? "+" : ""}${commit.out}:${REF}`]);
+  const push = await withGitHubAuth(repo, () => git(repo, ["push", "--quiet", "origin", `${replace ? "+" : ""}${commit.out}:${REF}`]));
   if (push.ok) await git(repo, ["update-ref", REF, commit.out]);
   return push.ok;
 }
 
 /** Take the invitation out of the repo (sharing turned off). */
 export async function unpublish(project: Project) {
-  if (!project.repo_path) return;
-  const code = await readRemote(project.repo_path);
-  if (code && decodeInvite(code)?.project === project.id) await git(project.repo_path, ["push", "--quiet", "origin", `:${REF}`]);
+  const repo = project.repo_path;
+  if (!repo) return;
+  const code = await readRemote(repo);
+  if (code && decodeInvite(code)?.project === project.id) await withGitHubAuth(repo, () => git(repo, ["push", "--quiet", "origin", `:${REF}`]));
 }
 
 const publicCache = new Map<string, boolean | null>();

@@ -90,7 +90,21 @@ export interface GitHubStatus {
   available: boolean;
   loggedIn: boolean;
   login: string | null;
+  /** The «Conectar GitHub» flow (`gh auth login --web`), if one was started. */
+  loginFlow?: GitHubLoginFlow;
 }
+
+/** POST /api/github/login, and `loginFlow` in GET /api/github/status. */
+export interface GitHubLoginFlow {
+  running: boolean;
+  /** one-time code to paste at `url` */
+  code?: string;
+  url?: string;
+  error?: string;
+}
+
+/** What the UI can offer when syncing with a remote fails: «Usar HTTPS» or «Conectar GitHub». */
+export type SyncFix = "https" | "github-login";
 
 /** A background "clone from GitHub" (GET /api/clone-jobs/:id). */
 export interface CloneJob {

@@ -5,10 +5,15 @@
 import { execSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import postgres from "postgres";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Card, Project } from "../shared/types";
+import * as github from "../server/github";
+import { connectError, isHttpsAuthError, resetGitHubCredentials, withGitHubAuth } from "../server/remote";
+
+const FAKE_GH = resolve("tests/fixtures/fake-gh.mjs");
+process.env.TRELLAI_NO_BROWSER = "1";
 
 const PG = process.env.TRELLAI_TEST_PG;
 const sh = (cmd: string, cwd: string) => execSync(cmd, { cwd, encoding: "utf8" }).trim();
@@ -251,5 +256,89 @@ describe.skipIf(!PG)("moving TRELLAI_DATABASE_URL to another database", { timeou
     } finally {
       await fresh.end();
     }
+  });
+});
+
+describe("https remotes without a GitHub login", () => {
+  const NO_USER = "fatal: could not read Username for 'https://github.com': terminal prompts disabled";
+  let repo: string;
+
+  beforeAll(() => {
+    repo = mkdtempSync(join(tmpdir(), "trellai-ghauth-"));
+    sh("git init -q && git remote add origin https://github.com/Fyxerz/comandero.git", repo);
+  });
+
+  afterEach(() => {
+    process.env.TRELLAI_GH = FAKE_GH;
+    delete process.env.FAKE_GH_LOGGED_OUT;
+    delete process.env.FAKE_GH_LOGIN_FAIL;
+    resetGitHubCredentials();
+  });
+
+  it("recognises git asking for a username", () => {
+    expect(isHttpsAuthError(NO_USER)).toBe(true);
+    expect(isHttpsAuthError("remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/a/b.git/'")).toBe(true);
+    expect(isHttpsAuthError("fatal: unable to access 'https://github.com/a/b.git/': Could not resolve host: github.com")).toBe(false);
+    expect(isHttpsAuthError("git@github.com: Permission denied (publickey).")).toBe(false);
+  });
+
+  it("offers «Conectar GitHub» (and says when gh is missing)", () => {
+    const url = "https://github.com/Fyxerz/comandero.git";
+    expect(connectError("origin", url, NO_USER, "conectar con", false)).toEqual({
+      message: "No pude conectar con GitHub: no hay sesión de GitHub en este ordenador. Pulsa «Conectar GitHub».",
+      fix: "github-login",
+    });
+    const missing = connectError("origin", url, NO_USER, "conectar con", true);
+    expect(missing.fix).toBe("github-login");
+    expect(missing.message).toContain("falta la herramienta gh");
+    expect(connectError("origin", "https://gitlab.com/a/b.git", NO_USER).fix).toBeUndefined();
+    expect(connectError("origin", "git@github.com:a/b.git", "Host key verification failed.").fix).toBe("https");
+  });
+
+  it("sets up gh's login for git and retries once", async () => {
+    process.env.TRELLAI_GH = FAKE_GH;
+    let calls = 0;
+    const r = await withGitHubAuth(repo, async () => (++calls === 1 ? { ok: false, err: NO_USER } : { ok: true, err: "" }));
+    expect(r.ok).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it("doesn't retry when gh has no session", async () => {
+    process.env.TRELLAI_GH = FAKE_GH;
+    process.env.FAKE_GH_LOGGED_OUT = "1";
+    let calls = 0;
+    const r = await withGitHubAuth(repo, async () => (calls++, { ok: false, err: NO_USER }));
+    expect(r.ok).toBe(false);
+    expect(calls).toBe(1);
+  });
+
+  it("«Conectar GitHub» shows gh's one-time code and finishes", async () => {
+    process.env.TRELLAI_GH = FAKE_GH;
+    let done = 0;
+    github.onLogin(() => done++);
+    const first = github.startLogin();
+    expect(first.running).toBe(true);
+    const withCode = await until(async () => github.loginFlow()!, (f) => !!f.code || !f.running);
+    expect(withCode.code).toBe("ABCD-1234");
+    expect(withCode.url).toBe("https://github.com/login/device");
+    const end = await until(async () => github.loginFlow()!, (f) => !f.running);
+    expect(end.error).toBeUndefined();
+    expect(done).toBe(1);
+    const st = await github.status();
+    expect(st.loggedIn).toBe(true);
+    expect(st.loginFlow).toMatchObject({ running: false, code: "ABCD-1234" });
+  });
+
+  it("explains a login that didn't complete, or gh not being installed", async () => {
+    process.env.TRELLAI_GH = FAKE_GH;
+    process.env.FAKE_GH_LOGIN_FAIL = "1";
+    github.startLogin();
+    const failed = await until(async () => github.loginFlow()!, (f) => !f.running);
+    expect(failed.error).toMatch(/No se completó la conexión con GitHub: .*access denied/);
+
+    process.env.TRELLAI_GH = join(tmpdir(), "no-such-gh");
+    github.startLogin();
+    const missing = await until(async () => github.loginFlow()!, (f) => !f.running);
+    expect(missing.error).toBe("gh no está instalado. Instálalo desde https://cli.github.com");
   });
 });

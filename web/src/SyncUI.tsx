@@ -1,10 +1,11 @@
 import { ArrowDown, ArrowUp, ChevronDown, Cloud, CloudOff, CloudUpload, FolderGit2, GitBranch, Laptop, Download, Lock, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { COLUMN_LABELS, type Column, type Project } from "../../shared/types";
+import { COLUMN_LABELS, type Column, type Project, type SyncFix } from "../../shared/types";
 import { api, useSync, type Board } from "./api";
 import { confirmDialog, notice } from "./Confirm";
 import { CreateGithubRepo } from "./CreateGithubRepo";
 import { FolderPicker } from "./FolderPicker";
+import { GitHubConnect } from "./GitHubConnect";
 import { Avatar, usePeople } from "./People";
 import { Button, COLUMN_ACCENT, Spinner, timeAgo } from "./ui";
 
@@ -12,8 +13,9 @@ interface GitStatus {
   remote: string | null;
   ok: boolean;
   message?: string;
-  /** "https": the remote is GitHub over SSH and SSH isn't set up here; offer «Usar HTTPS» */
-  fix?: "https";
+  /** "https": the remote is GitHub over SSH and SSH isn't set up here; offer «Usar HTTPS».
+   *  "github-login": HTTPS but gh has no session; offer «Conectar GitHub» */
+  fix?: SyncFix;
   ahead: number;
   behind: number;
 }
@@ -64,7 +66,7 @@ interface BranchList {
   base: string;
   /** the base is `HEAD` or a branch that no longer exists */
   baseMissing: boolean;
-  fetch: { ok: boolean; message?: string; fix?: "https" };
+  fetch: { ok: boolean; message?: string; fix?: SyncFix };
   branches: BranchRow[];
 }
 
@@ -199,6 +201,15 @@ Cambia origin a https://github.com/… y usa tu sesión de gh para conectar.`}
           <CloudOff className="h-3 w-3" />
           Usar HTTPS
         </button>
+      )}
+      {st?.remote && !st.ok && st.fix === "github-login" && (
+        <GitHubConnect
+          compact
+          onConnected={() => {
+            api<GitStatus>(`/api/projects/${project.id}/git`).then(setSt).catch(() => {});
+            onProjectChange();
+          }}
+        />
       )}
       {st && !st.remote && project.repo_path && (
         <button
@@ -428,6 +439,11 @@ function BranchMenu({
                 {syncing ? <Spinner className="h-3.5 w-3.5" /> : <Cloud className="h-3.5 w-3.5" />}
                 Usar HTTPS
               </Button>
+            </div>
+          )}
+          {list.fetch.fix === "github-login" && (
+            <div className="mt-1.5">
+              <GitHubConnect onConnected={() => reload.current()} />
             </div>
           )}
         </div>

@@ -489,16 +489,38 @@ app.post("/api/projects/:id/pull", async (c) => {
   const project = db.getProject(c.req.param("id"));
   if (!project?.repo_path) return c.json({ error: "Proyecto no vinculado" }, 400);
   const r = await remote.syncBranch(project.repo_path, project.base_branch);
-  if (!r.ok) return c.json({ error: r.message ?? "No se pudo actualizar" }, 400);
+  if (!r.ok) return c.json({ error: r.message ?? "No se pudo actualizar", fix: r.fix }, 400);
   if (r.ahead) {
     const p = await remote.pushBranch(project.repo_path, project.base_branch);
-    if (!p.ok) return c.json({ error: p.message }, 400);
+    if (!p.ok) return c.json({ error: p.message, fix: p.fix }, 400);
   }
   return c.json(r);
 });
 
 /** Whether `gh` is installed / logged in, for the "Crear repo en GitHub" dialog. */
 app.get("/api/github/status", async (c) => c.json(await github.status()));
+
+/** «Conectar GitHub»: `gh auth login --web`. Returns the flow (one-time code + URL once gh prints them); poll /api/github/status. */
+app.post("/api/github/login", async (c) => {
+  let flow = github.startLogin();
+  // gh prints the code almost at once: wait a little so the first answer usually has it
+  for (let i = 0; i < 30 && flow.running && !flow.code; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    flow = github.loginFlow() ?? flow;
+  }
+  return c.json(flow);
+});
+
+// after «Conectar GitHub», the GitHub projects that couldn't connect try again now
+github.onLogin(() => {
+  for (const p of db.listProjects()) {
+    if (!p.repo_path || !/github\.com/i.test(p.remote_url ?? "")) continue;
+    remote
+      .syncBranch(p.repo_path, p.base_branch)
+      .then(() => emitGit(p.id))
+      .catch(() => {});
+  }
+});
 
 /** Create a GitHub repo for a project whose local repo has no remote, push the base branch and link it. */
 app.post("/api/projects/:id/github", async (c) => {
