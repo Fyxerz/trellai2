@@ -114,6 +114,48 @@ export function useEngines() {
   };
 }
 
+/** The effort levels a model ("claude:opus", "codex:gpt-6"…, without "@") accepts. */
+export function useEffortLevels(): (spec: string) => Effort[] {
+  const { codex, claude } = useEngines();
+  return (s) => {
+    if (s.startsWith("codex")) {
+      const slug = s.slice(6) || codex?.defaultModel;
+      const m = codex?.models?.find((x) => x.slug === slug);
+      return m?.efforts.length ? m.efforts : CODEX_EFFORTS;
+    }
+    const m = claude?.find((x) => (x.value === "default" ? "claude" : `claude:${x.value}`) === s);
+    // not listed (yet): offer them all, the SDK lowers what the model can't do
+    return m?.efforts ?? [...EFFORTS];
+  };
+}
+
+/** Always-visible effort buttons for a model value ("claude:opus@high"); changing it keeps the model. */
+export function EffortPicker({ value, onChange, className = "" }: { value: string; onChange: (v: string) => void; className?: string }) {
+  const levels = useEffortLevels();
+  const { spec, effort } = splitEffort(value);
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Esfuerzo del modelo"
+      title="Cuánto piensa el modelo antes de responder. Más esfuerzo = mejor en tareas difíciles, pero más lento y gasta más."
+      className={`effort-picker flex flex-wrap gap-1 ${className}`}
+    >
+      {[null, ...levels(spec)].map((l) => (
+        <button
+          key={l ?? "default"}
+          type="button"
+          role="radio"
+          aria-checked={effort === l}
+          onClick={() => effort !== l && onChange(withEffort(spec, l))}
+          className={`rounded px-1.5 py-0.5 text-[11px] transition ${effort === l ? "bg-indigo-500/15 text-indigo-300 ring-1 ring-indigo-400/40" : "text-zinc-400 ring-1 ring-ui-ink/10 hover:bg-ui-ink/5 hover:text-zinc-200"}`}
+        >
+          {l ? EFFORT_LABELS[l] : "Por defecto"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 interface PickerOption {
   /** null = inherit; "__other" = type a GPT model by hand */
   value: string | null;
@@ -159,16 +201,7 @@ export function ModelPicker({
   const { spec, effort } = splitEffort(value);
   const known = [...claudeOptions.map((o) => o.value), "codex", ...gptModels.map((m) => `codex:${m.slug}`)];
   const custom = spec && !known.includes(spec) ? spec : null;
-  const efforts = (s: string): Effort[] => {
-    if (s.startsWith("codex")) {
-      const slug = s.slice(6) || codex?.defaultModel;
-      const m = gptModels.find((x) => x.slug === slug);
-      return m?.efforts.length ? m.efforts : CODEX_EFFORTS;
-    }
-    const m = claude?.find((x) => (x.value === "default" ? "claude" : `claude:${x.value}`) === s);
-    // not listed (yet): offer them all, the SDK lowers what the model can't do
-    return m?.efforts ?? [...EFFORTS];
-  };
+  const efforts = useEffortLevels();
   const levels = value ? efforts(spec) : [];
 
   const groups: { label?: string; options: PickerOption[] }[] = [];
@@ -497,17 +530,21 @@ function ModelSettings({ project, onSaved }: { project: Project; onSaved: () => 
       </div>
         <div className="space-y-3">
           {ROLES.map((r) => (
-            <div key={r.key} className="model-row flex items-center gap-3">
-              <div className="min-w-0 flex-1">
+            <div key={r.key} className="model-row flex flex-wrap items-start gap-x-3 gap-y-1.5">
+              <div className="min-w-[10rem] flex-1">
                 <div className="text-sm text-zinc-200">{r.label}</div>
                 <div className="text-[11px] text-zinc-500">{r.hint}</div>
               </div>
-              <ModelPicker
-                value={(project[r.key] as string | null) ?? null}
-                inheritLabel={r.key === "model_ui" ? "Igual que desarrollo" : undefined}
-                onChange={(v) => save(r.key, v ?? (r.key === "model_ui" ? null : "claude"))}
-                className="model-picker w-72 max-w-full"
-              />
+              <div className="flex w-72 max-w-full flex-col gap-1.5">
+                <ModelPicker
+                  value={(project[r.key] as string | null) ?? null}
+                  inheritLabel={r.key === "model_ui" ? "Igual que desarrollo" : undefined}
+                  onChange={(v) => save(r.key, v ?? (r.key === "model_ui" ? null : "claude"))}
+                  className="model-picker w-full"
+                />
+                {/* null (inherit) runs with development's model and effort */}
+                {project[r.key] && <EffortPicker value={project[r.key] as string} onChange={(v) => save(r.key, v)} />}
+              </div>
             </div>
           ))}
         </div>
