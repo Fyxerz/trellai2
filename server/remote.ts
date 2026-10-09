@@ -11,6 +11,7 @@
  * it uses the credentials you already have (ssh keys, credential helper, gh).
  */
 import { execFile, spawn } from "node:child_process";
+import type { SyncFix } from "../shared/types.js";
 import * as git from "./git.js";
 import * as github from "./github.js";
 import { repoLock } from "./lock.js";
@@ -53,11 +54,65 @@ const firstLine = (s: string) =>
 export const isSshError = (err: string) =>
   /Host key verification failed|Permission denied \(publickey|No ECDSA host key|REMOTE HOST IDENTIFICATION HAS CHANGED|ssh: connect to host/i.test(err);
 
+/** https couldn't log in without asking: no credential helper with a login for that server. */
+export const isHttpsAuthError = (err: string) => /could not read Username|terminal prompts disabled|Authentication failed|Invalid username or password/i.test(err);
+
+const isGitHubHttps = (url: string | null) => !!url && /^https:\/\/([^@/]+@)?github\.com[:/]/i.test(url.trim());
+
+let credentials: Promise<boolean> | null = null;
+/** gh wasn't found the last time we tried `gh auth setup-git`. */
+let ghMissing = false;
+
+/** `gh auth setup-git`, at most once per process while it works (a failure is retried next time). */
+function ensureGitHubCredentials(): Promise<boolean> {
+  credentials ??= github.gitCredentials().then((r) => {
+    ghMissing = r.missing;
+    if (!r.ok) credentials = null;
+    return r.ok;
+  });
+  return credentials;
+}
+
+/** Forget that gh's login is already set up for git (after «Conectar GitHub»; tests). */
+export function resetGitHubCredentials() {
+  credentials = null;
+  ghMissing = false;
+}
+
+/** Fetch again on the next request instead of trusting the last one (after «Conectar GitHub»). */
+export function forgetFetches() {
+  lastFetch.clear();
+}
+
+github.onLogin(() => {
+  resetGitHubCredentials();
+  forgetFetches();
+});
+
+/**
+ * Run something that talks to the remote. If an https github.com remote asks for a username, git
+ * isn't using gh's login yet: `gh auth setup-git` and try once more.
+ */
+export async function withGitHubAuth<T extends { ok: boolean; err: string }>(repo: string, attempt: () => Promise<T>): Promise<T> {
+  const r = await attempt();
+  if (r.ok || !isHttpsAuthError(r.err) || !isGitHubHttps(await remoteUrl(repo))) return r;
+  if (!(await ensureGitHubCredentials())) return r;
+  return attempt();
+}
+
+const runRemote = (repo: string, args: string[], timeout?: number) => withGitHubAuth(repo, () => run(repo, args, timeout));
+
 /**
  * A connection problem explained in Spanish. For SSH problems with a github.com remote,
- * `fix: "https"` tells the UI it can offer to switch origin to HTTPS.
+ * `fix: "https"` tells the UI it can offer to switch origin to HTTPS; for an https github.com remote
+ * without a login, `fix: "github-login"` offers «Conectar GitHub».
  */
-function connectError(remote: string, url: string | null, err: string, what = "conectar con"): { message: string; fix?: "https" } {
+export function connectError(remote: string, url: string | null, err: string, what = "conectar con", noGh = ghMissing): { message: string; fix?: SyncFix } {
+  if (isHttpsAuthError(err) && isGitHubHttps(url)) {
+    return noGh
+      ? { message: `No pude ${what} GitHub: falta la herramienta gh. Instálala desde cli.github.com y pulsa «Conectar GitHub».`, fix: "github-login" }
+      : { message: `No pude ${what} GitHub: no hay sesión de GitHub en este ordenador. Pulsa «Conectar GitHub».`, fix: "github-login" };
+  }
   if (!isSshError(err)) return { message: `No pude ${what} ${remote}: ${firstLine(err)}` };
   const https = url ? github.sshToHttps(url) : null;
   const why = /Host key verification failed/i.test(err)
@@ -101,17 +156,19 @@ export interface SyncResult {
   offline?: boolean;
   /** human-readable problem, in Spanish */
   message?: string;
+  /** what the UI can offer to fix a connection problem */
+  fix?: SyncFix;
 }
 
 const lastFetch = new Map<string, number>();
 
 /** git fetch, at most once every `maxAgeMs` per repo. */
-export async function fetchRemote(repo: string, maxAgeMs = 0): Promise<{ ok: boolean; remote: string | null; message?: string; fix?: "https" }> {
+export async function fetchRemote(repo: string, maxAgeMs = 0): Promise<{ ok: boolean; remote: string | null; message?: string; fix?: SyncFix }> {
   const remote = await remoteOf(repo);
   if (!remote) return { ok: true, remote: null };
   const last = lastFetch.get(repo) ?? 0;
   if (maxAgeMs && Date.now() - last < maxAgeMs) return { ok: true, remote };
-  const r = await run(repo, ["fetch", "--prune", remote], 45_000);
+  const r = await runRemote(repo, ["fetch", "--prune", remote], 45_000);
   if (!r.ok) return { ok: false, remote, ...connectError(remote, await remoteUrl(repo), r.err) };
   lastFetch.set(repo, Date.now());
   return { ok: true, remote };
@@ -138,7 +195,7 @@ export function syncBranch(repo: string, branch: string, opts: { maxAgeMs?: numb
 async function syncBranchUnlocked(repo: string, branch: string, opts: { maxAgeMs?: number }): Promise<SyncResult> {
   const f = await fetchRemote(repo, opts.maxAgeMs);
   if (!f.remote) return { remote: false, ok: true, pulled: 0, ahead: 0, behind: 0 };
-  if (!f.ok) return { remote: true, ok: false, offline: true, pulled: 0, ahead: 0, behind: 0, message: f.message };
+  if (!f.ok) return { remote: true, ok: false, offline: true, pulled: 0, ahead: 0, behind: 0, message: f.message, fix: f.fix };
   const remote = f.remote;
   if (!(await refExists(repo, `refs/remotes/${remote}/${branch}`))) {
     // Nothing on the remote yet (new repo): nothing to pull.
@@ -186,21 +243,21 @@ async function syncBranchUnlocked(repo: string, branch: string, opts: { maxAgeMs
 }
 
 /** Push `branch` to the remote. If rejected because the remote moved, sync and try once more. */
-export function pushBranch(repo: string, branch: string): Promise<{ ok: boolean; remote: boolean; message?: string }> {
+export function pushBranch(repo: string, branch: string): Promise<{ ok: boolean; remote: boolean; message?: string; fix?: SyncFix }> {
   return repoLock(repo, () => pushBranchUnlocked(repo, branch));
 }
 
-async function pushBranchUnlocked(repo: string, branch: string): Promise<{ ok: boolean; remote: boolean; message?: string }> {
+async function pushBranchUnlocked(repo: string, branch: string): Promise<{ ok: boolean; remote: boolean; message?: string; fix?: SyncFix }> {
   const remote = await remoteOf(repo);
   if (!remote) return { ok: true, remote: false };
-  let r = await run(repo, ["push", "-u", remote, branch], 60_000);
+  let r = await runRemote(repo, ["push", "-u", remote, branch], 60_000);
   if (!r.ok && /rejected|non-fast-forward|fetch first/i.test(r.err)) {
     const s = await syncBranch(repo, branch);
-    if (!s.ok) return { ok: false, remote: true, message: s.message };
-    r = await run(repo, ["push", "-u", remote, branch], 60_000);
+    if (!s.ok) return { ok: false, remote: true, message: s.message, fix: s.fix };
+    r = await runRemote(repo, ["push", "-u", remote, branch], 60_000);
   }
   if (r.ok) return { ok: true, remote: true };
-  if (isSshError(r.err)) return { ok: false, remote: true, message: connectError(remote, await remoteUrl(repo), r.err, "subir a").message };
+  if (isSshError(r.err) || isHttpsAuthError(r.err)) return { ok: false, remote: true, ...connectError(remote, await remoteUrl(repo), r.err, "subir a") };
   return { ok: false, remote: true, message: `No pude hacer push: ${firstLine(r.err)}` };
 }
 
@@ -223,7 +280,7 @@ export function pushCardBranch(cwd: string, branch: string): Promise<unknown> {
   return enqueue(branch, async () => {
     const remote = await remoteOf(cwd);
     if (!remote) return;
-    const r = await run(cwd, ["push", "--force-with-lease", "-u", remote, `${branch}:${branch}`], 60_000);
+    const r = await withGitHubAuth(cwd, () => run(cwd, ["push", "--force-with-lease", "-u", remote, `${branch}:${branch}`], 60_000));
     if (!r.ok) console.warn(`[remote] push ${branch}: ${firstLine(r.err)}`);
   });
 }
@@ -234,7 +291,7 @@ export function deleteRemoteBranch(repo: string, branch: string) {
     const remote = await remoteOf(repo);
     if (!remote) return;
     if (!(await refExists(repo, `refs/remotes/${remote}/${branch}`))) return;
-    await run(repo, ["push", remote, "--delete", branch], 30_000);
+    await runRemote(repo, ["push", remote, "--delete", branch], 30_000);
   });
 }
 
@@ -242,11 +299,12 @@ export function deleteRemoteBranch(repo: string, branch: string) {
  * Delete a branch on the remote right now (the branch menu asked for it explicitly, so this
  * ignores TRELLAI_PUSH_BRANCHES) and drop our remote-tracking ref so the list stops showing it.
  */
-export async function deleteRemoteBranchNow(repo: string, branch: string): Promise<{ ok: boolean; message?: string }> {
+export async function deleteRemoteBranchNow(repo: string, branch: string): Promise<{ ok: boolean; message?: string; fix?: SyncFix }> {
   const remote = await remoteOf(repo);
   if (!remote) return { ok: true };
   await flushBranch(branch);
-  const r = await run(repo, ["push", remote, "--delete", branch], 30_000);
+  const r = await runRemote(repo, ["push", remote, "--delete", branch], 30_000);
+  if (!r.ok && (isSshError(r.err) || isHttpsAuthError(r.err))) return { ok: false, ...connectError(remote, await remoteUrl(repo), r.err, "borrarla en") };
   if (!r.ok && !/remote ref does not exist/i.test(r.err)) return { ok: false, message: `No pude borrarla en ${remoteLabel(repo)}: ${firstLine(r.err)}` };
   await run(repo, ["update-ref", "-d", `refs/remotes/${remote}/${branch}`]);
   return { ok: true };
@@ -265,7 +323,7 @@ export async function fetchCardBranch(repo: string, branch: string): Promise<{ o
       ? { ok: true }
       : { ok: false, message: `La rama ${branch} no está en este ordenador y el repo no tiene remoto.` };
   }
-  const r = await run(repo, ["fetch", remote, `+${branch}:refs/heads/${branch}`], 45_000);
+  const r = await runRemote(repo, ["fetch", remote, `+${branch}:refs/heads/${branch}`], 45_000);
   if (r.ok) return { ok: true };
   if (await refExists(repo, `refs/heads/${branch}`)) return { ok: true }; // checked out here already, or offline
   return { ok: false, message: `No encuentro la rama ${branch} en ${remote}: ${firstLine(r.err)}` };

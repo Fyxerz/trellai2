@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { CloudUpload, ExternalLink, Lock, Globe } from "lucide-react";
 import type { GitHubStatus, Project } from "../../shared/types";
 import { api } from "./api";
+import { GitHubConnect } from "./GitHubConnect";
 import { Button, Spinner } from "./ui";
 
 const input = "ui-field ui-control mt-1 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ring-1 ring-zinc-700 outline-none placeholder:text-zinc-600 focus:ring-indigo-500";
@@ -112,14 +113,14 @@ export function CreateGithubRepo({ project, onClose, onCreated }: { project: Pro
                 <a href="https://cli.github.com" target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline">
                   cli.github.com
                 </a>{" "}
-                y luego inicia sesión:
+                y vuelve a comprobar para conectar tu cuenta.
               </p>
             ) : (
-              <p>
-                <span className="font-mono">gh</span> está instalado pero no tiene sesión iniciada. Ejecuta en una terminal:
-              </p>
+              <>
+                <p>Conecta tu cuenta de GitHub para crear el repo:</p>
+                <GitHubConnect onConnected={check} />
+              </>
             )}
-            <pre className="rounded-md bg-zinc-950 px-3 py-2 font-mono text-xs text-zinc-200 ring-1 ring-zinc-800">gh auth login</pre>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={onClose}>
                 Cancelar

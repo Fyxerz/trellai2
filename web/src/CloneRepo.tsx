@@ -4,6 +4,7 @@ import type { GitHubRepos, Project } from "../../shared/types";
 import { api } from "./api";
 import { trackClone } from "./CloneToasts";
 import { FolderPicker } from "./FolderPicker";
+import { GitHubConnect } from "./GitHubConnect";
 import { Button, Spinner, timeAgo } from "./ui";
 
 /** Folder name for a clone URL: last path segment without ".git" (same as the server). */
@@ -137,13 +138,16 @@ export function CloneRepo({ onCreated, onStarted, footer }: { onCreated: (p: Pro
           {gh && !gh.available && (
             <GhHelp>
               No encuentro <code>gh</code>, el programa de GitHub para la terminal. Instálalo desde{" "}
-              <a href="https://cli.github.com" target="_blank" rel="noreferrer" className="text-accent hover:underline">cli.github.com</a>, ejecuta{" "}
-              <code>gh auth login</code> y pulsa ↻ para ver aquí tus repos.
+              <a href="https://cli.github.com" target="_blank" rel="noreferrer" className="text-accent hover:underline">cli.github.com</a> y pulsa ↻
+              para conectar tu cuenta y ver aquí tus repos.
             </GhHelp>
           )}
           {gh?.available && !gh.loggedIn && (
             <GhHelp>
-              Tienes <code>gh</code> pero no has iniciado sesión. Ejecuta <code>gh auth login</code> en una terminal y pulsa ↻ para ver aquí tus repos.
+              Conecta tu cuenta de GitHub para ver aquí tus repos.
+              <div className="mt-2">
+                <GitHubConnect onConnected={loadRepos} />
+              </div>
             </GhHelp>
           )}
           {gh?.error && <li className="px-3 py-2 text-sm text-danger">{gh.error}</li>}

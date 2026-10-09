@@ -2,15 +2,19 @@
  * Your GitHub account, through the `gh` CLI that's already logged in on this machine
  * (we never store tokens). Used by "Nuevo proyecto → Clonar de GitHub".
  */
-import { execFile } from "node:child_process";
-import type { GitHubRepo, GitHubRepos, GitHubStatus } from "../shared/types.js";
+import { execFile, spawn } from "node:child_process";
+import type { GitHubLoginFlow, GitHubRepo, GitHubRepos, GitHubStatus } from "../shared/types.js";
 
-/** TRELLAI_GH lets tests point at a missing / fake binary. */
-const GH = process.env.TRELLAI_GH || "gh";
+/** TRELLAI_GH lets tests point at a missing / fake binary (a .js/.mjs one runs with node). */
+function ghCmd(args: string[]): [string, string[]] {
+  const bin = process.env.TRELLAI_GH || "gh";
+  return /\.m?js$/.test(bin) ? [process.execPath, [bin, ...args]] : [bin, args];
+}
 
 function gh(args: string[], timeout = 30_000): Promise<{ ok: boolean; missing: boolean; out: string; err: string }> {
+  const [bin, argv] = ghCmd(args);
   return new Promise((resolve) =>
-    execFile(GH, args, { timeout, maxBuffer: 32 * 1024 * 1024, env: { ...process.env, GH_PROMPT_DISABLED: "1", NO_COLOR: "1" } }, (error, stdout, stderr) =>
+    execFile(bin, argv, { timeout, maxBuffer: 32 * 1024 * 1024, env: { ...process.env, GH_PROMPT_DISABLED: "1", NO_COLOR: "1" } }, (error, stdout, stderr) =>
       resolve({
         ok: !error,
         missing: (error as NodeJS.ErrnoException | null)?.code === "ENOENT",
@@ -40,10 +44,15 @@ export function githubSshWorks(): Promise<boolean> {
   return ok;
 }
 
+/** Make git use gh's login for https://github.com (`gh auth setup-git`). `missing` = gh isn't installed. */
+export async function gitCredentials(): Promise<{ ok: boolean; missing: boolean }> {
+  const r = await gh(["auth", "setup-git", "--hostname", "github.com"]);
+  return { ok: r.ok, missing: r.missing };
+}
+
 /** Make git use gh's login for https://github.com (`gh auth setup-git`). True if gh is logged in and it worked. */
 export async function setupGitCredentials(): Promise<boolean> {
-  const r = await gh(["auth", "setup-git", "--hostname", "github.com"]);
-  return r.ok;
+  return (await gitCredentials()).ok;
 }
 
 /** git@github.com:o/r.git, ssh://git@github.com/o/r.git → https://github.com/o/r.git; anything else → null. */
@@ -115,11 +124,119 @@ export function repoDirName(url: string): string {
 
 /** Who `gh` is logged in as (for "Crear repo en GitHub"). Never throws. */
 export async function status(): Promise<GitHubStatus> {
+  const flow = loginFlow();
+  const extra = flow ? { loginFlow: flow } : {};
   const auth = await gh(["auth", "status"]);
-  if (auth.missing) return { available: false, loggedIn: false, login: null };
-  if (!auth.ok) return { available: true, loggedIn: false, login: null };
+  if (auth.missing) return { available: false, loggedIn: false, login: null, ...extra };
+  if (!auth.ok) return { available: true, loggedIn: false, login: null, ...extra };
   const user = await gh(["api", "user", "--jq", ".login"]);
-  return { available: true, loggedIn: true, login: user.ok ? user.out.trim() || null : null };
+  return { available: true, loggedIn: true, login: user.ok ? user.out.trim() || null : null, ...extra };
+}
+
+// ---- «Conectar GitHub»: `gh auth login --web` (device code in the browser) ----
+
+const login: { child: ReturnType<typeof spawn> | null; started: boolean; code?: string; url?: string; error?: string; timer?: NodeJS.Timeout } = {
+  child: null,
+  started: false,
+};
+const loginListeners: (() => void)[] = [];
+
+/** Called after a successful «Conectar GitHub» (git already uses gh's login by then). */
+export function onLogin(fn: () => void) {
+  loginListeners.push(fn);
+}
+
+/** The login flow, or undefined if none was started in this process. */
+export function loginFlow(): GitHubLoginFlow | undefined {
+  if (!login.started) return undefined;
+  return { running: !!login.child, code: login.code, url: login.url, error: login.error };
+}
+
+function openBrowser(url: string) {
+  if (process.env.TRELLAI_NO_BROWSER || process.env.VITEST) return;
+  const [cmd, args] =
+    process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
+  try {
+    spawn(cmd, args, { stdio: "ignore", detached: true, windowsHide: true }).on("error", () => {}).unref();
+  } catch {
+    /* no browser: the UI shows the link */
+  }
+}
+
+/** Starts `gh auth login --web` (or returns the one already running). Returns at once; poll loginFlow(). */
+export function startLogin(): GitHubLoginFlow {
+  if (login.child) return loginFlow()!;
+  Object.assign(login, { started: true, code: undefined, url: undefined, error: undefined });
+  const [bin, argv] = ghCmd(["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--skip-ssh-key"]);
+  const output: string[] = [];
+  // we open the browser ourselves (gh can't always tell whether it may): its own opener does nothing
+  const noop = process.platform === "win32" ? "cmd /c rem" : "true";
+  const child = spawn(bin, argv, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: { ...process.env, NO_COLOR: "1", GH_BROWSER: noop } });
+  login.child = child;
+  let entered = false;
+  let opened = false;
+  const onData = (d: Buffer) => {
+    output.push(String(d));
+    const all = output.join("");
+    login.code ??= all.match(/one-time code: ([A-Z0-9]{4}-[A-Z0-9]{4})/)?.[1];
+    login.url ??= all.match(/https:\/\/github\.com\/login\/device\S*/)?.[0]?.replace(/[.,]+$/, "");
+    if (login.code) login.url ??= "https://github.com/login/device";
+    if (!entered && /Press Enter/i.test(all)) {
+      entered = true;
+      child.stdin?.write("\n");
+    }
+    if (!opened && login.code && login.url) {
+      opened = true;
+      openBrowser(login.url);
+    }
+  };
+  child.stdout?.on("data", onData);
+  child.stderr?.on("data", onData);
+  child.stdin?.on("error", () => {});
+  child.on("error", (err) => {
+    if (login.child !== child) return;
+    clearTimeout(login.timer);
+    login.child = null;
+    login.error =
+      (err as NodeJS.ErrnoException).code === "ENOENT" ? "gh no está instalado. Instálalo desde https://cli.github.com" : `No se pudo lanzar gh: ${err.message}`;
+  });
+  child.on("close", async (code, signal) => {
+    if (login.child !== child) return; // cancelled or timed out
+    clearTimeout(login.timer);
+    if (code !== 0) {
+      login.child = null;
+      if (!login.error) {
+        const tail = output.join("").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim().split("\n").filter(Boolean).slice(-2).join(" ").trim();
+        login.error = signal ? "Se canceló la conexión con GitHub." : `No se completó la conexión con GitHub${tail ? `: ${tail}` : "."}`;
+      }
+      return;
+    }
+    // still "running" until git uses the new login, so whoever polls sees it ready
+    await setupGitCredentials();
+    login.child = null;
+    for (const fn of loginListeners) {
+      try {
+        fn();
+      } catch (err) {
+        console.warn(`[github] tras conectar: ${(err as Error).message}`);
+      }
+    }
+  });
+  login.timer = setTimeout(() => {
+    if (login.child !== child) return;
+    login.child = null;
+    child.kill();
+    login.error = "Se acabó el tiempo esperando a que confirmaras el código en GitHub. Vuelve a intentarlo.";
+  }, 5 * 60_000);
+  return loginFlow()!;
+}
+
+/** Stop a running «Conectar GitHub». */
+export function cancelLogin() {
+  clearTimeout(login.timer);
+  const child = login.child;
+  login.child = null;
+  child?.kill();
 }
 
 /** "nombre" or "owner/nombre" with GitHub's allowed characters. */
