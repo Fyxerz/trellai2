@@ -708,9 +708,33 @@ app.get("/api/projects/:id/assistant", (c) => {
 });
 
 app.post("/api/projects/:id/assistant", async (c) => {
-  const { text, mode } = await c.req.json<{ text: string; mode?: string }>();
-  if (!text?.trim()) return c.json({ error: "Mensaje vacío" }, 400);
-  sendToAssistant(c.req.param("id"), text.trim(), modeOf(mode));
+  const { text, mode, images } = await c.req.json<{ text?: string; mode?: string; images?: number[] }>();
+  const ids = (Array.isArray(images) ? images : []).map(Number).filter((id) => db.getAssistantImage(id)?.project_id === c.req.param("id"));
+  if (!text?.trim() && !ids.length) return c.json({ error: "Mensaje vacío" }, 400);
+  sendToAssistant(c.req.param("id"), text?.trim() ?? "", modeOf(mode), ids);
+  return c.json({ ok: true });
+});
+
+/** An image for the next message to the assistant. Body: { name, data: base64 or data URL, mime?, mode? } */
+app.post("/api/projects/:id/assistant/images", async (c) => {
+  if (!db.getProject(c.req.param("id"))) return c.json({ error: "Proyecto no encontrado" }, 404);
+  const body = await c.req.json<{ name?: string; data?: string; mime?: string; mode?: string }>();
+  const img = parseImage(body.data, body.mime);
+  const name = body.name?.trim().slice(0, 120) || "imagen";
+  return c.json(db.addAssistantImage(c.req.param("id"), modeOf(body.mode), { name, ...img }));
+});
+
+/** :id is the local id, or the uid (same on every computer). */
+app.get("/api/assistant-images/:id/image", (c) => {
+  const key = c.req.param("id");
+  const img = /^\d+$/.test(key) ? db.getAssistantImage(Number(key)) : db.getAssistantImageByUid(key);
+  const data = img && db.assistantImageData(img.id);
+  if (!img || !data) return c.json({ error: "Imagen no encontrada" }, 404);
+  return c.body(Buffer.from(data, "base64"), 200, { "content-type": img.mime, "cache-control": "private, max-age=31536000, immutable" });
+});
+
+app.delete("/api/assistant-images/:id", (c) => {
+  db.deleteAssistantImage(Number(c.req.param("id")));
   return c.json({ ok: true });
 });
 

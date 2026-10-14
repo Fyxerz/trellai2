@@ -1,6 +1,6 @@
 import { ImagePlus, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { Annotation, Attachment, Card } from "../../shared/types";
+import type { Annotation, AssistantImage, Attachment, Card } from "../../shared/types";
 import { api, type Board } from "./api";
 import { confirmDialog } from "./Confirm";
 import { reportError } from "./notifications";
@@ -408,15 +408,23 @@ export function ImageEditor({ attachment, onClose, onSaved }: { attachment: Atta
   );
 }
 
+/** What a chat input needs to know to upload its images somewhere. */
+interface ImageTarget<T> {
+  /** Starting over (another card / conversation) drops what wasn't sent. */
+  key: string;
+  upload: (name: string, data: string) => Promise<T>;
+  remove: (item: T) => Promise<unknown>;
+  src: (item: T) => string;
+}
+
 /**
- * Images for a chat message: uploaded right away as the card's images (so the agent gets them
- * with the card from then on), sent as ids with the message. Removing one before sending deletes it.
+ * Images for a chat message, uploaded as soon as they're added (paste, drop or button) and sent as ids
+ * with the message. Removing one before sending deletes it. `strip` shows the thumbnails above the input.
  */
-export function useChatImages(card: Card) {
-  const [items, setItems] = useState<Attachment[]>([]);
+function useImageUploads<T extends { id: number; name: string }>(target: ImageTarget<T>, thumb?: (item: T) => { onOpen?: () => void; badge?: React.ReactNode }) {
+  const [items, setItems] = useState<T[]>([]);
   const [uploading, setUploading] = useState(0);
-  const [editing, setEditing] = useState<number | null>(null);
-  useEffect(() => setItems([]), [card.id]);
+  useEffect(() => setItems([]), [target.key]);
 
   const add = async (files: File[]) => {
     if (!files.length) return;
@@ -425,8 +433,8 @@ export function useChatImages(card: Card) {
       try {
         const data = await prepareImage(file);
         const name = file.name && file.name !== "image.png" ? file.name : `captura-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}`;
-        const att = await api<Attachment>(`/api/cards/${card.id}/attachments`, { name, data });
-        setItems((prev) => [...prev, att]);
+        const item = await target.upload(name, data);
+        setItems((prev) => [...prev, item]);
       } catch (e) {
         reportError(`No se pudo subir ${file.name || "la imagen"}: ${(e as Error).message}`);
       } finally {
@@ -434,9 +442,9 @@ export function useChatImages(card: Card) {
       }
     }
   };
-  const remove = (a: Attachment) => {
-    setItems((prev) => prev.filter((x) => x.id !== a.id));
-    void api(`/api/attachments/${a.id}`, undefined, "DELETE").catch((e) => reportError((e as Error).message));
+  const remove = (item: T) => {
+    setItems((prev) => prev.filter((x) => x.id !== item.id));
+    void target.remove(item).catch((e) => reportError((e as Error).message));
   };
   const onPaste = (e: React.ClipboardEvent) => {
     const files = imageFiles(e.clipboardData?.files);
@@ -450,38 +458,81 @@ export function useChatImages(card: Card) {
     e.preventDefault();
     void add(files);
   };
-  const current = items.find((a) => a.id === editing);
-  const strip =
+  const strip = (extra?: React.ReactNode) =>
     items.length || uploading ? (
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        {items.map((a) => (
-          <div key={a.id} className="group relative">
-            <button
-              onClick={() => setEditing(a.id)}
-              title="Marcar zonas y comentar"
-              className="block h-14 overflow-hidden rounded-md bg-zinc-900 ring-1 ring-zinc-800 hover:ring-indigo-400"
-            >
-              <img src={imageUrl(a)} alt={a.name} className="h-full w-auto max-w-[120px] object-cover" draggable={false} />
-            </button>
-            {a.annotations.length > 0 && (
-              <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded bg-rose-500 px-1 text-[10px] font-semibold text-white">{a.annotations.length}</span>
-            )}
-            <button
-              onClick={() => remove(a)}
-              aria-label={`Quitar ${a.name}`}
-              className="absolute -top-1.5 -right-1.5 rounded-full bg-zinc-800 p-0.5 text-zinc-300 ring-1 ring-zinc-700 hover:text-danger"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          </div>
-        ))}
+        {items.map((a) => {
+          const t = thumb?.(a) ?? {};
+          const img = <img src={target.src(a)} alt={a.name} className="h-full w-auto max-w-[120px] object-cover" draggable={false} />;
+          return (
+            <div key={a.id} className="group relative">
+              {t.onOpen ? (
+                <button
+                  onClick={t.onOpen}
+                  title="Marcar zonas y comentar"
+                  className="block h-14 overflow-hidden rounded-md bg-zinc-900 ring-1 ring-zinc-800 hover:ring-indigo-400"
+                >
+                  {img}
+                </button>
+              ) : (
+                <div title={a.name} className="h-14 overflow-hidden rounded-md bg-zinc-900 ring-1 ring-zinc-800">{img}</div>
+              )}
+              {t.badge}
+              <button
+                onClick={() => remove(a)}
+                aria-label={`Quitar ${a.name}`}
+                className="absolute -top-1.5 -right-1.5 rounded-full bg-zinc-800 p-0.5 text-zinc-300 ring-1 ring-zinc-700 hover:text-danger"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          );
+        })}
         {uploading > 0 && <Spinner />}
-        {current && (
-          <ImageEditor attachment={current} onClose={() => setEditing(null)} onSaved={(a) => setItems((prev) => prev.map((x) => (x.id === a.id ? a : x)))} />
-        )}
+        {extra}
       </div>
     ) : null;
-  return { items, ids: items.map((a) => a.id), uploading: uploading > 0, add, onPaste, onDrop, clear: () => setItems([]), strip };
+  return { items, setItems, ids: items.map((a) => a.id), uploading: uploading > 0, add, onPaste, onDrop, clear: () => setItems([]), strip };
+}
+
+/**
+ * Images for a card's chat message: uploaded right away as the card's images (so the agent gets them
+ * with the card from then on), sent as ids with the message. Click one to mark regions on it.
+ */
+export function useChatImages(card: Card) {
+  const [editing, setEditing] = useState<number | null>(null);
+  const up = useImageUploads<Attachment>(
+    {
+      key: card.id,
+      upload: (name, data) => api<Attachment>(`/api/cards/${card.id}/attachments`, { name, data }),
+      remove: (a) => api(`/api/attachments/${a.id}`, undefined, "DELETE"),
+      src: (a) => imageUrl(a),
+    },
+    (a) => ({
+      onOpen: () => setEditing(a.id),
+      badge: a.annotations.length > 0 && (
+        <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded bg-rose-500 px-1 text-[10px] font-semibold text-white">{a.annotations.length}</span>
+      ),
+    }),
+  );
+  const current = up.items.find((a) => a.id === editing);
+  const strip = up.strip(
+    current && (
+      <ImageEditor attachment={current} onClose={() => setEditing(null)} onSaved={(a) => up.setItems((prev) => prev.map((x) => (x.id === a.id ? a : x)))} />
+    ),
+  );
+  return { ...up, strip };
+}
+
+/** Images for a message to the project assistant (Tarjetas / Directo): kept apart until a card is made from them. */
+export function useAssistantImages(projectId: string, mode: AssistantImage["mode"]) {
+  const up = useImageUploads<AssistantImage>({
+    key: `${projectId}:${mode}`,
+    upload: (name, data) => api<AssistantImage>(`/api/projects/${projectId}/assistant/images`, { name, data, mode }),
+    remove: (a) => api(`/api/assistant-images/${a.id}`, undefined, "DELETE"),
+    src: (a) => `/api/assistant-images/${a.uid}/image`,
+  });
+  return { ...up, strip: up.strip() };
 }
 
 /** Paperclip-style button that opens the file picker for chat images. */

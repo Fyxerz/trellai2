@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import type {
   Annotation,
+  AssistantImage,
   AssistantMessage,
   Attachment,
   Card,
@@ -105,7 +106,19 @@ CREATE TABLE IF NOT EXISTS attachments (
   annotations TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL
 );
+-- images Pedro attaches to a message to the project assistant (no card yet)
+CREATE TABLE IF NOT EXISTS assistant_images (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid TEXT,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  mode TEXT NOT NULL DEFAULT 'plan',
+  name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  data TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_attachments_card ON attachments(card_id);
+CREATE INDEX IF NOT EXISTS idx_assistant_images_project ON assistant_images(project_id);
 CREATE INDEX IF NOT EXISTS idx_assistant_project ON assistant_messages(project_id);
 CREATE INDEX IF NOT EXISTS idx_checkpoints_card ON checkpoints(card_id);
 CREATE INDEX IF NOT EXISTS idx_cards_project ON cards(project_id);
@@ -195,7 +208,7 @@ CREATE TABLE IF NOT EXISTS local_kv (k TEXT PRIMARY KEY, v TEXT);
 `);
 
 /** Tables whose rows use a local INTEGER id; `uid` identifies them across computers. */
-export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages", "attachments"] as const;
+export const UID_TABLES = ["messages", "questions", "notes", "checkpoints", "assistant_messages", "attachments", "assistant_images"] as const;
 for (const t of UID_TABLES) {
   addColumn(t, "uid", "uid TEXT");
   db.exec(`UPDATE ${t} SET uid = lower(hex(randomblob(8))) WHERE uid IS NULL`);
@@ -665,6 +678,33 @@ export function copyAttachments(fromCardId: string, toCardId: string) {
     annotations: string;
   }[];
   for (const r of rows) addAttachment(toCardId, { ...r, annotations: safeJson(r.annotations, []) });
+}
+
+// ---------- images on assistant messages (base64, like attachments) ----------
+
+const ASSISTANT_IMAGE_COLS = "id, uid, project_id, mode, name, mime, created_at";
+
+export function addAssistantImage(projectId: string, mode: AssistantMode, a: { name: string; mime: string; data: string }): AssistantImage {
+  const r = db
+    .prepare("INSERT INTO assistant_images (uid, project_id, mode, name, mime, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(uid(), projectId, mode, a.name, a.mime, a.data, now());
+  return getAssistantImage(Number(r.lastInsertRowid))!;
+}
+
+export function getAssistantImage(id: number): AssistantImage | undefined {
+  return db.prepare(`SELECT ${ASSISTANT_IMAGE_COLS} FROM assistant_images WHERE id = ?`).get(id) as AssistantImage | undefined;
+}
+
+export function getAssistantImageByUid(uid: string): AssistantImage | undefined {
+  return db.prepare(`SELECT ${ASSISTANT_IMAGE_COLS} FROM assistant_images WHERE uid = ?`).get(uid) as AssistantImage | undefined;
+}
+
+export function assistantImageData(id: number): string | null {
+  return (db.prepare("SELECT data FROM assistant_images WHERE id = ?").get(id) as { data: string } | undefined)?.data ?? null;
+}
+
+export function deleteAssistantImage(id: number) {
+  db.prepare("DELETE FROM assistant_images WHERE id = ?").run(id);
 }
 
 // ---------- people (who uses Trellai) and project members ----------

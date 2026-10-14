@@ -6,6 +6,7 @@ import type { AssistantMessage, Project } from "../../shared/types";
 import { ModelPicker } from "./models";
 import { confirmDialog } from "./Confirm";
 import { api, type Board } from "./api";
+import { AddImageButton, useAssistantImages } from "./ImageEditor";
 import { Button, ChatHint, chatKeyDown, Markdown, Spinner } from "./ui";
 
 export type AssistantMode = AssistantMessage["mode"];
@@ -141,15 +142,15 @@ function Chat({ projectId, board, onOpenCard, mode }: { projectId: string; board
   const busy = useRef(false);
   const [sending, setSending] = useState(false);
   const dictation = useDictation(setText);
-
+  const images = useAssistantImages(projectId, mode);
 
   const send = async () => {
     const t = current.current.trim();
-    if (!t || busy.current) return;
+    if ((!t && !images.ids.length) || images.uploading || busy.current) return;
     if (dictation.listening) dictation.stop();
     busy.current = true; setSending(true);
     const submitted = current.current;
-    try { await api(`/api/projects/${projectId}/assistant`, { text: t, mode }); if (current.current === submitted) setText(""); }
+    try { await api(`/api/projects/${projectId}/assistant`, { text: t, mode, images: images.ids }); if (current.current === submitted) setText(""); images.clear(); }
     catch (e) { reportError((e as Error).message); }
     finally { busy.current = false; setSending(false); }
   };
@@ -215,7 +216,8 @@ function Chat({ projectId, board, onOpenCard, mode }: { projectId: string; board
       </div>
 
       {scroll.unread && <button onClick={scroll.jump} className="self-center rounded-full bg-indigo-500/10 px-3 py-1 text-xs text-accent">Nuevos mensajes ↓</button>}
-      <div className="border-t border-zinc-800 p-3">
+      <div className="border-t border-zinc-800 p-3" onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()} onDrop={images.onDrop}>
+        {images.strip}
         <div className={`flex items-end gap-2 rounded-lg bg-zinc-900 p-1.5 ring-1 ${dictation.listening ? "ring-red-500/60" : "ring-zinc-800 focus-within:ring-indigo-600"}`}>
           <textarea
             aria-label="Mensaje al asistente"
@@ -223,11 +225,13 @@ function Chat({ projectId, board, onOpenCard, mode }: { projectId: string; board
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => chatKeyDown(e, send, setText)}
+            onPaste={images.onPaste}
             rows={3}
             placeholder={running ? "Se lo paso en cuanto termine…" : copy.placeholder}
             className="ui-field max-h-60 min-h-[3.5rem] flex-1 resize-y bg-transparent px-2 py-1 text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
           />
           <div className="flex flex-col gap-1">
+            <AddImageButton onFiles={(f) => void images.add(f)} />
             {dictation.supported && (
               <button
                 onClick={() => (dictation.listening ? dictation.stop() : dictation.start(text))}
@@ -237,27 +241,46 @@ function Chat({ projectId, board, onOpenCard, mode }: { projectId: string; board
                 {dictation.listening ? "■" : "🎙"}
               </button>
             )}
-            <Button aria-label="Enviar mensaje" variant="primary" onClick={send} disabled={!text.trim() || sending} className="!px-2.5 !py-1.5">
+            <Button aria-label="Enviar mensaje" variant="primary" onClick={send} disabled={(!text.trim() && !images.ids.length) || images.uploading || sending} className="!px-2.5 !py-1.5">
               ↑
             </Button>
           </div>
         </div>
         <p className="mt-2 text-xs text-zinc-500">
           <ChatHint /> ·{" "}
-          {dictation.supported ? "🎙 para dictar" : "puedes usar el dictado del sistema"}
+          {dictation.supported ? "🎙 para dictar" : "puedes usar el dictado del sistema"} · pega o arrastra imágenes
         </p>
       </div>
     </>
   );
 }
 
-function Row({ m, onOpenCard }: { m: AssistantMessage; onOpenCard: (id: string) => void }) {
-  if (m.role === "user")
-    return (
-      <div className="flex justify-end">
-        <div className="ui-message max-w-[90%] rounded-2xl rounded-br-md bg-indigo-500/15 px-3 py-2 text-sm whitespace-pre-wrap text-zinc-100 ring-1 ring-indigo-500/20">{m.content}</div>
+const IMAGE_LINK = /!\[([^\]]*)\]\((\/api\/assistant-images\/[\w-]+\/image)\)/g;
+
+/** Your message: the text as you wrote it, and the images it carries below. */
+function UserMessage({ content }: { content: string }) {
+  const images = [...content.matchAll(IMAGE_LINK)].map((m) => ({ name: m[1], src: m[2] }));
+  const text = content.replace(IMAGE_LINK, "").trim();
+  return (
+    <div className="flex justify-end">
+      <div className="ui-message max-w-[90%] rounded-2xl rounded-br-md bg-indigo-500/15 px-3 py-2 text-sm whitespace-pre-wrap text-zinc-100 ring-1 ring-indigo-500/20">
+        {text}
+        {images.length > 0 && (
+          <div className={`flex flex-wrap justify-end gap-1.5 ${text ? "mt-2" : ""}`}>
+            {images.map((img, i) => (
+              <a key={i} href={img.src} target="_blank" rel="noreferrer" title={img.name} className="block overflow-hidden rounded-md ring-1 ring-indigo-400/20 hover:ring-indigo-400">
+                <img src={img.src} alt={img.name} className="max-h-40 w-auto max-w-full object-contain" />
+              </a>
+            ))}
+          </div>
+        )}
       </div>
-    );
+    </div>
+  );
+}
+
+function Row({ m, onOpenCard }: { m: AssistantMessage; onOpenCard: (id: string) => void }) {
+  if (m.role === "user") return <UserMessage content={m.content} />;
   if (m.role === "tool")
     return (
       <div className="truncate pl-1 font-mono text-[11px] text-zinc-500" title={m.content}>

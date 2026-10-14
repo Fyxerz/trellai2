@@ -6,7 +6,7 @@
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Annotation, Card } from "../shared/types.js";
+import type { Annotation, AssistantImage, Card } from "../shared/types.js";
 import * as db from "./db.js";
 import * as git from "./git.js";
 
@@ -152,12 +152,8 @@ export function withMessageImages(card: Card, repo: string, content: string): st
   return block ? `${content}\n\n${block}` : content;
 }
 
-/**
- * A prompt for Codex: the card's image files it mentions (to attach with `codex exec -i`), and the text
- * without the "open them with Read" instructions. Prompts without images come back unchanged.
- */
-export function forCodex(prompt: string, repo: string, cardId: string): { prompt: string; images: string[] } {
-  const dir = repo ? attachmentsDir(repo, cardId) : "";
+/** Image files in `dir` that `prompt` mentions, and the text without the "open them with Read" sentences. */
+function codexImages(prompt: string, dir: string): { prompt: string; images: string[] } {
   let files: string[] = [];
   try {
     files = dir ? readdirSync(dir).map((f) => join(dir, f)) : [];
@@ -167,4 +163,55 @@ export function forCodex(prompt: string, repo: string, cardId: string): { prompt
   const images = files.filter((f) => prompt.includes(`\`${f}\``));
   if (!images.length) return { prompt, images };
   return { prompt: prompt.replaceAll(READ_ALL, CODEX_ALL).replaceAll(READ_MESSAGE, CODEX_MESSAGE), images };
+}
+
+/**
+ * A prompt for Codex: the card's image files it mentions (to attach with `codex exec -i`), and the text
+ * without the "open them with Read" instructions. Prompts without images come back unchanged.
+ */
+export function forCodex(prompt: string, repo: string, cardId: string): { prompt: string; images: string[] } {
+  return codexImages(prompt, repo ? attachmentsDir(repo, cardId) : "");
+}
+
+// ---------- images on messages to the project assistant ----------
+
+export const assistantImagesDir = (repo: string, mode: db.AssistantMode) => join(repo, ".trellai", "attachments", `assistant-${mode}`);
+
+/** Messages to the assistant show their images as Markdown links to `/api/assistant-images/<uid>/image`. */
+export const assistantImageMarkdown = (a: { name: string; uid: string }) =>
+  `![${a.name.replace(/[[\]]/g, "")}](/api/assistant-images/${a.uid}/image)`;
+
+/**
+ * What the assistant gets for one of Pedro's messages: the text plus where to read the images it links to
+ * (written to `<repo>/.trellai/attachments/assistant-<mode>/`). Each image lists its uid, so
+ * `create_cards`/`update_card` can attach it to the card.
+ */
+export function withAssistantImages(projectId: string, mode: db.AssistantMode, repo: string, content: string): string {
+  const uids = [...content.matchAll(/\(\/api\/assistant-images\/([\w-]+)\/image\)/g)].map((m) => m[1]);
+  const images = [...new Set(uids)].map((u) => db.getAssistantImageByUid(u)).filter((a): a is AssistantImage => a?.project_id === projectId);
+  if (!repo || !images.length) return content;
+  try {
+    git.ensureExcluded(repo);
+  } catch {
+    /* not a repo (tests) — the folder is still fine */
+  }
+  const dir = assistantImagesDir(repo, mode);
+  mkdirSync(dir, { recursive: true });
+  const parts = images.map((a, i) => {
+    const file = join(dir, `${a.uid}-${slug(a.name)}.${IMAGE_MIMES[a.mime] ?? "png"}`);
+    writeIfChanged(file, Buffer.from(db.assistantImageData(a.id) ?? "", "base64"));
+    const lines = [`### Imagen ${i + 1}: ${a.name}`, `- File: \`${file}\``];
+    lines.push(`- uid: \`${a.uid}\` (pass it in \`images\` of create_cards/update_card to attach it to that card)`);
+    return lines.join("\n");
+  });
+  return [content, READ_MESSAGE, ...parts].filter(Boolean).join("\n\n");
+}
+
+/** Pedro's own words in a message to the assistant: without the image links nor the block for the agent. */
+export const withoutAssistantImages = (text: string) =>
+  text.split(READ_MESSAGE)[0].replace(/!\[[^\]]*\]\(\/api\/assistant-images\/[\w-]+\/image\)/g, "").trim();
+
+/** A prompt for Codex with the assistant's image files it mentions attached (see `forCodex`). */
+export function assistantForCodex(prompt: string, repo: string, mode: db.AssistantMode): { prompt: string; images: string[] } {
+  return codexImages(prompt, repo ? assistantImagesDir(repo, mode) : "");
 }
