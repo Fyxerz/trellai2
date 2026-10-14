@@ -337,6 +337,17 @@ export interface AssistantMessage {
   created_at: string;
 }
 
+/** An image Pedro attached to a message to the project assistant. */
+export interface AssistantImage {
+  id: number;
+  uid: string;
+  project_id: string;
+  mode: "plan" | "do";
+  name: string;
+  mime: string;
+  created_at: string;
+}
+
 /** A rectangle on an image, in relative coordinates (0–1), with Pedro's comment. */
 export interface Annotation {
   x: number;

@@ -878,6 +878,7 @@ function mergeProject(fromId: string, intoId: string) {
     }
     sqlite.prepare("UPDATE notes SET project_id = ? WHERE project_id = ?").run(intoId, fromId);
     sqlite.prepare("UPDATE assistant_messages SET project_id = ? WHERE project_id = ?").run(intoId, fromId);
+    sqlite.prepare("UPDATE assistant_images SET project_id = ? WHERE project_id = ?").run(intoId, fromId);
     if (!into.repo_path && from.repo_path) sqlite.prepare("UPDATE projects SET repo_path = ? WHERE id = ?").run(from.repo_path, intoId);
     // The cards' messages, checkpoints… didn't change, so the triggers didn't see them: send them too.
     if (triggersOn && cards.length) {

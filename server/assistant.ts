@@ -4,13 +4,14 @@
  */
 import { z } from "zod";
 import { prettyModel } from "../shared/models.js";
-import { COLUMN_LABELS, type Column } from "../shared/types.js";
+import { COLUMN_LABELS, type AssistantImage, type Column } from "../shared/types.js";
 import * as db from "./db.js";
-import { emitAssistantMessage, emitAssistantStatus, emitCard, emitCheckpoints } from "./events.js";
+import { assistantForCodex, assistantImageMarkdown, withAssistantImages, withoutAssistantImages } from "./attachments.js";
+import { emitAssistantMessage, emitAssistantStatus, emitAttachments, emitCard, emitCheckpoints } from "./events.js";
 import * as git from "./git.js";
 import * as remote from "./remote.js";
 import { getPreview, releasePreview } from "./preview.js";
-import { modelLabel, runEngine, type ToolSpec } from "./engine.js";
+import { modelLabel, parseModel, runEngine, type ToolSpec } from "./engine.js";
 
 type Mode = db.AssistantMode;
 const running = new Map<string, AbortController>();
@@ -39,6 +40,7 @@ files, fix a typo or a small bug, update a dependency, add a script, answer a qu
 - Do exactly what was asked, keep the change small and focused, and verify it (run tests/typecheck if relevant).
 - Don't switch branches, don't push, don't rewrite history. Trellai commits your changes automatically when you
   finish (only the files you changed), using Pedro's request as the message.
+- If Pedro's message comes with images, open them (they're listed with their files) — they show what he means.
 - If the request is really a feature (several parts, design decisions, lots of files), say so and offer to create a
   card instead — you have \`create_cards\` for that (and \`list_cards\`/\`update_card\`).
 
@@ -63,6 +65,8 @@ How to write cards:
   names (those go in **Notas técnicas**). For purely technical work, one clear sentence about the outcome.
 - Column: "backlog" by default. Use "plan" only if Pedro says it's ready to be worked on.
 - Area: "ui" if the card is mainly interface/visual/styling work, "logic" for algorithms, data or backend.
+- Images: if Pedro's message comes with images (listed with their file and uid), look at them, and pass the uids of
+  the ones that belong to a card in \`images\` (\`create_cards\` / \`update_card\`) so they get attached to it.
 
 Before creating cards:
 - Call \`list_cards\` to see what already exists. If Pedro is talking about an existing card, UPDATE it
@@ -87,6 +91,21 @@ export function makeAssistantToolkit(projectId: string, mode: Mode = "plan") {
   const say = (content: string, cardId: string | null = null) =>
     emitAssistantMessage(db.addAssistantMessage(projectId, mode, "system", content, cardId));
 
+  /** Copy images Pedro sent to this assistant onto a card, as its attachments. */
+  const attachImages = (cardId: string, uids: string[] = []) => {
+    let n = 0;
+    for (const uid of new Set(uids)) {
+      const img = db.getAssistantImageByUid(uid.trim());
+      const data = img?.project_id === projectId ? db.assistantImageData(img.id) : null;
+      if (!img || !data) continue;
+      db.addAttachment(cardId, { name: img.name, mime: img.mime, data });
+      n++;
+    }
+    if (n) emitAttachments(projectId, cardId);
+    return n;
+  };
+  const withImages = (n: number) => (n ? ` · 🖼 ${n}` : "");
+
   return {
     listCards: () => cardSummary(projectId),
     getCard(id: string) {
@@ -96,7 +115,7 @@ export function makeAssistantToolkit(projectId: string, mode: Mode = "plan") {
       return `# ${c.title}\nColumn: ${COLUMN_LABELS[c.column]}\n\n## Spec\n${c.spec || "(empty)"}\n\n## Checkpoints\n${cps || "(none)"}`;
     },
     createCards(
-      cards: { title: string; spec: string; checkpoints?: string[]; column?: "backlog" | "plan"; area?: "ui" | "logic" }[],
+      cards: { title: string; spec: string; checkpoints?: string[]; column?: "backlog" | "plan"; area?: "ui" | "logic"; images?: string[] }[],
     ) {
       const created: string[] = [];
       const uiModel = db.getProject(projectId)?.model_ui;
@@ -104,20 +123,22 @@ export function makeAssistantToolkit(projectId: string, mode: Mode = "plan") {
         let card = db.createCard({ project_id: projectId, title: c.title.trim(), spec: c.spec ?? "", column: c.column ?? "backlog" });
         if (c.area === "ui" && uiModel) card = db.updateCard(card.id, { model: uiModel });
         for (const t of c.checkpoints ?? []) if (t.trim()) db.addCheckpoint(card.id, t.trim(), "agent");
+        const imgs = attachImages(card.id, c.images);
         emitCard(card.id);
-        say(`🗂 Creada en ${COLUMN_LABELS[card.column as Column]}: ${card.title}${card.model ? ` · ${modelLabel(card.model)}` : ""}`, card.id);
+        say(`🗂 Creada en ${COLUMN_LABELS[card.column as Column]}: ${card.title}${card.model ? ` · ${modelLabel(card.model)}` : ""}${withImages(imgs)}`, card.id);
         created.push(`${card.id}: ${card.title}`);
       }
       return `Created ${created.length} card(s):\n${created.join("\n")}`;
     },
-    updateCard(id: string, patch: { title?: string; spec?: string; add_checkpoints?: string[] }) {
+    updateCard(id: string, patch: { title?: string; spec?: string; add_checkpoints?: string[]; images?: string[] }) {
       const c = db.getCard(id);
       if (!c || c.project_id !== projectId) return `No card with id ${id}.`;
       const updated = db.updateCard(id, { title: patch.title?.trim() || undefined, spec: patch.spec });
       for (const t of patch.add_checkpoints ?? []) if (t.trim()) db.addCheckpoint(id, t.trim(), "agent");
+      const imgs = attachImages(id, patch.images);
       emitCheckpoints(projectId, id);
       emitCard(updated);
-      say(`✏️ Actualizada: ${updated.title}`, id);
+      say(`✏️ Actualizada: ${updated.title}${withImages(imgs)}`, id);
       return `Card ${id} updated.`;
     },
   };
@@ -142,6 +163,7 @@ function assistantTools(kit: ReturnType<typeof makeAssistantToolkit>): ToolSpec[
                 .enum(["ui", "logic"])
                 .optional()
                 .describe("ui = mainly interface/visual/styling work; logic = algorithms, data, backend. Used to pick the model."),
+              images: z.array(z.string()).optional().describe("uids of images from Pedro's message to attach to this card"),
             }),
           )
           .min(1),
@@ -150,24 +172,33 @@ function assistantTools(kit: ReturnType<typeof makeAssistantToolkit>): ToolSpec[
     },
     {
       name: "update_card",
-      description: "Update an existing card: rename it, replace its spec, or add checkpoints.",
+      description: "Update an existing card: rename it, replace its spec, add checkpoints, or attach images from Pedro's message.",
       shape: {
         id: z.string(),
         title: z.string().optional(),
         spec: z.string().optional().describe("Full new spec (replaces the old one)"),
         add_checkpoints: z.array(z.string()).optional(),
+        images: z.array(z.string()).optional().describe("uids of images from Pedro's message to attach to this card"),
       },
       run: ({ id, ...patch }) => kit.updateCard(id, patch),
     },
   ];
 }
 
-/** Send Pedro's message to the assistant. Queued if it's already busy. */
-export function sendToAssistant(projectId: string, text: string, mode: Mode = "plan") {
+/** Send Pedro's message (and the ids of the images uploaded for it) to the assistant. Queued if it's already busy. */
+export function sendToAssistant(projectId: string, said: string, mode: Mode = "plan", imageIds: number[] = []) {
   const project = db.getProject(projectId);
   if (!project) throw new Error("Proyecto no encontrado");
   if (!project.repo_path) throw new Error(`"${project.name}" no está vinculado en este ordenador: elige su carpeta o clónalo desde el tablero.`);
-  emitAssistantMessage(db.addAssistantMessage(projectId, mode, "user", text));
+  const images = imageIds
+    .map((id) => db.getAssistantImage(id))
+    .filter((a): a is AssistantImage => a?.project_id === projectId)
+    .map(assistantImageMarkdown);
+  const shown = [said, images.join("\n")].filter(Boolean).join("\n\n");
+  if (!shown) throw new Error("Mensaje vacío");
+  emitAssistantMessage(db.addAssistantMessage(projectId, mode, "user", shown));
+  // what the agent reads: the message plus where its images are (also when it waits in the queue)
+  const text = withAssistantImages(projectId, mode, project.repo_path, shown);
   if (running.has(key(projectId, mode))) {
     db.pushAssistantPending(projectId, mode, text);
     return;
@@ -187,7 +218,7 @@ function earlierConversation(projectId: string, mode: Mode): string {
 }
 
 function commitMessage(request: string) {
-  const raw = request.split("\n").find((l) => l.trim())?.trim() ?? "Cambio directo";
+  const raw = withoutAssistantImages(request).split("\n").find((l) => l.trim())?.trim() ?? "Cambio directo";
   const first = raw.charAt(0).toUpperCase() + raw.slice(1);
   return first.length > 72 ? first.slice(0, 69) + "…" : first;
 }
@@ -228,13 +259,18 @@ async function run(projectId: string, mode: Mode, text: string): Promise<void> {
     } else {
       const resume = db.getAssistantSession(projectId, mode);
       const board = `Current board:\n${cardSummary(projectId)}`;
+      const model = mode === "plan" ? project.model_plan : project.model_do;
+      const prompt = !resume
+        ? [mode === "plan" ? board : "", earlierConversation(projectId, mode), `Pedro says:\n${text}`].filter(Boolean).join("\n\n")
+        : text;
+      // Codex has no Read tool: the images go attached to the message instead
+      const codex = parseModel(model).engine === "codex" ? assistantForCodex(prompt, project.repo_path, mode) : null;
       const res = await runEngine({
-        model: mode === "plan" ? project.model_plan : project.model_do,
+        model,
         cwd: project.repo_path,
         instructions: mode === "plan" ? PROMPT : DIRECT_PROMPT,
-        prompt: !resume
-          ? [mode === "plan" ? board : "", earlierConversation(projectId, mode), `Pedro says:\n${text}`].filter(Boolean).join("\n\n")
-          : text,
+        prompt: codex?.prompt ?? prompt,
+        images: codex?.images,
         resume,
         contextIfFresh: mode === "plan" ? board : undefined,
         access: mode === "plan" ? "read" : "write",
