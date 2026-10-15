@@ -497,7 +497,7 @@ export default function App() {
               title={
                 limitHit
                   ? "Se ha alcanzado el límite de uso: Trellai no lanza más agentes hasta que se levante (o pulses Reintentar en una tarjeta en cola)"
-                  : `Esperan a que acabe alguno de los ${project!.max_agents ?? 3} agentes que trabajan a la vez (Ajustes → Flujo)`
+                  : `Esperan a que acabe alguno de los ${project!.max_agents ?? 3} agentes de Doing que trabajan a la vez (Ajustes → Flujo). La preparación no espera.`
               }
             >
               <Clock className="h-3 w-3" />

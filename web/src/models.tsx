@@ -603,7 +603,7 @@ function FlowSettings({ project, onSaved }: { project: Project; onSaved: () => v
   );
 }
 
-/** How many card agents run at once on this computer (the rest wait «En cola»). */
+/** How many agents of cards in Doing run at once on this computer (the rest wait «En cola»; preparation doesn't count). */
 function MaxAgentsSetting({ project, onSaved }: { project: Project; onSaved: () => void }) {
   const current = project.max_agents ?? DEFAULT_MAX_AGENTS;
   const [value, setValue] = useState(String(current));
@@ -624,10 +624,11 @@ function MaxAgentsSetting({ project, onSaved }: { project: Project; onSaved: () 
     <div className="flex items-start gap-3">
       <div className="min-w-0 flex-1">
         <label htmlFor="max-agents" className="text-sm text-zinc-200">
-          Agentes trabajando a la vez
+          Agentes en Doing trabajando a la vez
         </label>
         <div className="text-[11px] text-zinc-500">
-          Cuentan los de preparación, desarrollo y conflictos. Si hay más tarjetas, las demás esperan «En cola» y arrancan solas cuando acaba un agente.
+          Cuentan solo las tarjetas en Doing (desarrollo y conflictos). Si hay más, las demás esperan «En cola» y arrancan solas cuando acaba un agente. La
+          preparación no cuenta ni espera.
           Cuantos más a la vez, más deprisa se gasta tu límite de uso.
         </div>
       </div>

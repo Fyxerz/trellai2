@@ -23,7 +23,7 @@ export const COLUMN_LABELS: Record<Column, string> = {
  * running  – an agent is working on the card
  * waiting  – the agent needs something from you (questions / a reply)
  * ready    – prepared and waiting to be moved to Doing (nothing needed from you)
- * queued   – its agent waits for a free slot (the project's max_agents); starts by itself
+ * queued   – its agent waits for a free slot (the project's max_agents, Doing only) or for a usage limit to lift; starts by itself
  * error    – something failed; see status_text
  */
 export type CardStatus = "idle" | "running" | "waiting" | "ready" | "queued" | "error";
@@ -56,7 +56,7 @@ export interface Project {
   auto_doing: boolean;
   /** Command that starts the app for the Vista (null = detected from package.json: `npm run dev`…) */
   preview_command: string | null;
-  /** Card agents (preparation, development, conflicts) running at once on each computer; the rest wait «En cola» */
+  /** Agents of cards in Doing (development, conflicts) running at once on each computer; the rest wait «En cola». Preparation doesn't count. */
   max_agents: number;
   created_at: string;
 }

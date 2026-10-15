@@ -485,11 +485,13 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   const phase = kind === "prep" ? "Preparación" : opts.conflict ? "Conflictos" : "Desarrollo";
 
   try {
-    // At most max_agents at once per project: otherwise it waits «En cola» (and still counts as running).
+    // At most max_agents in Doing at once per project: otherwise it waits «En cola» (and still counts as running).
+    // Preparation doesn't count and only waits if the engine hit the usage limit.
     const go = await slots.acquire({
       cardId: card.id,
       projectId: card.project_id,
       engine,
+      kind,
       signal: abort.signal,
       first: opts.first,
       onWait: (text, why) => opts.onQueued?.(text, why),

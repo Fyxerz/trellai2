@@ -187,7 +187,7 @@ async function launch(card: Card, kind: AgentKind, prompt: string, resume: strin
           "system",
           why === "limit"
             ? "⏳ En cola hasta que se levante el límite de uso (o pulses Reintentar)."
-            : `⏳ En cola: ya hay ${slots.maxAgents(card.project_id)} agentes trabajando en este proyecto, el máximo (Ajustes → Flujo). Arranca sola en cuanto acabe uno.`,
+            : `⏳ En cola: ya hay ${slots.maxAgents(card.project_id)} agentes trabajando en Doing en este proyecto, el máximo (Ajustes → Flujo). Arranca sola en cuanto acabe uno.`,
         );
       waited = true;
       set(card.id, { status: "queued", status_text: text, machine: MACHINE, stop_req: null });

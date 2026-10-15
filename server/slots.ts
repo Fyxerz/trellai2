@@ -1,10 +1,12 @@
 /**
- * Agent slots: at most `max_agents` card agents (preparation, development, conflicts) run at once per
+ * Agent slots: at most `max_agents` agents of cards in Doing (development and conflicts) run at once per
  * project on this computer. The rest wait «En cola» in arrival order and start by themselves when one
- * finishes. When an engine says the account hit its session / usage limit, nobody else on that engine
- * is launched until the limit resets (when it said when) or Pedro presses Reintentar.
+ * finishes. Preparation is short and read-only: it takes no slot and never waits for one.
+ * When an engine says the account hit its session / usage limit, nobody else on that engine (preparation
+ * included) is launched until the limit resets (when it said when) or Pedro presses Reintentar.
  */
 import { DEFAULT_MAX_AGENTS } from "../shared/types.js";
+import type { AgentKind } from "./agents.js";
 import * as db from "./db.js";
 import type { Engine } from "./engine.js";
 
@@ -12,6 +14,8 @@ interface Waiter {
   cardId: string;
   projectId: string;
   engine: Engine;
+  /** preparation: takes no slot, only waits out an engine's pause */
+  prep: boolean;
   onWait: (text: string, why: "full" | "limit") => void;
   /** last text shown, to only call onWait when it changes */
   shown: string;
@@ -35,7 +39,7 @@ function show(w: Waiter) {
   const p = pauses.get(w.engine);
   const text = p
     ? `En cola — límite de ${ENGINE_NAME[w.engine]} alcanzado (${p.until ? `sigue sola a las ${hhmm(p.until)}` : "pulsa Reintentar para seguir"})`
-    : `En cola (posición ${line.filter((x) => x.projectId === w.projectId).indexOf(w) + 1})`;
+    : `En cola (posición ${line.filter((x) => x.projectId === w.projectId && !x.prep).indexOf(w) + 1})`;
   if (text === w.shown) return;
   w.shown = text;
   w.onWait(text, p ? "limit" : "full");
@@ -45,16 +49,18 @@ function refresh() {
   for (const w of line) show(w);
 }
 
-/** Start whoever fits in the project's free slots, in order (a paused engine's cards stay in line). */
+/** Start whoever fits in the project's free slots, in order (a paused engine's cards stay in line; preparation needs no slot). */
 export function pump(projectId: string) {
   const slots = active.get(projectId) ?? new Set<string>();
   active.set(projectId, slots);
   const max = maxAgents(projectId);
   for (const w of line.filter((x) => x.projectId === projectId)) {
-    if (slots.size >= max) break;
     if (pauses.has(w.engine)) continue;
+    if (!w.prep) {
+      if (slots.size >= max) continue;
+      slots.add(w.cardId);
+    }
     line = line.filter((x) => x !== w);
-    slots.add(w.cardId);
     w.start(true);
   }
   refresh();
@@ -63,11 +69,13 @@ export function pump(projectId: string) {
 /**
  * Wait for a slot; `first` waits at the head of the line (work that was already under way). Resolves
  * true when the agent may start (call release() when it ends), false if `signal` aborts first.
+ * A preparation agent (`kind: "prep"`) starts at once unless its engine is paused.
  */
 export function acquire(o: {
   cardId: string;
   projectId: string;
   engine: Engine;
+  kind: AgentKind;
   signal: AbortSignal;
   first?: boolean;
   onWait: Waiter["onWait"];
@@ -84,6 +92,7 @@ export function acquire(o: {
       cardId: o.cardId,
       projectId: o.projectId,
       engine: o.engine,
+      prep: o.kind === "prep",
       onWait: o.onWait,
       shown: "",
       start: (ok) => {

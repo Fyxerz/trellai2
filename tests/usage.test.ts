@@ -83,7 +83,7 @@ describe("agent slots", () => {
     const started: string[] = [];
     const wait = (id: string, signal = new AbortController().signal, first = false) =>
       slots
-        .acquire({ cardId: id, projectId, engine: "claude", signal, first, onWait: (t) => (texts[id] = t) })
+        .acquire({ cardId: id, projectId, engine: "claude", kind: "dev", signal, first, onWait: (t) => (texts[id] = t) })
         .then((ok) => void started.push(`${id}:${ok}`));
 
     await wait("a");
@@ -122,9 +122,9 @@ describe("agent slots", () => {
     db.updateProject(projectId, { max_agents: 1 });
     const signal = new AbortController().signal;
     const onWait = () => {};
-    await slots.acquire({ cardId: "x", projectId, engine: "claude", signal, onWait });
+    await slots.acquire({ cardId: "x", projectId, engine: "claude", kind: "dev", signal, onWait });
     let yStarted = false;
-    const y = slots.acquire({ cardId: "y", projectId, engine: "claude", signal, onWait }).then(() => (yStarted = true));
+    const y = slots.acquire({ cardId: "y", projectId, engine: "claude", kind: "dev", signal, onWait }).then(() => (yStarted = true));
     await tick();
     expect(yStarted).toBe(false);
     db.updateProject(projectId, { max_agents: 2 });
@@ -133,5 +133,51 @@ describe("agent slots", () => {
     expect(yStarted).toBe(true);
     slots.release(projectId, "x");
     slots.release(projectId, "y");
+  });
+
+  it("preparation takes no slot and never waits for one, only for a usage limit; in Doing it queues again", async () => {
+    db.updateProject(projectId, { max_agents: 1 });
+    const texts: Record<string, string> = {};
+    const started: string[] = [];
+    const wait = (id: string, kind: "prep" | "dev", first = false) =>
+      slots
+        .acquire({ cardId: id, projectId, engine: "claude", kind, signal: new AbortController().signal, first, onWait: (t) => (texts[id] = t) })
+        .then((ok) => void started.push(`${id}:${ok}`));
+
+    await wait("dev1", "dev");
+    const dev2 = wait("dev2", "dev");
+    await wait("prep1", "prep"); // the only slot is taken, and one waits for it: preparation starts anyway
+    await wait("prep2", "prep");
+    expect(started).toEqual(["dev1:true", "prep1:true", "prep2:true"]);
+    expect(texts).toEqual({ dev2: "En cola (posición 1)" });
+    expect(slots.queued(projectId)).toBe(1);
+
+    // prep1 is ready and moves to Doing: now it asks for a slot like anyone
+    slots.release(projectId, "prep1");
+    const prep1Dev = wait("prep1", "dev");
+    await tick();
+    expect(texts.prep1).toBe("En cola (posición 2)");
+    expect(texts.dev2).toBe("En cola (posición 1)");
+
+    // the engine hit its usage limit: preparation waits too
+    slots.pause("claude", null);
+    const prep3 = wait("prep3", "prep");
+    await tick();
+    expect(started).not.toContain("prep3:true");
+    expect(texts.prep3).toBe("En cola — límite de Claude alcanzado (pulsa Reintentar para seguir)");
+    slots.release(projectId, "dev1");
+    await tick();
+    expect(started).not.toContain("dev2:true"); // nobody starts while paused
+
+    slots.resume();
+    await Promise.all([prep3, dev2]);
+    expect(started.slice(-2).sort()).toEqual(["dev2:true", "prep3:true"]);
+    expect(texts.prep1).toBe("En cola (posición 1)");
+
+    slots.release(projectId, "dev2");
+    await prep1Dev;
+    expect(started.at(-1)).toBe("prep1:true");
+    for (const id of ["prep1", "prep2", "prep3"]) slots.release(projectId, id);
+    expect(slots.queued(projectId)).toBe(0);
   });
 });

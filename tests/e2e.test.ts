@@ -487,6 +487,30 @@ describe("what agents spend and how many run at once", () => {
     expect(msgs.filter((m) => m.startsWith("💸"))).toHaveLength(1); // one run, message included
   }, 30000);
 
+  it("only Doing counts: with 3 at work a 4th in Doing waits, a card in Preparation starts and queues once in Doing", async () => {
+    const make = (title: string, spec: string) => api<Card>("/api/cards", { project_id: projectId, title, spec, column: "plan" });
+    const busy = await Promise.all(["Hueco 1", "Hueco 2", "Hueco 3"].map((t) => make(t, "slow")));
+    const fourth = await make("Hueco 4", "x");
+    const prep = await make("Hueco prep", "x");
+    for (const c of busy) await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    for (const c of busy) await waitFor(c.id, (x) => x.status === "running");
+    await api(`/api/cards/${fourth.id}/move`, { column: "doing" });
+    expect((await waitFor(fourth.id, (x) => x.status === "queued")).status_text).toBe("En cola (posición 1)");
+
+    await api(`/api/projects/${projectId}`, { auto_doing: true }, "PATCH");
+    await api(`/api/cards/${prep.id}/move`, { column: "preparation" });
+    // prepared while the three still work, then in Doing it waits its turn behind the 4th
+    const inDoing = await waitFor(prep.id, (x) => x.column === "doing" && x.status === "queued");
+    expect(inDoing.status_text).toBe("En cola (posición 2)");
+    for (const c of busy) expect((await card(c.id)).status).toBe("running");
+    const msgs = (await api<any[]>(`/api/cards/${prep.id}/messages`)).map((m) => m.content);
+    const ready = msgs.findIndex((m) => m.startsWith("✅ Spec clara"));
+    expect(ready).toBeGreaterThan(-1);
+    expect(msgs.findIndex((m) => m.startsWith("⏳ En cola"))).toBeGreaterThan(ready); // it only waited once in Doing
+
+    await Promise.all([...busy, fourth, prep].map((c) => waitFor(c.id, (x) => x.column === "review" && x.status === "idle", 15000)));
+  }, 30000);
+
   it("hitting the session limit stops launching the line until Reintentar, then both carry on", async () => {
     const a = await api<Card>("/api/cards", { project_id: projectId, title: "Límite A", spec: "limit", column: "plan" });
     await api(`/api/cards/${a.id}/move`, { column: "doing" });
