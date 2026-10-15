@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { prettyModel } from "../shared/models.js";
-import type { Card } from "../shared/types.js";
+import { describeUsage, type Card } from "../shared/types.js";
 import * as claims from "./claims.js";
 import * as db from "./db.js";
 import { emitCard, emitCheckpoints, emitMessage, emitNote, emitQuestions } from "./events.js";
@@ -9,7 +9,9 @@ import { commitAll } from "./git.js";
 import { followPreview } from "./preview.js";
 import { pushCardBranch } from "./remote.js";
 import { forCodex } from "./attachments.js";
-import { parseModel, runEngine, type ToolSpec } from "./engine.js";
+import { parseModel, runEngine, type EngineResult, type ToolSpec } from "./engine.js";
+import * as slots from "./slots.js";
+import { recordUsage } from "./usage.js";
 
 export type AgentKind = "prep" | "dev";
 
@@ -56,6 +58,14 @@ export interface RunOptions {
   /** Main checkout; used as config root when running inside a worktree. */
   repo: string;
   resume?: string | null;
+  /** A light agent that only rebases the card's branch and resolves the conflicts (no subagents, no notes). */
+  conflict?: boolean;
+  /** Wait at the head of the line for a free slot (work that was already under way). */
+  first?: boolean;
+  /** No free slot: the card waits «En cola» (called again whenever the text changes). */
+  onQueued?: (statusText: string, why: "full" | "limit") => void;
+  /** The agent is about to start; may return text to add to the prompt (messages sent while it waited). */
+  onStart?: () => string | undefined;
 }
 
 export interface RunResult {
@@ -64,6 +74,8 @@ export interface RunResult {
   error?: string;
   sessionId: string | null;
   signals: Signals;
+  /** It stopped because the account hit its session / usage limit. */
+  limit?: EngineResult["limit"];
 }
 
 const running = new Map<string, AbortController>();
@@ -94,11 +106,12 @@ can be implemented without important ambiguity.
   concrete questions, each with 2–4 short options, then END YOUR TURN. Do not ask about things you can decide
   yourself with good judgement — Pedro wants you to be autonomous.
 - Otherwise decide HOW the work should be done, by size:
-  a) Small or tightly coupled work → \`mark_ready\` as usual.
-  b) ONE feature with several pieces that can be built at the same time in the same branch (e.g. backend
-     endpoint + UI + tests, or several independent screens) → \`mark_ready\` with \`parallel\`: 2–5 parts, each
-     with a name, its scope and the files it touches. Parts must not edit the same files. The developer agent
-     then runs one subagent per part in parallel and integrates the result.
+  a) Small, medium or tightly coupled work → \`mark_ready\` as usual: one agent does it alone.
+  b) ONE really big feature — roughly 10+ files or several screens — whose pieces can be built at the same time
+     in the same branch (e.g. backend endpoints + several screens + tests) → \`mark_ready\` with \`parallel\`: 2–5
+     parts, each with a name, its scope and the files it touches. Parts must not edit the same files. The
+     developer agent then runs one subagent per part in parallel and integrates the result. Subagents cost far
+     more than one agent working alone, so never use \`parallel\` for small or medium cards.
   c) SEVERAL independent features that touch DIFFERENT files and are each worth a card on its own → call
      \`split_card\` instead of \`mark_ready\`: 2–5 sub-cards, each with its own title, spec, checkpoints and the
      files it will touch. They all start at the same time on their own branches and coordinate through notes, so
@@ -141,10 +154,11 @@ How to work:
    committed when you finish, and the branch is rebased for you. Don't rewrite history.
 4. Coordination: whenever you change something other agents may depend on or collide with (shared files,
    DB schema, public APIs, shared components, new helpers, config, dependencies), call \`post_note\` with a short,
-   concrete message, passing \`files\` when it's about specific files (only agents on those files get it; leave it
-   empty for things that affect everyone, like a schema or a new dependency). Notes that concern you — about your
-   files, addressed to you, or general — are injected into your context automatically; take them into account.
-   \`read_notes\` shows them again together with what each agent is touching.
+   concrete message of 1–3 lines (what changed and where; no code, no diffs), passing \`files\` when it's about
+   specific files (only agents on those files get it; leave it empty for things that affect everyone, like a schema
+   or a new dependency). Notes that concern you — about your files, addressed to you, or general — are injected into
+   your context automatically; take them into account. \`read_notes\` shows them in full together with what each
+   agent is touching.
 5. Only if you are truly blocked by a decision that only Pedro can make, call \`ask_questions\` and end your turn.
 6. The card has CHECKPOINTS (listed with their ids in your first message; \`list_checkpoints\` shows them again).
    Each time you finish one, call \`check_checkpoint\` with its id so Pedro sees progress live. If you discover
@@ -152,13 +166,30 @@ How to work:
    what Pedro will notice (e.g. "Los adjuntos también se ven en el móvil"), not code details.
    All checkpoints should be done before you finish.
 7. When finished, call \`report_done\` with a short summary in Spanish of what you did and how to test it.
-8. If the notes from preparation have a "Reparto en paralelo" section, go faster by delegating: launch one
-   subagent per part with your Agent (Task) tool, ALL in the same message so they run at the same time, telling
-   each its scope, its files, the spec, and that it must not touch the other parts' files nor commit. Don't edit
-   their files meanwhile. When they finish, review and integrate their work, run the tests, then check the
-   checkpoints yourself. If you have no subagent tool, do the parts one after another.
+8. Work alone: don't launch subagents (Agent / Task tool) — each one re-reads the whole context and costs as much
+   as another agent. The only exception: if the notes from preparation have a "Reparto en paralelo" section (big
+   cards only), delegate: launch one subagent per part with your Agent (Task) tool, ALL in the same message so they
+   run at the same time, telling each its scope, its files, the spec, and that it must not touch the other parts'
+   files nor commit. Don't edit their files meanwhile. When they finish, review and integrate their work, run the
+   tests, then check the checkpoints yourself. If you have no subagent tool, do the parts one after another.
 
 Write to Pedro in Spanish. Be brief.`;
+
+const CONFLICT_PROMPT = `You are working inside Trellai, a kanban board where a human (Pedro) hands features to Claude agents.
+Another agent already implemented this card on its own git branch; your current working directory is that branch's
+worktree. Your only job: bring the branch up to date with the base branch — rebase it and resolve the conflicts so
+both this card's feature and the work merged meanwhile keep working.
+
+- Work alone (no subagents) and touch only what the conflicts need: don't redo the feature or add new work.
+- Use git to understand both sides: \`git log\`, \`git diff\` and \`git show\` on the conflicting files.
+- Run the project's tests / typecheck if it has them.
+- When the rebase is done, call \`report_done\` with one line in Spanish. Only if a conflict needs a decision that
+  only Pedro can make, call \`ask_questions\` and end your turn.
+
+Write to Pedro in Spanish. Be brief.`;
+
+/** Longest note an agent can post (the rest is cut): notes reach every agent on those files, in every call. */
+export const NOTE_MAX = 600;
 
 // ---------------------------------------------------------------------------
 // Tool handlers (shared by the real SDK agent and the fake one)
@@ -201,10 +232,18 @@ export function makeToolkit(card: Card, signals: Signals) {
       return `Card split into ${valid.length} sub-cards. End your turn now.`;
     },
     postNote(message: string, files: string[] = []) {
-      const note = db.addNote(card.project_id, card.id, message, { files: files.map((f) => f.trim()).filter(Boolean) });
+      const text = message.length > NOTE_MAX ? `${message.slice(0, NOTE_MAX).trimEnd()}…` : message;
+      const note = db.addNote(card.project_id, card.id, text, { files: files.map((f) => f.trim()).filter(Boolean) });
       emitNote(note);
-      log("system", `📣 Nota${note.files.length ? ` (${note.files.join(", ")})` : ""}: ${message}`);
-      return note.files.length ? `Note posted to the agents working on ${note.files.join(", ")}.` : "Note posted to all the other agents.";
+      log("system", `📣 Nota${note.files.length ? ` (${note.files.join(", ")})` : ""}: ${text}`);
+      return [
+        note.files.length ? `Note posted to the agents working on ${note.files.join(", ")}.` : "Note posted to all the other agents.",
+        text !== message
+          ? `It was ${message.length} characters: only the first ${NOTE_MAX} were posted. Keep notes to 1–3 lines (what changed and where).`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
     },
     readNotes() {
       const me = db.getCard(card.id) ?? card;
@@ -260,7 +299,13 @@ export function makeToolkit(card: Card, signals: Signals) {
   };
 }
 
-export function cardTools(kind: AgentKind, kit: ReturnType<typeof makeToolkit>): ToolSpec[] {
+export function cardTools(kind: AgentKind, kit: ReturnType<typeof makeToolkit>, conflict = false): ToolSpec[] {
+  const done: ToolSpec = {
+    name: "report_done",
+    description: "Report that the feature is implemented.",
+    shape: { summary: z.string().describe("Short summary in Spanish: what changed and how to test it") },
+    run: ({ summary }) => kit.reportDone(summary),
+  };
   const ask: ToolSpec = {
     name: "ask_questions",
     description: "Ask Pedro one or more clarifying questions. After calling this, end your turn.",
@@ -300,7 +345,9 @@ export function cardTools(kind: AgentKind, kit: ReturnType<typeof makeToolkit>):
               }),
             )
             .optional()
-            .describe("Only for ONE feature whose pieces can be built at the same time: 2-5 parts the developer runs as parallel subagents"),
+            .describe(
+              "Only for ONE really big feature (roughly 10+ files or several screens) whose pieces can be built at the same time: 2-5 parts the developer runs as parallel subagents. Never for small or medium cards.",
+            ),
         },
         run: ({ plan, files, checkpoints, parallel }) => kit.markReady(plan, files, checkpoints, parallel ?? []),
       },
@@ -325,6 +372,7 @@ export function cardTools(kind: AgentKind, kit: ReturnType<typeof makeToolkit>):
         run: ({ subcards, plan }) => kit.splitCard(subcards, plan ?? ""),
       },
     ];
+  if (conflict) return [ask, { ...done, description: "Report that the rebase is done and the conflicts are resolved." }];
   return [
     ask,
     {
@@ -353,9 +401,9 @@ export function cardTools(kind: AgentKind, kit: ReturnType<typeof makeToolkit>):
     {
       name: "post_note",
       description:
-        "Post a short note to the other agents working in parallel on this repo. Pass `files` when it's about specific files: only agents on them get it.",
+        "Post a short note (1-3 lines: what changed and where) to the other agents working in parallel on this repo. Pass `files` when it's about specific files: only agents on them get it.",
       shape: {
-        message: z.string(),
+        message: z.string().describe(`1-3 lines, no code or diffs (longer notes are cut at ${NOTE_MAX} characters)`),
         files: z.array(z.string()).optional().describe("Files the note is about (empty = it concerns every agent)"),
       },
       run: ({ message, files }) => kit.postNote(message, files ?? []),
@@ -379,12 +427,7 @@ export function cardTools(kind: AgentKind, kit: ReturnType<typeof makeToolkit>):
       run: ({ text }) => kit.addCheckpoint(text),
     },
     { name: "list_checkpoints", description: "List the card's checkpoints with ids and status.", shape: {}, run: () => kit.listCheckpoints() },
-    {
-      name: "report_done",
-      description: "Report that the feature is implemented.",
-      shape: { summary: z.string().describe("Short summary in Spanish: what changed and how to test it") },
-      run: ({ summary }) => kit.reportDone(summary),
-    },
+    done,
   ];
 }
 
@@ -437,41 +480,74 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   const kit = makeToolkit(card, signals);
   const log = (role: "assistant" | "tool" | "system", content: string) =>
     emitMessage(card.project_id, db.addMessage(card.id, role, content));
+  const model = cardModel(card, kind);
+  const { engine } = parseModel(model);
+  const phase = kind === "prep" ? "Preparación" : opts.conflict ? "Conflictos" : "Desarrollo";
 
   try {
-    if (process.env.TRELLAI_FAKE_AGENT) {
-      const sessionId = await runFakeAgent({ ...opts, kit, log, signal: abort.signal });
-      return { ok: true, aborted: abort.signal.aborted, sessionId, signals };
-    }
-
-    const model = cardModel(card, kind);
-    // Codex can't open the image files itself: they go attached to the message
-    const codex = parseModel(model).engine === "codex" ? forCodex(opts.prompt, opts.repo, card.id) : null;
-    const res = await runEngine({
-      model,
-      cwd: opts.cwd,
-      configRoot: opts.repo,
-      instructions: kind === "prep" ? PREP_PROMPT : DEV_PROMPT,
-      prompt: codex?.prompt ?? opts.prompt,
-      images: codex?.images,
-      resume: opts.resume,
-      contextIfFresh: cardContext(card, kind),
-      access: kind === "prep" ? "read" : "write",
-      tools: cardTools(kind, kit),
-      pollNotes: kind === "dev" ? kit.pollNotes : undefined,
+    // At most max_agents at once per project: otherwise it waits «En cola» (and still counts as running).
+    const go = await slots.acquire({
+      cardId: card.id,
+      projectId: card.project_id,
+      engine,
       signal: abort.signal,
-      onText: (t) => log("assistant", t),
-      onTool: (t) => log("tool", t),
-      onModel: (model) => {
-        const seen = `${kind}|${model}`;
-        if (lastModel.get(card.id) !== seen) {
-          lastModel.set(card.id, seen);
-          log("system", `🤖 ${kind === "prep" ? "Preparación" : "Desarrollo"} con ${prettyModel(model)} · \`${model.replace(/^codex:/, "")}\``);
-        }
-        if (db.getCard(card.id)?.agent_model !== model) emitCard(db.updateCard(card.id, { agent_model: model }));
-      },
+      first: opts.first,
+      onWait: (text, why) => opts.onQueued?.(text, why),
     });
-    return { ok: !res.error, aborted: abort.signal.aborted, error: res.error, sessionId: res.sessionId, signals };
+    if (!go) return { ok: false, aborted: true, error: "Detenido", sessionId: opts.resume ?? null, signals };
+    try {
+      const extra = opts.onStart?.();
+      const prompt = extra ? `${opts.prompt}\n\n${extra}` : opts.prompt;
+      let res: EngineResult;
+      if (process.env.TRELLAI_FAKE_AGENT) {
+        res = await runFakeAgent({ ...opts, prompt, kit, log, signal: abort.signal });
+      } else {
+        // Codex can't open the image files itself: they go attached to the message
+        const codex = engine === "codex" ? forCodex(prompt, opts.repo, card.id) : null;
+        res = await runEngine({
+          model,
+          cwd: opts.cwd,
+          configRoot: opts.repo,
+          instructions: kind === "prep" ? PREP_PROMPT : opts.conflict ? CONFLICT_PROMPT : DEV_PROMPT,
+          prompt: codex?.prompt ?? prompt,
+          images: codex?.images,
+          resume: opts.resume,
+          contextIfFresh: cardContext(card, kind),
+          access: kind === "prep" ? "read" : "write",
+          noSubagents: opts.conflict,
+          tools: cardTools(kind, kit, opts.conflict),
+          pollNotes: kind === "dev" && !opts.conflict ? kit.pollNotes : undefined,
+          signal: abort.signal,
+          onText: (t) => log("assistant", t),
+          onTool: (t) => log("tool", t),
+          onModel: (model) => {
+            const seen = `${phase}|${model}`;
+            if (lastModel.get(card.id) !== seen) {
+              lastModel.set(card.id, seen);
+              log("system", `🤖 ${phase} con ${prettyModel(model)} · \`${model.replace(/^codex:/, "")}\``);
+            }
+            if (db.getCard(card.id)?.agent_model !== model) emitCard(db.updateCard(card.id, { agent_model: model }));
+          },
+        });
+      }
+      const spent = recordUsage({
+        projectId: card.project_id,
+        cardId: card.id,
+        kind: opts.conflict ? "conflict" : kind,
+        model: db.getCard(card.id)?.agent_model ?? model,
+        resume: opts.resume,
+        result: res,
+      });
+      if (spent) {
+        log("system", `💸 ${describeUsage(spent)}`);
+        emitCard(card.id);
+      }
+      if (res.limit) slots.pause(engine, res.limit.resetsAt);
+      else if (!res.error && !abort.signal.aborted && slots.pausedUntil(engine)) slots.resume(engine); // it worked: no limit anymore
+      return { ok: !res.error, aborted: abort.signal.aborted, error: res.error, sessionId: res.sessionId, signals, limit: res.limit };
+    } finally {
+      slots.release(card.project_id, card.id);
+    }
   } catch (err) {
     const aborted = abort.signal.aborted;
     return { ok: false, aborted, error: aborted ? "Detenido" : (err as Error).message, sessionId: opts.resume ?? null, signals };

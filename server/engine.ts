@@ -20,6 +20,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { z, type ZodRawShape } from "zod";
 import { EFFORT_LABELS, EFFORTS, splitEffort, withEffort, type Effort } from "../shared/models.js";
+import type { Usage } from "../shared/types.js";
 
 export type Engine = "claude" | "codex";
 
@@ -146,6 +147,8 @@ export interface EngineRun {
   contextIfFresh?: string;
   /** read = no file edits · write = full access */
   access: "read" | "write";
+  /** No Task/Agent tool: the agent works alone (e.g. resolving a conflict). */
+  noSubagents?: boolean;
   tools: ToolSpec[];
   /** Messages from other agents to inject while working (Claude: after every tool; Codex: in Trellai tool results). */
   pollNotes?: () => string | null;
@@ -160,6 +163,62 @@ export interface EngineResult {
   /** Encoded session id to store for next time. */
   sessionId: string | null;
   error?: string;
+  /**
+   * Tokens it reported. `cumulative`: Claude's totals for the whole session, so a resumed run also
+   * carries the earlier runs (subtract what was recorded for the session before); Codex's are per run.
+   */
+  usage?: { totals: Usage; cumulative: boolean };
+  /** It stopped because the account hit its session / usage limit (`resetsAt`: ms, when known). */
+  limit?: { message: string; resetsAt: number | null };
+}
+
+/** "You've hit your session limit · resets 3pm", "Claude AI usage limit reached|1760000000", rate limits… */
+export function isLimitError(text: string | undefined): boolean {
+  return !!text && /session limit|usage limit|weekly limit|hit your limit|limit reached|rate.?limit/i.test(text);
+}
+
+/** When the limit in a message resets (ms), if it says: an epoch after "|", or "resets 3pm" / "resets at 15:30" (next time it's that hour here). */
+export function parseResetTime(text: string, now = Date.now()): number | null {
+  const epoch = text.match(/\|\s*(\d{10,13})\b/)?.[1];
+  if (epoch) return Number(epoch) * (epoch.length === 10 ? 1000 : 1);
+  const m = text.match(/resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const min = Number(m[2] ?? 0);
+  const ampm = m[3]?.toLowerCase();
+  if (ampm === "pm" && h < 12) h += 12;
+  if (ampm === "am" && h === 12) h = 0;
+  if (h > 23 || min > 59) return null;
+  const at = new Date(now);
+  at.setHours(h, min, 0, 0);
+  if (at.getTime() <= now) at.setDate(at.getDate() + 1);
+  return at.getTime();
+}
+
+const ZERO_USAGE: Usage = { input: 0, output: 0, cache_read: 0, cache_write: 0, cost_usd: 0 };
+
+/** Every model the run used (main loop, subagents, compaction), added up. */
+function claudeUsage(m: Extract<SDKMessage, { type: "result" }>): Usage {
+  const models = Object.values(m.modelUsage ?? {});
+  const u = models.length
+    ? models.reduce<Usage>(
+        (a, x) => ({
+          input: a.input + (x.inputTokens ?? 0),
+          output: a.output + (x.outputTokens ?? 0),
+          cache_read: a.cache_read + (x.cacheReadInputTokens ?? 0),
+          cache_write: a.cache_write + (x.cacheCreationInputTokens ?? 0),
+          cost_usd: a.cost_usd + (x.costUSD ?? 0),
+        }),
+        ZERO_USAGE,
+      )
+    : {
+        input: m.usage?.input_tokens ?? 0,
+        output: m.usage?.output_tokens ?? 0,
+        cache_read: m.usage?.cache_read_input_tokens ?? 0,
+        cache_write: m.usage?.cache_creation_input_tokens ?? 0,
+        cost_usd: 0,
+      };
+  return { ...u, cost_usd: m.total_cost_usd || u.cost_usd };
 }
 
 export async function runEngine(r: EngineRun): Promise<EngineResult> {
@@ -180,6 +239,7 @@ export async function runEngine(r: EngineRun): Promise<EngineResult> {
 
 const READ_ONLY_BLOCK = ["Edit", "Write", "NotebookEdit"];
 const NEVER = ["AskUserQuestion", "ExitPlanMode", "EnterPlanMode"];
+const SUBAGENTS = ["Task", "Agent"];
 
 function summarize(name: string, input: Record<string, unknown>): string {
   const arg = input.file_path ?? input.path ?? input.pattern ?? input.command ?? input.description ?? input.url ?? "";
@@ -203,6 +263,10 @@ async function runClaude(r: EngineRun, model: string | undefined, resume: string
 
   let sessionId: string | null = resume;
   let error: string | undefined;
+  let usage: EngineResult["usage"];
+  // Claude said the account is out of its session / usage limit (and maybe when it resets)
+  let limited = false;
+  let resetsAt: number | null = null;
   try {
     const q = query({
       prompt: r.prompt,
@@ -215,7 +279,7 @@ async function runClaude(r: EngineRun, model: string | undefined, resume: string
         systemPrompt: { type: "preset", preset: "claude_code", append: r.instructions },
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
-        disallowedTools: r.access === "read" ? [...READ_ONLY_BLOCK, ...NEVER] : NEVER,
+        disallowedTools: [...(r.access === "read" ? READ_ONLY_BLOCK : []), ...NEVER, ...(r.noSubagents ? SUBAGENTS : [])],
         mcpServers: { trellai: server },
         hooks: r.pollNotes ? { PostToolUse: [{ hooks: [noteHook] }] } : undefined,
         projectConfigRoot: r.configRoot && r.configRoot !== r.cwd ? r.configRoot : undefined,
@@ -225,19 +289,28 @@ async function runClaude(r: EngineRun, model: string | undefined, resume: string
       if ("session_id" in m && m.session_id) sessionId = m.session_id;
       if (m.type === "system" && m.subtype === "init") r.onModel?.(m.model);
       else if (m.type === "assistant" && !m.parent_tool_use_id) {
+        if (m.error === "rate_limit") limited = true;
         for (const block of m.message.content) {
           if (block.type === "text" && block.text.trim()) r.onText(block.text.trim());
           if (block.type === "tool_use" && !block.name.startsWith("mcp__trellai__"))
             r.onTool(summarize(block.name, block.input as Record<string, unknown>));
         }
-      } else if (m.type === "result" && m.subtype !== "success") {
-        error = ("errors" in m && Array.isArray(m.errors) && m.errors.join("; ")) || m.subtype;
+      } else if (m.type === "rate_limit_event" && m.rate_limit_info.status === "rejected") {
+        limited = true;
+        const at = m.rate_limit_info.resetsAt;
+        if (at) resetsAt = at < 1e12 ? at * 1000 : at; // seconds or ms
+      } else if (m.type === "result") {
+        usage = { totals: claudeUsage(m), cumulative: true };
+        if (m.subtype !== "success") error = ("errors" in m && Array.isArray(m.errors) && m.errors.join("; ")) || m.subtype;
+        // an API error (e.g. the session limit) ends the turn as "success" with is_error and the text in result
+        else if (m.is_error) error = m.result?.trim() || "Claude terminó con un error";
       }
     }
   } catch (err) {
     if (!r.signal.aborted) error = (err as Error).message;
   }
-  return { sessionId, error };
+  const limit = error && (limited || isLimitError(error)) ? { message: error, resetsAt: resetsAt ?? parseResetTime(error) } : undefined;
+  return { sessionId, error, usage, limit };
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +596,7 @@ async function runCodex(r: EngineRun, model: string | undefined, resume: string 
 
   let sessionId: string | null = resume ? `codex:${resume}` : null;
   let error: string | undefined;
+  let usage: Usage | undefined;
   const stderr: string[] = [];
   // what Codex said besides its events, and its last error item: the reason when it dies without stderr
   const stdoutTail: string[] = [];
@@ -554,7 +628,18 @@ async function runCodex(r: EngineRun, model: string | undefined, resume: string 
           return;
         }
         if (ev.type === "thread.started" && ev.thread_id) sessionId = `codex:${ev.thread_id}`;
-        else if (ev.type === "turn.failed") error = ev.error?.message ?? "Codex falló";
+        else if (ev.type === "turn.completed" && ev.usage) {
+          // input_tokens includes the cached ones
+          const cached = Number(ev.usage.cached_input_tokens) || 0;
+          const u = usage ?? ZERO_USAGE;
+          usage = {
+            input: u.input + Math.max(0, (Number(ev.usage.input_tokens) || 0) - cached),
+            output: u.output + (Number(ev.usage.output_tokens) || 0),
+            cache_read: u.cache_read + cached,
+            cache_write: 0,
+            cost_usd: 0,
+          };
+        } else if (ev.type === "turn.failed") error = ev.error?.message ?? "Codex falló";
         else if (ev.type === "error") error = ev.message ?? "Codex falló";
         else if (ev.type === "item.completed" && ev.item) {
           if (ev.item.type === "error" && ev.item.message) lastErrorItem = ev.item.message;
@@ -570,7 +655,13 @@ async function runCodex(r: EngineRun, model: string | undefined, resume: string 
   } finally {
     toolRuns.delete(token);
   }
-  return { sessionId, error: r.signal.aborted ? undefined : error };
+  if (r.signal.aborted) error = undefined;
+  return {
+    sessionId,
+    error,
+    usage: usage && { totals: usage, cumulative: false },
+    limit: error && isLimitError(error) ? { message: error, resetsAt: parseResetTime(error) } : undefined,
+  };
 }
 
 /** Why `codex exec` died, for Pedro: stderr, else what it printed on stdout, else its last error item. */

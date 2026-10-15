@@ -13,7 +13,8 @@ import * as claims from "./claims.js";
 import * as db from "./db.js";
 import { emitCard, emitCheckpoints, emitMessage } from "./events.js";
 import * as git from "./git.js";
-import { isRunning, runAgent, stopAgent, type AgentKind, type RunResult } from "./agents.js";
+import { isRunning, PARALLEL_HEADING, runAgent, stopAgent, type AgentKind, type RunResult } from "./agents.js";
+import * as slots from "./slots.js";
 import { assistantRunning } from "./assistant.js";
 import { followPreview, getPreview, releasePreview } from "./preview.js";
 import { MACHINE } from "./machine.js";
@@ -41,9 +42,9 @@ function projectOf(card: Card) {
   return p;
 }
 
-/** The agent for this card is running on another computer right now. */
+/** The agent for this card is running (or waiting in line) on another computer right now. */
 export function runningElsewhere(card: Card): boolean {
-  return card.status === "running" && !!card.machine && card.machine !== MACHINE;
+  return (card.status === "running" || card.status === "queued") && !!card.machine && card.machine !== MACHINE;
 }
 
 /** Bring the base branch up to date with the remote before starting something. */
@@ -147,7 +148,14 @@ interface LaunchOpts {
   statusText?: string;
   /** What to do when it finishes, instead of the phase's usual next step. */
   after?: (card: Card, res: RunResult) => Promise<void>;
+  /** A light agent in a fresh session that only resolves a rebase / merge conflict (the card keeps its own session). */
+  conflict?: boolean;
+  /** Wait at the head of the line: work that was already under way (a conflict, Pedro's message, the session limit). */
+  first?: boolean;
 }
+
+/** After the session limit interrupted a run, its session carries on with this. */
+const LIMIT_CONTINUE = "The account's usage limit interrupted you and it has been lifted: carry on exactly where you left off.";
 
 async function launch(card: Card, kind: AgentKind, prompt: string, resume: string | null, opts: LaunchOpts = {}): Promise<void> {
   const project = projectOf(card);
@@ -159,19 +167,45 @@ async function launch(card: Card, kind: AgentKind, prompt: string, resume: strin
     prompt = `${kind === "prep" ? prepBrief(card) : devBrief(card)}\n\n${recentActivity(card)}## Now\n\n${prompt}`;
   }
   const cwd = kind === "dev" ? card.worktree! : project.repo_path;
-  card = set(card.id, {
-    status: "running",
-    status_text: opts.statusText ?? (kind === "prep" ? "Preparando…" : "Trabajando…"),
-    machine: MACHINE,
-    stop_req: null,
-  });
+  const statusText = opts.statusText ?? (kind === "prep" ? "Preparando…" : "Trabajando…");
+  let waited = false;
 
-  const res = await runAgent({ card, kind, prompt, cwd, repo: project.repo_path, resume });
+  const res = await runAgent({
+    card,
+    kind,
+    prompt,
+    cwd,
+    repo: project.repo_path,
+    resume,
+    conflict: opts.conflict,
+    first: opts.first,
+    // No free slot (or the usage limit was hit): it waits «En cola» and starts by itself.
+    onQueued: (text, why) => {
+      if (!waited)
+        log(
+          card,
+          "system",
+          why === "limit"
+            ? "⏳ En cola hasta que se levante el límite de uso (o pulses Reintentar)."
+            : `⏳ En cola: ya hay ${slots.maxAgents(card.project_id)} agentes trabajando en este proyecto, el máximo (Ajustes → Flujo). Arranca sola en cuanto acabe uno.`,
+        );
+      waited = true;
+      set(card.id, { status: "queued", status_text: text, machine: MACHINE, stop_req: null });
+    },
+    onStart: () => {
+      if (waited) log(card, "system", "▶ Hay hueco: arranca el agente.");
+      set(card.id, { status: "running", status_text: statusText, machine: MACHINE, stop_req: null });
+      // what Pedro wrote while it waited goes in with it
+      const pending = db.takePendingInput(card.id);
+      return pending.length ? `## Messages from Pedro (sent while you waited to start)\n\n${pending.join("\n\n")}` : undefined;
+    },
+  });
 
   const now = db.getCard(card.id);
   if (!now) return; // deleted meanwhile
   if (kind === "dev") claims.refreshClaims(now); // lines as the agent left them
-  if (res.sessionId) set(card.id, kind === "prep" ? { prep_session_id: res.sessionId } : { session_id: res.sessionId });
+  // a conflict agent's session is its own: the card keeps its main conversation
+  if (res.sessionId && !opts.conflict) set(card.id, kind === "prep" ? { prep_session_id: res.sessionId } : { session_id: res.sessionId });
   if (res.aborted) {
     // Leave the work where another computer can pick it up.
     if (kind === "dev" && now.worktree && now.branch && existsSync(now.worktree)) {
@@ -182,15 +216,26 @@ async function launch(card: Card, kind: AgentKind, prompt: string, resume: strin
         console.warn("[trellai] wip commit:", (err as Error).message);
       }
     }
-    if (now.status === "running") set(card.id, { status: "idle", status_text: "Detenido" });
+    if (now.status === "running" || now.status === "queued") set(card.id, { status: "idle", status_text: "Detenido" });
     return;
+  }
+  // You may have moved the card while the agent was finishing.
+  const expected: Column = opts.column ?? (kind === "prep" ? "preparation" : "doing");
+  if (res.limit && now.column === expected) {
+    // runAgent paused the line: this card waits first in it and carries on by itself when the limit lifts.
+    const at = res.limit.resetsAt && res.limit.resetsAt > Date.now() ? res.limit.resetsAt : null;
+    log(
+      card,
+      "system",
+      `⏸ Límite de uso alcanzado: «${res.limit.message.replace(/\s+/g, " ").slice(0, 200)}». Trellai deja de lanzar agentes ${at ? `hasta las ${slots.hhmm(at)}` : "hasta que pulses Reintentar"}; esta tarjeta sigue sola entonces, la primera de la cola.`,
+    );
+    const [again, from] = res.sessionId ? [LIMIT_CONTINUE, res.sessionId] : [prompt, resume];
+    return launch(db.getCard(card.id)!, kind, again, from, { ...opts, first: true });
   }
   if (!res.ok) {
     set(card.id, { status: "error", status_text: res.error ?? "Error del agente" });
     return;
   }
-  // You may have moved the card while the agent was finishing.
-  const expected: Column = opts.column ?? (kind === "prep" ? "preparation" : "doing");
   if (now.column !== expected) {
     set(card.id, { status: "idle", status_text: "" });
     return;
@@ -198,8 +243,9 @@ async function launch(card: Card, kind: AgentKind, prompt: string, resume: strin
 
   const pending = db.takePendingInput(card.id);
   if (pending.length) {
+    // Pedro's message goes to the card's own conversation (also after a conflict agent).
     const resumeId = kind === "prep" ? db.getCard(card.id)!.prep_session_id : db.getCard(card.id)!.session_id;
-    return launch(db.getCard(card.id)!, kind, `Message from Pedro:\n\n${pending.join("\n\n")}`, resumeId, opts);
+    return launch(db.getCard(card.id)!, kind, `Message from Pedro:\n\n${pending.join("\n\n")}`, resumeId, { ...opts, conflict: false, first: true });
   }
 
   if (opts.after) return opts.after(db.getCard(card.id)!, res);
@@ -412,8 +458,14 @@ async function afterDev(card: Card, res: RunResult): Promise<void> {
       set(card.id, { status: "error", status_text: `Conflictos con ${project.base_branch} sin resolver` });
       return;
     }
-    log(card, "system", `🔀 Conflictos al rebasar sobre ${project.base_branch}. Le pido al agente que los resuelva.`);
-    return launch(card, "dev", rebasePrompt(project.base_branch), card.session_id);
+    log(card, "system", `🔀 Conflictos al rebasar sobre ${project.base_branch}. Los resuelve un agente nuevo y ligero, sin recargar toda la conversación de la tarjeta.`);
+    const summary = res.signals.done; // the card's own summary, not the conflict agent's
+    return launch(card, "dev", conflictPrompt(card, project.base_branch, false), null, {
+      conflict: true,
+      first: true,
+      statusText: `Rebasando sobre ${project.base_branch}…`,
+      after: (c, r) => afterDev(c, { ...r, signals: { ...r.signals, done: summary ?? r.signals.done } }),
+    });
   }
   rebaseAttempts.delete(card.id);
   if (card.branch) await remote.pushCardBranch(card.worktree!, card.branch);
@@ -427,8 +479,20 @@ async function afterDev(card: Card, res: RunResult): Promise<void> {
   moveCard(card.id, "review", Number.MAX_SAFE_INTEGER, "automático: el agente ha terminado");
 }
 
-function rebasePrompt(base: string) {
-  return `REBASE needed: your branch conflicts with the latest "${base}" (other agents' work was merged). Rebase onto "${base}" yourself (\`git rebase ${base}\`), resolve every conflict so BOTH your feature and the merged work keep working, \`git add\` and \`git rebase --continue\` until done, run the tests, then call report_done.`;
+/**
+ * What the light conflict agent gets (it starts a fresh session): the card's essentials and how to read
+ * the branch's work from git, instead of resuming the card's whole conversation.
+ */
+function conflictPrompt(card: Card, base: string, merging: boolean): string {
+  const plan = card.plan.split(PARALLEL_HEADING)[0].trim(); // it works alone
+  return [
+    `# Card: ${card.title}`,
+    `## Spec (written by Pedro)\n\n${card.spec || "(empty)"}`,
+    plan ? `## Notes from preparation\n\n${plan}` : "",
+    `## Now: REBASE needed\n\n${merging ? "Pedro asked to merge this card, but its branch" : "This card's work is done, but its branch"} conflicts with the latest "${base}" (other agents' work was merged meanwhile). First see what this branch does: \`git log --oneline ${base}..HEAD\` and \`git diff ${base}...HEAD\`. Then rebase onto "${base}" (\`git rebase ${base}\`), resolve every conflict so BOTH this card's feature and the merged work keep working, \`git add\` and \`git rebase --continue\` until done, run the tests, then call report_done.${merging ? " Don't change anything else: Trellai merges the branch as soon as you finish." : ""}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -447,13 +511,9 @@ function bounceToReview(card: Card, msg: string) {
 
 const mergeFixAttempts = new Map<string, number>();
 
-function mergeConflictPrompt(base: string) {
-  return `MERGE CONFLICT — REBASE needed: Pedro asked to merge this card, but your branch conflicts with the latest "${base}" (other work was merged meanwhile). Rebase onto "${base}" now (\`git rebase ${base}\`), resolve every conflict so BOTH your feature and the merged work keep working, \`git add\` and \`git rebase --continue\` until done, run the tests, then call report_done. Don't change anything else: Trellai merges your branch as soon as you finish.`;
-}
-
 /**
- * The card's branch conflicts with the base branch while merging: its agent rebases and
- * resolves the conflict in the card's worktree (never in your checkout), then the merge
+ * The card's branch conflicts with the base branch while merging: a light agent (fresh session)
+ * rebases and resolves the conflict in the card's worktree (never in your checkout), then the merge
  * runs again by itself. The card stays in Merged all along.
  */
 async function resolveMergeConflict(card: Card, project: Project): Promise<void> {
@@ -464,9 +524,11 @@ async function resolveMergeConflict(card: Card, project: Project): Promise<void>
     mergeFixAttempts.delete(card.id);
     return bounceToReview(card, `Conflictos con ${base} sin resolver tras ${MAX_REBASE_ATTEMPTS} intentos`);
   }
-  log(card, "system", `🔀 Conflicto al mergear en ${base}. El agente lo resuelve ahora y el merge sigue solo en cuanto termine.`);
-  return launch(card, "dev", mergeConflictPrompt(base), card.session_id, {
+  log(card, "system", `🔀 Conflicto al mergear en ${base}. Lo resuelve un agente nuevo y ligero, y el merge sigue solo en cuanto termine.`);
+  return launch(card, "dev", conflictPrompt(card, base, true), null, {
     column: "merged",
+    conflict: true,
+    first: true,
     statusText: "Resolviendo conflicto para mergear…",
     after: async (c) => {
       if (db.openQuestions(c.id).length) {
@@ -617,7 +679,7 @@ export function sendMessage(cardId: string, said: string, attachmentIds: number[
   }
   if (isRunning(card.id)) {
     db.pushPendingInput(card.id, text);
-    log(card, "system", "Se lo paso al agente en cuanto termine el paso actual.");
+    log(card, "system", card.status === "queued" ? "Se lo paso al agente en cuanto arranque (está en cola)." : "Se lo paso al agente en cuanto termine el paso actual.");
     return;
   }
   if (card.column !== "merged" && db.childCards(card.id).length) {
@@ -767,6 +829,8 @@ export function stop(cardId: string) {
 export function retry(cardId: string) {
   const card = db.getCard(cardId);
   if (!card) throw new Error("Tarjeta no encontrada");
+  // Reintentar also lifts a pause for the usage limit: the line carries on
+  slots.resume();
   if (isRunning(card.id)) return;
   if (runningElsewhere(card)) throw new Error(`Está trabajando en ${card.machine}.`);
   rebaseAttempts.delete(card.id);
@@ -800,12 +864,14 @@ export async function removeCard(cardId: string) {
   closeMotherIfDone(card, false); // it may have been the last unmerged sub-card
 }
 
-/** After a restart nothing is actually running anymore. */
+/** After a restart nothing is actually running (or waiting in line) anymore. */
 export function recoverAfterRestart() {
   db.db
     .prepare(
-      `UPDATE cards SET status = 'error', status_text = 'Interrumpido al reiniciar el servidor — pulsa Reintentar'
-       WHERE status = 'running' AND (machine IS NULL OR machine = ?)`,
+      `UPDATE cards SET status = 'error', status_text = CASE status
+         WHEN 'queued' THEN 'Estaba en cola al reiniciar el servidor — pulsa Reintentar'
+         ELSE 'Interrumpido al reiniciar el servidor — pulsa Reintentar' END
+       WHERE status IN ('running', 'queued') AND (machine IS NULL OR machine = ?)`,
     )
     .run(MACHINE);
 }

@@ -12,7 +12,7 @@ import { ArrowRight, ChevronRight, CornerLeftUp, Eye, EyeOff, GitBranch, GitMerg
 import { cardTags, TagChip, useProjectTags } from "./tags";
 import { useTagDrag } from "./tagDrag";
 import { confirmDeleteCard, togglePreview } from "./Confirm";
-import { Button, COLUMN_HEX, COLUMN_ICON, StatusBadge } from "./ui";
+import { Button, COLUMN_HEX, COLUMN_ICON, StatusBadge, statusDetail, TokensChip } from "./ui";
 import { backgroundUrl, modelLabel, useEngines } from "./models";
 import { prettyModel } from "../../shared/models";
 
@@ -580,12 +580,12 @@ function CardItem({
           <StatusBadge card={card} />
           {elsewhere && <MachineChip machine={card.machine} className="shrink-0" />}
           {card.status_text && card.status !== "running" && (
-            <span className={`truncate text-[11px] ${card.status === "error" ? "text-danger/80" : "text-zinc-500"}`}>{card.status_text}</span>
+            <span className={`truncate text-[11px] ${card.status === "error" ? "text-danger/80" : "text-zinc-500"}`}>{statusDetail(card)}</span>
           )}
         </div>
       )}
 
-      {(card.checkpoints_total > 0 || showBranch) && !merged && (
+      {(card.checkpoints_total > 0 || showBranch || card.tokens > 0) && !merged && (
         <div className="mt-2.5 flex items-center gap-2.5">
           {card.checkpoints_total > 0 && (
             <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -607,6 +607,7 @@ function CardItem({
               <span className="truncate">{card.branch!.replace(/^trellai\//, "")}</span>
             </span>
           )}
+          <TokensChip tokens={card.tokens} cache={card.tokens_cache} cost={card.cost_usd} className="ml-auto" />
         </div>
       )}
     </div>

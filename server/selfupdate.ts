@@ -61,10 +61,10 @@ async function rebuild() {
   emitAll({ type: "build", id: buildId });
 }
 
-/** Nothing that a restart would cut: the cards it would mark "Interrumpido", agents, assistants. */
+/** Nothing that a restart would cut: the cards it would mark "Interrumpido" (or that wait in line), agents, assistants. */
 function busyNow() {
   const { n } = db.db
-    .prepare("SELECT COUNT(*) AS n FROM cards WHERE status = 'running' AND (machine IS NULL OR machine = ?)")
+    .prepare("SELECT COUNT(*) AS n FROM cards WHERE status IN ('running', 'queued') AND (machine IS NULL OR machine = ?)")
     .get(MACHINE) as { n: number };
   return n > 0 || runningCount() > 0 || assistantCount() > 0;
 }

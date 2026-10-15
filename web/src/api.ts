@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { flushDraft } from "./drafts";
-import type { Card, Checkpoint, Message, Note, Project, Question, ServerEvent } from "../../shared/types";
+import type { Card, Checkpoint, Message, Note, Project, ProjectUsage, Question, ServerEvent } from "../../shared/types";
 
 export async function api<T = unknown>(path: string, body?: unknown, method?: string): Promise<T> {
   const transition = path.match(/^\/api\/cards\/([^/]+)\/(?:move|copy)$/);
@@ -211,4 +211,28 @@ export function useCardDetail(board: Board, cardId: string | null) {
   }, [cardId]);
 
   return { messages, questions, checkpoints, setCheckpoints };
+}
+
+/** What the project's agents and assistant spent (this computer), refreshed whenever a run ends. */
+export function useProjectUsage(board: Board, projectId: string | null) {
+  const [usage, setUsage] = useState<ProjectUsage | null>(null);
+  useEffect(() => {
+    if (!projectId) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const load = () => api<ProjectUsage>(`/api/projects/${projectId}/usage`).then((u) => alive && setUsage(u)).catch(() => {});
+    setUsage(null);
+    load();
+    const off = board.on((e) => {
+      if (e.type !== "usage" && e.type !== "sync") return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(load, 300);
+    });
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+      off();
+    };
+  }, [projectId]);
+  return usage;
 }

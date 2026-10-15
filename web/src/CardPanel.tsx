@@ -35,7 +35,7 @@ import {
   X,
 } from "lucide-react";
 import { api, useCardDetail, type Board } from "./api";
-import { Button, ChatHint, chatKeyDown, COLUMN_HEX, COLUMN_ICON, Markdown, runningLabel, Spinner, StatusBadge } from "./ui";
+import { Button, ChatHint, chatKeyDown, COLUMN_HEX, COLUMN_ICON, Markdown, runningLabel, Spinner, StatusBadge, statusDetail, TokensChip } from "./ui";
 
 type Tab = "spec" | "activity" | "diff";
 
@@ -117,6 +117,7 @@ export function CardPanel({
               <Bot className="h-3 w-3" /> {prettyModel(card.agent_model)}
             </span>
           )}
+          <TokensChip tokens={card.tokens} cache={card.tokens_cache} cost={card.cost_usd} who="los agentes de esta tarjeta" long className="text-[11px]" />
           <ModelPicker
             className="ml-auto"
             value={card.model}
@@ -141,7 +142,7 @@ export function CardPanel({
         <TitleInput card={card} />
         <TagPicker card={card} tags={tags} />
         {card.status_text && card.status !== "running" && (
-          <p className={`mt-1 text-[12.5px] ${card.status === "error" ? "text-danger" : "text-zinc-400"}`}>{card.status_text}</p>
+          <p className={`mt-1 text-[12.5px] ${card.status === "error" ? "text-danger" : "text-zinc-400"}`}>{statusDetail(card)}</p>
         )}
         <Family card={card} board={board} onOpen={onOpen} />
         <div className="mt-3 flex flex-wrap items-center gap-2 empty:hidden">
@@ -185,13 +186,16 @@ export function CardPanel({
               {previewing ? "Dejar de ver" : "Ver esta rama"}
             </Button>
           )}
-          {card.status === "running" && (
-            <Button onClick={() => api(`/api/cards/${card.id}/stop`, {})}>
+          {(card.status === "running" || card.status === "queued") && (
+            <Button onClick={() => api(`/api/cards/${card.id}/stop`, {})} title={card.status === "queued" ? "Sacarla de la cola" : undefined}>
               <Square className="h-3 w-3" /> Parar
             </Button>
           )}
-          {(card.status === "error" || (card.status === "idle" && card.status_text === "Detenido")) && (
-            <Button onClick={() => api(`/api/cards/${card.id}/retry`, {})}>
+          {(card.status === "error" || (card.status === "idle" && card.status_text === "Detenido") || (card.status === "queued" && /límite/.test(card.status_text))) && (
+            <Button
+              onClick={() => api(`/api/cards/${card.id}/retry`, {})}
+              title={card.status === "queued" ? "Volver a lanzar los agentes en cola sin esperar a que se levante el límite" : undefined}
+            >
               <RotateCcw className="h-3.5 w-3.5" /> Reintentar
             </Button>
           )}
@@ -483,7 +487,8 @@ function Activity({ card, messages }: { card: Card; messages: Message[] }) {
     backlog: "Comentario…",
     plan: "Comentario…",
     preparation: "Escribe al agente de preparación…",
-    doing: card.status === "running" ? "Se lo paso al agente en cuanto termine el paso actual…" : "Escribe al agente…",
+    doing:
+      card.status === "running" ? "Se lo paso al agente en cuanto termine el paso actual…" : card.status === "queued" ? "Se lo paso al agente cuando arranque…" : "Escribe al agente…",
     review: "Pide cambios (la tarjeta vuelve a Doing)…",
     merged: "Comentario…",
   };

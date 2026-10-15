@@ -96,9 +96,17 @@ export function claimFiles(cardId: string, input: { file: string; area?: string;
   if (!clashes.length) return `Claimed. No other agent is on ${[...files].join(", ")}.`;
   return [
     "Claimed. Other agents are also on some of these files — coordinate with post_note (pass `files`):",
-    ...clashes.map((o) => `- ${o.claim.file}: "${o.card.title}" (${describeClaim(o.claim)})`),
-  ].join("\n");
+    ...clashes.slice(0, MAX_CLASHES).map((o) => `- ${o.claim.file}: "${o.card.title}" (${clip(describeClaim(o.claim), 160)})`),
+    clashes.length > MAX_CLASHES ? `- …and ${clashes.length - MAX_CLASHES} more (read_notes lists them).` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
+
+/** Lines of other agents on the same files that claim_files answers with. */
+const MAX_CLASHES = 12;
+
+const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max).trimEnd()}…` : s);
 
 /** `release_files`: drop claims the agent no longer needs. Files it already changed stay claimed until it leaves Doing. */
 export function releaseFiles(cardId: string, files: string[]): string {
@@ -119,11 +127,18 @@ export function releaseFiles(cardId: string, files: string[]): string {
     .join("\n");
 }
 
-function othersOn(card: Card): { card: Card; claim: Claim }[] {
+/**
+ * The other cards in Doing whose work matters to an agent: not stopped by an error (Reintentar
+ * announces them again), and with an agent on them or files claimed.
+ */
+function activeOthers(card: Card): Card[] {
   return db
     .cardsInColumn(card.project_id, "doing")
-    .filter((o) => o.id !== card.id)
-    .flatMap((o) => o.claims.map((claim) => ({ card: o, claim })));
+    .filter((o) => o.id !== card.id && o.status !== "error" && (o.claims.length > 0 || o.status === "running" || o.status === "queued"));
+}
+
+function othersOn(card: Card): { card: Card; claim: Claim }[] {
+  return activeOthers(card).flatMap((o) => o.claims.map((claim) => ({ card: o, claim })));
 }
 
 /** Warn the two cards involved (only them) when they claim the same file. Each file is announced once per pair. */
@@ -133,8 +148,7 @@ function announceOverlaps(card: Card) {
   const live = db.liveNotes(card.project_id);
   const announced = (other: string, file: string) =>
     live.some((n) => !n.card_id && n.targets.includes(card.id) && n.targets.includes(other) && n.files.includes(file));
-  for (const other of db.cardsInColumn(card.project_id, "doing")) {
-    if (other.id === card.id) continue;
+  for (const other of activeOthers(card)) {
     const fresh = other.claims.filter((c) => mine.has(c.file) && !announced(other.id, c.file));
     if (!fresh.length) continue;
     const lines = fresh.map((c) => `- ${c.file} → "${card.title}": ${describeClaim(mine.get(c.file)!)} · "${other.title}": ${describeClaim(c)}`);
@@ -166,30 +180,65 @@ export function formatNote(n: Note): string {
   return `- [${n.card_title ?? "Trellai"}]${n.files.length ? ` (${n.files.join(", ")})` : ""} ${n.content}`;
 }
 
-/** What the other agents in Doing are touching right now, for an agent's context. */
+/** Longest list of who is on what an agent gets before it has files of its own. */
+const OVERVIEW_MAX = 4000;
+
+/**
+ * What the other agents in Doing are touching, for an agent's context (it's re-read on every call, so
+ * it stays short): in detail only the cards on its own files; before it has any, who is on which files.
+ */
 export function othersWork(card: Card): string {
-  const others = db.cardsInColumn(card.project_id, "doing").filter((c) => c.id !== card.id);
+  const others = activeOthers(card);
   if (!others.length) return "None — you're the only agent right now.";
+  const by = (o: Card) => {
+    const who = db.personOnMachine(o.machine);
+    return who && who.id !== db.meId() ? `, agent of ${who.name} on ${o.machine}` : "";
+  };
   const mine = new Set(card.claims.map((c) => c.file));
-  return others
-    .map((o) => {
-      const claims = o.claims.length
-        ? o.claims.map((c) => `  - ${c.file}: ${describeClaim(c)}${mine.has(c.file) ? " ⚠️ you're on it too" : ""}`).join("\n")
-        : "  - (no files claimed yet)";
-      const who = db.personOnMachine(o.machine);
-      const by = who && who.id !== db.meId() ? `, agent of ${who.name} on ${o.machine}` : "";
-      return `- "${o.title}" (branch ${o.branch ?? "?"}${by})\n${claims}`;
-    })
-    .join("\n");
+  if (mine.size) {
+    const sharing = others.filter((o) => o.claims.some((c) => mine.has(c.file)));
+    const lines = sharing.map((o) => {
+      const shared = o.claims.filter((c) => mine.has(c.file)).map((c) => `  - ${c.file}: ${clip(describeClaim(c), 160)} ⚠️ you're on it too`);
+      return `- "${o.title}" (branch ${o.branch ?? "?"}${by(o)})\n${shared.join("\n")}`;
+    });
+    const rest = others.length - sharing.length;
+    if (rest) lines.push(`- ${rest} other card${rest === 1 ? "" : "s"} in Doing ${rest === 1 ? "doesn't" : "don't"} touch your files.`);
+    return lines.join("\n");
+  }
+  const lines: string[] = [];
+  let size = 0;
+  for (const [i, o] of others.entries()) {
+    const files = o.claims.map((c) => c.file);
+    const line = `- "${o.title}": ${files.length ? `${files.slice(0, 10).join(", ")}${files.length > 10 ? ` and ${files.length - 10} more` : ""}` : "(no files claimed yet)"}`;
+    if (lines.length && size + line.length > OVERVIEW_MAX) {
+      lines.push(`- …and ${others.length - i} more card${others.length - i === 1 ? "" : "s"}.`);
+      break;
+    }
+    lines.push(line);
+    size += line.length + 1;
+  }
+  return lines.join("\n");
 }
 
-/** Feeds new relevant notes into a running agent; re-reads its git diff every REFRESH_MS. */
+/** Each note as injected into a running agent (read_notes shows it whole). */
+const NOTE_CHARS = 400;
+/** All the notes of one injection; the rest are only counted. */
+const INJECTION_MAX = 3000;
+
+/** Feeds new relevant notes into a running agent, briefly and without repeats; re-reads its git diff every REFRESH_MS. */
 export function notePoller(cardId: string) {
   const seen = new Set<number>();
+  /** texts already shown: the same note again (e.g. a repeated warning) isn't re-injected */
+  const said = new Set<string>();
+  const key = (n: Note) => n.content.trim().replace(/\s+/g, " ");
   let refreshed = Date.now();
   return {
     /** Mark notes as already shown (read_notes). */
-    seen: (notes: Note[]) => notes.forEach((n) => seen.add(n.id)),
+    seen: (notes: Note[]) =>
+      notes.forEach((n) => {
+        seen.add(n.id);
+        said.add(key(n));
+      }),
     poll(): string | null {
       let card = db.getCard(cardId);
       if (!card) return null;
@@ -198,9 +247,30 @@ export function notePoller(cardId: string) {
         card = refreshClaims(card);
       }
       const fresh = notesFor(card).filter((n) => !seen.has(n.id));
-      if (!fresh.length) return null;
       fresh.forEach((n) => seen.add(n.id));
-      return `New notes from the channel about your work:\n${fresh.map(formatNote).join("\n")}`;
+      const unique = fresh.filter((n) => {
+        if (said.has(key(n))) return false;
+        said.add(key(n));
+        return true;
+      });
+      if (!unique.length) return null;
+      const lines: string[] = [];
+      let size = 0;
+      let cut = false;
+      for (const [i, n] of unique.entries()) {
+        const content = clip(n.content.trim(), NOTE_CHARS);
+        cut ||= content !== n.content.trim();
+        const files = n.files.length ? ` (${n.files.slice(0, 4).join(", ")}${n.files.length > 4 ? ` +${n.files.length - 4}` : ""})` : "";
+        const line = `- [${n.card_title ?? "Trellai"}]${files} ${content}`;
+        if (lines.length && size + line.length > INJECTION_MAX) {
+          lines.push(`- ${unique.length - i} more new note${unique.length - i === 1 ? "" : "s"}: use read_notes to see them in full.`);
+          break;
+        }
+        lines.push(line);
+        size += line.length + 1;
+      }
+      if (cut) lines.push("(Notes ending in … are cut: read_notes has them in full.)");
+      return `New notes from the channel about your work:\n${lines.join("\n")}`;
     },
   };
 }
