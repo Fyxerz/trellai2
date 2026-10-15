@@ -79,6 +79,11 @@ export function emitGit(projectId: string) {
   emit(projectId, { type: "git" });
 }
 
+/** An agent run's tokens were added up: the board refreshes the project's total. */
+export function emitUsage(projectId: string) {
+  emit(projectId, { type: "usage" });
+}
+
 /** For every open board, whatever the project. */
 export function emitAll(e: ServerEvent) {
   bus.emit(ALL, e);

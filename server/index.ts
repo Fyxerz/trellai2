@@ -27,6 +27,7 @@ import { cachedInvite, createInvite, inviteProblem, joinWithCode, removeMember, 
 import { assistantRunning, sendToAssistant, stopAssistant } from "./assistant.js";
 import { buildInfo, distDir, startSelfUpdate } from "./selfupdate.js";
 import { startAutoPull } from "./autopull.js";
+import * as slots from "./slots.js";
 import { backgroundFile, backgroundStatus, generateBackground, imageMime, stopBackground } from "./background.js";
 
 const app = new Hono();
@@ -579,6 +580,9 @@ app.patch("/api/projects/:id", async (c) => {
     body.base_branch = base;
   }
   if (body.auto_doing !== undefined && typeof body.auto_doing !== "boolean") return c.json({ error: "auto_doing debe ser true o false" }, 400);
+  const maxAgents = body.max_agents as unknown;
+  if (maxAgents !== undefined && !(typeof maxAgents === "number" && Number.isInteger(maxAgents) && maxAgents >= 1 && maxAgents <= 20))
+    return c.json({ error: "Los agentes a la vez deben ser un número entre 1 y 20" }, 400);
   if (body.bg_mode !== undefined && !["none", "color", "image"].includes(body.bg_mode as string))
     return c.json({ error: "Fondo no válido (none, color o image)" }, 400);
   if (body.bg_color != null && !/^#[0-9a-f]{6}$/i.test(body.bg_color)) return c.json({ error: "Color no válido (#rrggbb)" }, 400);
@@ -587,8 +591,12 @@ app.patch("/api/projects/:id", async (c) => {
     body.preview_command = body.preview_command?.trim().slice(0, 500) || null;
   }
   delete body.bg_image; // only set by the generator
-  return c.json(db.updateProject(c.req.param("id"), body));
+  const updated = db.updateProject(c.req.param("id"), body);
+  if (maxAgents !== undefined) slots.pump(updated.id); // more room: whoever waits in line starts now
+  return c.json(updated);
 });
+
+app.get("/api/projects/:id/usage", (c) => c.json(db.projectUsage(c.req.param("id"))));
 
 // ---------- board background ----------
 

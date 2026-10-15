@@ -8,11 +8,14 @@
  *   contains "shared"  → writes to SHARED.md (to provoke merge conflicts)
  *   contains "split"   → preparation splits the card into two sub-cards
  *   contains "parallel"→ preparation plans two parts for parallel subagents
+ *   contains "slow"    → development takes 1.5 s longer (to see the queue)
+ *   contains "limit"   → the first development run hits the session limit
  */
 import { execSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RunOptions, makeToolkit } from "./agents.js";
+import type { EngineResult } from "./engine.js";
 import { slugify } from "./git.js";
 
 interface FakeOpts extends RunOptions {
@@ -21,17 +24,24 @@ interface FakeOpts extends RunOptions {
   signal: AbortSignal;
 }
 
-const delay = (ms: number, signal: AbortSignal) =>
+const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((res, rej) => {
-    const t = setTimeout(res, Number(process.env.TRELLAI_FAKE_DELAY ?? ms));
+    const t = setTimeout(res, ms);
     signal.addEventListener("abort", () => {
       clearTimeout(t);
       rej(new Error("aborted"));
     });
   });
+const delay = (ms: number, signal: AbortSignal) => sleep(Number(process.env.TRELLAI_FAKE_DELAY ?? ms), signal);
 
-export async function runFakeAgent(o: FakeOpts): Promise<string> {
+/** What every simulated run reports having spent. */
+const FAKE_USAGE = { input: 1200, output: 300, cache_read: 8000, cache_write: 500, cost_usd: 0.02 };
+/** Cards whose simulated agent already hit the session limit once. */
+const limited = new Set<string>();
+
+export async function runFakeAgent(o: FakeOpts): Promise<EngineResult> {
   const sessionId = o.resume ?? `fake-${o.card.id}`;
+  const done = (): EngineResult => ({ sessionId, usage: { totals: FAKE_USAGE, cumulative: false } });
   const slug = slugify(o.card.title);
 
   if (o.kind === "prep") {
@@ -40,7 +50,7 @@ export async function runFakeAgent(o: FakeOpts): Promise<string> {
     if (o.card.spec.includes("?") && !o.resume) {
       o.log("assistant", "Tengo una duda antes de empezar.");
       o.kit.askQuestions([{ question: "¿Qué enfoque prefieres?", options: ["Simple", "Completo"] }]);
-      return sessionId;
+      return done();
     }
     if (o.card.spec.includes("split")) {
       o.log("assistant", "Son dos features independientes: la divido en sub-tarjetas.");
@@ -53,7 +63,7 @@ export async function runFakeAgent(o: FakeOpts): Promise<string> {
         })),
         "Cada parte en su fichero.",
       );
-      return sessionId;
+      return done();
     }
     o.log("assistant", "La spec está clara. Paso a desarrollo.");
     const parallel = o.card.spec.includes("parallel")
@@ -63,13 +73,19 @@ export async function runFakeAgent(o: FakeOpts): Promise<string> {
         ]
       : [];
     o.kit.markReady("", [`features/${slug}.md`], [`Crear features/${slug}.md`, "Verificar que existe"], parallel);
-    return sessionId;
+    return done();
   }
 
   // dev
   o.log("tool", "read_notes");
   o.log("system", o.kit.readNotes());
   await delay(600, o.signal);
+  if (o.card.spec.includes("slow")) await sleep(1500, o.signal);
+  if (o.card.spec.includes("limit") && !limited.has(o.card.id)) {
+    limited.add(o.card.id);
+    const error = "You've hit your session limit · resets 3pm (Europe/Madrid)";
+    return { sessionId, error, limit: { message: error, resetsAt: null }, usage: { totals: FAKE_USAGE, cumulative: false } };
+  }
 
   if (/REBASE/.test(o.prompt)) {
     o.log("tool", "Bash · git rebase");
@@ -102,7 +118,7 @@ export async function runFakeAgent(o: FakeOpts): Promise<string> {
   }
   o.kit.reportDone(`Hecho: ${o.card.title}`);
   o.log("assistant", `Hecho: ${o.card.title}`);
-  return sessionId;
+  return done();
 }
 
 function rebaseResolvingConflicts(cwd: string, base: string) {

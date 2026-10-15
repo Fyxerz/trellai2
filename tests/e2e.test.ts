@@ -445,3 +445,64 @@ describe("images on a card", () => {
     expect((await fetch(`${URL}/api/attachments/${a.uid}/image`)).headers.get("content-type")).toBe("image/png");
   });
 });
+
+describe("what agents spend and how many run at once", () => {
+  it("each run adds up what it spent: on the card, a line in its activity, and the project's total", async () => {
+    const before = await api<any>(`/api/projects/${projectId}/usage`);
+    const c = await api<Card>("/api/cards", { project_id: projectId, title: "Gasto", spec: "x", column: "plan" });
+    await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    const done = await waitFor(c.id, (x) => x.column === "review" && x.status === "idle");
+    // the simulated agent reports 1200 in + 300 out + 8000 cache read + 500 cache write
+    expect(done.tokens).toBe(10000);
+    expect(done.tokens_cache).toBe(8000);
+    const msgs = await api<any[]>(`/api/cards/${c.id}/messages`);
+    expect(msgs.filter((m) => m.role === "system" && m.content === "💸 10k tokens (8k de caché) · ≈ 0,02 US$")).toHaveLength(1);
+    const after = await api<any>(`/api/projects/${projectId}/usage`);
+    expect(after.runs).toBe(before.runs + 1);
+    expect(after.cards.cache_read - before.cards.cache_read).toBe(8000);
+  });
+
+  it("max_agents is validated", async () => {
+    await expect(api(`/api/projects/${projectId}`, { max_agents: 0 }, "PATCH")).rejects.toThrow(/entre 1 y 20/);
+    await expect(api(`/api/projects/${projectId}`, { max_agents: "3" }, "PATCH")).rejects.toThrow(/entre 1 y 20/);
+    expect((await api<any>(`/api/projects/${projectId}`, { max_agents: 3 }, "PATCH")).max_agents).toBe(3);
+  });
+
+  it("with 3 agents at work the 4th waits «En cola» and starts by itself when one finishes", async () => {
+    const make = (title: string, spec: string) => api<Card>("/api/cards", { project_id: projectId, title, spec, column: "plan" });
+    const busy = await Promise.all(["Cola 1", "Cola 2", "Cola 3"].map((t) => make(t, "slow")));
+    const fourth = await make("Cola 4", "x");
+    for (const c of busy) await api(`/api/cards/${c.id}/move`, { column: "doing" });
+    for (const c of busy) await waitFor(c.id, (x) => x.status === "running");
+    await api(`/api/cards/${fourth.id}/move`, { column: "doing" });
+    const waiting = await waitFor(fourth.id, (x) => x.status === "queued");
+    expect(waiting.status_text).toBe("En cola (posición 1)");
+    // a message while it waits goes in with its first run
+    await api(`/api/cards/${fourth.id}/message`, { text: "Hazlo azul" });
+    await Promise.all([...busy, fourth].map((c) => waitFor(c.id, (x) => x.column === "review" && x.status === "idle", 15000)));
+    const msgs = (await api<any[]>(`/api/cards/${fourth.id}/messages`)).map((m) => m.content);
+    expect(msgs.some((m) => m.startsWith("⏳ En cola: ya hay 3 agentes"))).toBe(true);
+    expect(msgs).toContain("Se lo paso al agente en cuanto arranque (está en cola).");
+    expect(msgs).toContain("▶ Hay hueco: arranca el agente.");
+    expect(msgs.filter((m) => m.startsWith("💸"))).toHaveLength(1); // one run, message included
+  }, 30000);
+
+  it("hitting the session limit stops launching the line until Reintentar, then both carry on", async () => {
+    const a = await api<Card>("/api/cards", { project_id: projectId, title: "Límite A", spec: "limit", column: "plan" });
+    await api(`/api/cards/${a.id}/move`, { column: "doing" });
+    const paused = await waitFor(a.id, (x) => x.status === "queued");
+    expect(paused.status_text).toBe("En cola — límite de Claude alcanzado (pulsa Reintentar para seguir)");
+    const aMsgs = (await api<any[]>(`/api/cards/${a.id}/messages`)).map((m) => m.content);
+    expect(aMsgs.some((m) => m.startsWith("⏸ Límite de uso alcanzado: «You've hit your session limit"))).toBe(true);
+
+    const b = await api<Card>("/api/cards", { project_id: projectId, title: "Límite B", spec: "x", column: "plan" });
+    await api(`/api/cards/${b.id}/move`, { column: "doing" });
+    await waitFor(b.id, (x) => x.status === "queued");
+    await new Promise((r) => setTimeout(r, 400));
+    expect((await card(b.id)).status).toBe("queued"); // nobody is launched meanwhile
+
+    await api(`/api/cards/${b.id}/retry`, {});
+    await waitFor(a.id, (x) => x.column === "review" && x.status === "idle", 10000);
+    await waitFor(b.id, (x) => x.column === "review" && x.status === "idle", 10000);
+  }, 30000);
+});

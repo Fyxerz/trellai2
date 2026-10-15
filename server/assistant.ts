@@ -12,6 +12,7 @@ import * as git from "./git.js";
 import * as remote from "./remote.js";
 import { getPreview, releasePreview } from "./preview.js";
 import { modelLabel, parseModel, runEngine, type ToolSpec } from "./engine.js";
+import { recordUsage } from "./usage.js";
 
 type Mode = db.AssistantMode;
 const running = new Map<string, AbortController>();
@@ -284,6 +285,7 @@ async function run(projectId: string, mode: Mode, text: string): Promise<void> {
           log("system", `🤖 ${prettyModel(model)} · \`${model.replace(/^codex:/, "")}\``);
         },
       });
+      recordUsage({ projectId, cardId: null, kind: mode, model: lastModel.get(key(projectId, mode)) ?? model, resume, result: res });
       if (res.sessionId) db.setAssistantSession(projectId, mode, res.sessionId);
       if (res.error) log("system", `⛔ ${res.error}`);
     }

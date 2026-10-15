@@ -2,8 +2,8 @@ import { Notifications, reportError } from "./notifications";
 import { useMessageDraft } from "./chat";
 import { projectName, MOD, Appearance, useDialogFocus } from "./preferences";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { COLUMNS, type Column, type Project } from "../../shared/types";
-import { api, useBoard, useProjects, type Board as BoardState } from "./api";
+import { COLUMNS, formatTokens, usageTotal, type Column, type Project } from "../../shared/types";
+import { api, useBoard, useProjects, useProjectUsage, type Board as BoardState } from "./api";
 import { AssistantPanel, type AssistantMode } from "./Assistant";
 import { Board, BoardBackground, boardBackground, CAN_ADD, columnCards, moveCard, storedIndex } from "./Board";
 import { CardPanel } from "./CardPanel";
@@ -19,6 +19,7 @@ import {
   Archive,
   BookOpen,
   ChevronRight,
+  Clock,
   Eye,
   Keyboard,
   MessageCircleQuestion,
@@ -38,7 +39,7 @@ import { useProjectTags } from "./tags";
 import { Sidebar } from "./Sidebar";
 import { Byline, JoinDialog, ProfileChip, reloadPeople, usePeople } from "./People";
 import { BranchStatus, SyncIndicator, UnlinkedBanner } from "./SyncUI";
-import { Button, ChatHint, chatKeyDown, Kbd, ProjectAvatar, timeAgo } from "./ui";
+import { Button, ChatHint, chatKeyDown, Kbd, ProjectAvatar, timeAgo, TokensChip } from "./ui";
 
 const LAST_PROJECT = "trellai:project";
 const SIDEBAR_OPEN = "trellai:sidebar";
@@ -98,6 +99,7 @@ export default function App() {
   const [view, setView] = useState<"home" | "board">(() => (store.get(VIEW) === "home" ? "home" : "board"));
   const [homeCursor, setHomeCursor] = useState(0);
   const board = useBoard(projectId);
+  const usage = useProjectUsage(board, projectId);
   const projectTags = useProjectTags(projectId, board);
   const liveNotes = board.notes.filter((n) => !n.archived).length;
   const [query, setQuery] = useState("");
@@ -156,6 +158,8 @@ export default function App() {
   const cards = Object.values(board.cards);
   const running = cards.filter((c) => c.status === "running").length;
   const waiting = cards.filter((c) => c.status === "waiting").length;
+  const queued = cards.filter((c) => c.status === "queued");
+  const limitHit = queued.some((c) => /límite/.test(c.status_text));
 
   // ------------------------------------------------------------------ keyboard
   // Everything the handler needs, read through a ref so the listener is attached once.
@@ -486,6 +490,30 @@ export default function App() {
               <MessageCircleQuestion className="h-3 w-3" />
               {waiting} te {waiting === 1 ? "necesita" : "necesitan"}
             </span>
+          )}
+          {inBoard && queued.length > 0 && (
+            <span
+              className={`mr-1 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] ${limitHit ? "bg-red-400/10 text-danger" : "bg-zinc-500/10 text-zinc-300"}`}
+              title={
+                limitHit
+                  ? "Se ha alcanzado el límite de uso: Trellai no lanza más agentes hasta que se levante (o pulses Reintentar en una tarjeta en cola)"
+                  : `Esperan a que acabe alguno de los ${project!.max_agents ?? 3} agentes que trabajan a la vez (Ajustes → Flujo)`
+              }
+            >
+              <Clock className="h-3 w-3" />
+              {queued.length} en cola{limitHit ? " · límite de uso" : ""}
+            </span>
+          )}
+          {inBoard && usage && usageTotal(usage.total) > 0 && (
+            <TokensChip
+              tokens={usageTotal(usage.total)}
+              cache={usage.total.cache_read}
+              cost={usage.total.cost_usd}
+              who="los agentes y el asistente de este proyecto (en este ordenador)"
+              extra={`últimas 24 h: ${formatTokens(usageTotal(usage.today))} · asistente: ${formatTokens(usageTotal(usage.assistant))}`}
+              long
+              className="mr-1 rounded-full bg-ui-ink/[0.04] px-2.5 py-1 text-[11.5px] text-zinc-400"
+            />
           )}
           {inBoard && (
             <>

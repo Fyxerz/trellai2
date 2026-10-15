@@ -19,8 +19,10 @@ import type {
   Note,
   Person,
   Project,
+  ProjectUsage,
   Question,
   Tag,
+  Usage,
 } from "../shared/types.js";
 
 export const DB_PATH = resolve(process.env.TRELLAI_DB ?? "data/trellai.db");
@@ -183,6 +185,34 @@ addColumn("projects", "auto_doing", "auto_doing INTEGER NOT NULL DEFAULT 0");
 addColumn("projects", "preview_command", "preview_command TEXT");
 /** 1 = the project's "rama de retoques" (small changes pointed at in the Vista). */
 addColumn("cards", "touchup", "touchup INTEGER NOT NULL DEFAULT 0");
+/** Card agents running at once on each computer (the rest wait «En cola»). */
+addColumn("projects", "max_agents", "max_agents INTEGER NOT NULL DEFAULT 3");
+
+/**
+ * What each agent run spent (this computer only: not synced). `card_id` is null for the assistant and
+ * isn't a foreign key, so a deleted card's spend still counts in its project's total. `totals` keeps the
+ * session's running totals as Claude reports them (a resumed session reports its earlier runs too).
+ */
+db.exec(`
+CREATE TABLE IF NOT EXISTS agent_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  card_id TEXT,
+  kind TEXT NOT NULL,
+  model TEXT,
+  session_id TEXT,
+  input INTEGER NOT NULL DEFAULT 0,
+  output INTEGER NOT NULL DEFAULT 0,
+  cache_read INTEGER NOT NULL DEFAULT 0,
+  cache_write INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  totals TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_usage_card ON agent_usage(card_id);
+CREATE INDEX IF NOT EXISTS idx_agent_usage_project ON agent_usage(project_id);
+CREATE INDEX IF NOT EXISTS idx_agent_usage_session ON agent_usage(session_id);
+`);
 
 /** Who wrote it (Person.id): the card's creator, and whoever's Trellai wrote a message or note. */
 for (const t of ["cards", "messages", "notes"]) addColumn(t, "author", "author TEXT");
@@ -259,9 +289,9 @@ export function createProject(p: { name: string; repo_path: string; base_branch:
 
 export function updateProject(
   id: string,
-  patch: Partial<Pick<Project, "name" | "base_branch" | "repo_path" | "remote_url" | ModelRole | "bg_mode" | "bg_color" | "bg_image" | "auto_doing" | "preview_command">>,
+  patch: Partial<Pick<Project, "name" | "base_branch" | "repo_path" | "remote_url" | ModelRole | "bg_mode" | "bg_color" | "bg_image" | "auto_doing" | "preview_command" | "max_agents">>,
 ): Project {
-  const allowed = ["name", "base_branch", "repo_path", "remote_url", "model_prep", "model_dev", "model_plan", "model_do", "model_ui", "bg_mode", "bg_color", "bg_image", "auto_doing", "preview_command"];
+  const allowed = ["name", "base_branch", "repo_path", "remote_url", "model_prep", "model_dev", "model_plan", "model_do", "model_ui", "bg_mode", "bg_color", "bg_image", "auto_doing", "preview_command", "max_agents"];
   const entries = Object.entries(patch)
     .filter(([k, v]) => allowed.includes(k) && v !== undefined)
     .map(([k, v]) => [k, k === "auto_doing" ? (v ? 1 : 0) : v] as const);
@@ -280,10 +310,13 @@ export function deleteProject(id: string) {
 
 type CardRow = Omit<Card, "files" | "tags" | "claims" | "touchup"> & { files: string; tags: string; claims: string; touchup: number; pending_input: string };
 
-/** Card columns plus checkpoint counters. */
+/** Card columns plus checkpoint counters and what its agents spent. */
 const CARD_SELECT = `SELECT c.*,
   (SELECT COUNT(*) FROM checkpoints k WHERE k.card_id = c.id) AS checkpoints_total,
-  (SELECT COUNT(*) FROM checkpoints k WHERE k.card_id = c.id AND k.done = 1) AS checkpoints_done
+  (SELECT COUNT(*) FROM checkpoints k WHERE k.card_id = c.id AND k.done = 1) AS checkpoints_done,
+  (SELECT COALESCE(SUM(input + output + cache_read + cache_write), 0) FROM agent_usage u WHERE u.card_id = c.id) AS tokens,
+  (SELECT COALESCE(SUM(cache_read), 0) FROM agent_usage u WHERE u.card_id = c.id) AS tokens_cache,
+  (SELECT COALESCE(SUM(cost_usd), 0) FROM agent_usage u WHERE u.card_id = c.id) AS cost_usd
   FROM cards c`;
 
 function toCard(row: CardRow | undefined): Card | undefined {
@@ -561,6 +594,46 @@ export function moveCheckpoint(id: number, index: number) {
   const ordered = [...others.slice(0, i), cp, ...others.slice(i)];
   const stmt = db.prepare("UPDATE checkpoints SET position = ? WHERE id = ?");
   db.transaction(() => ordered.forEach((c, pos) => stmt.run(pos, c.id)))();
+}
+
+// ---------- agent usage (tokens each run spent; this computer only) ----------
+
+/** prep / dev / conflict: a card's agents · plan / do: the project assistant */
+export type UsageKind = "prep" | "dev" | "conflict" | "plan" | "do";
+
+/** The running totals Claude reported for this session last time (a resumed run reports them again). */
+export function sessionTotals(sessionId: string): Usage | null {
+  const r = db.prepare("SELECT totals FROM agent_usage WHERE session_id = ? AND totals IS NOT NULL ORDER BY id DESC LIMIT 1").get(sessionId) as
+    | { totals: string }
+    | undefined;
+  return r ? safeJson<Usage | null>(r.totals, null) : null;
+}
+
+export function addUsage(u: Usage & { project_id: string; card_id: string | null; kind: UsageKind; model: string | null; session_id: string | null; totals: Usage | null }) {
+  db.prepare(
+    `INSERT INTO agent_usage (project_id, card_id, kind, model, session_id, input, output, cache_read, cache_write, cost_usd, totals, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(u.project_id, u.card_id, u.kind, u.model, u.session_id, u.input, u.output, u.cache_read, u.cache_write, u.cost_usd, u.totals ? JSON.stringify(u.totals) : null, now());
+}
+
+export function projectUsage(projectId: string): ProjectUsage {
+  const sum = (where = "", ...args: unknown[]) =>
+    db
+      .prepare(
+        `SELECT COALESCE(SUM(input), 0) AS input, COALESCE(SUM(output), 0) AS output, COALESCE(SUM(cache_read), 0) AS cache_read,
+           COALESCE(SUM(cache_write), 0) AS cache_write, COALESCE(SUM(cost_usd), 0) AS cost_usd, COUNT(*) AS runs
+         FROM agent_usage WHERE project_id = ? ${where}`,
+      )
+      .get(projectId, ...args) as Usage & { runs: number };
+  const strip = ({ runs: _r, ...u }: Usage & { runs: number }): Usage => u;
+  const total = sum();
+  return {
+    total: strip(total),
+    cards: strip(sum("AND card_id IS NOT NULL")),
+    assistant: strip(sum("AND card_id IS NULL")),
+    today: strip(sum("AND created_at >= ?", new Date(Date.now() - 86_400_000).toISOString())),
+    runs: total.runs,
+  };
 }
 
 // ---------- project assistant ----------

@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { api } from "./api";
 import { AppWindow, Check, ChevronDown, Cpu, Image as ImageIcon, Loader2, RefreshCw, Share2, Sparkles, Workflow, X } from "lucide-react";
 import { SharingSettings } from "./People";
-import { TAG_PALETTE, type BgMode, type BgStatus, type Project } from "../../shared/types";
+import { DEFAULT_MAX_AGENTS, TAG_PALETTE, type BgMode, type BgStatus, type Project } from "../../shared/types";
 import { reportError } from "./notifications";
 import { confirmDialog } from "./Confirm";
 import { CODEX_EFFORTS, EFFORT_LABELS, EFFORTS, prettyModel, splitEffort, withEffort, type Effort } from "../../shared/models";
@@ -598,7 +598,64 @@ function FlowSettings({ project, onSaved }: { project: Project; onSaved: () => v
           <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${on ? "translate-x-4" : ""}`} />
         </button>
       </div>
+      <MaxAgentsSetting project={project} onSaved={onSaved} />
     </section>
+  );
+}
+
+/** How many card agents run at once on this computer (the rest wait «En cola»). */
+function MaxAgentsSetting({ project, onSaved }: { project: Project; onSaved: () => void }) {
+  const current = project.max_agents ?? DEFAULT_MAX_AGENTS;
+  const [value, setValue] = useState(String(current));
+  useEffect(() => setValue(String(current)), [current]);
+  const save = (n: number) => {
+    const next = Math.max(1, Math.min(20, Math.round(Number.isFinite(n) ? n : current)));
+    setValue(String(next));
+    if (next === current) return;
+    api<Project>(`/api/projects/${project.id}`, { max_agents: next }, "PATCH")
+      .then(onSaved)
+      .catch((e) => {
+        setValue(String(current));
+        reportError((e as Error).message);
+      });
+  };
+  const step = "flex h-7 w-7 items-center justify-center rounded-md text-zinc-300 ring-1 ring-ui-ink/[0.08] transition hover:bg-ui-ink/5 disabled:opacity-40";
+  return (
+    <div className="flex items-start gap-3">
+      <div className="min-w-0 flex-1">
+        <label htmlFor="max-agents" className="text-sm text-zinc-200">
+          Agentes trabajando a la vez
+        </label>
+        <div className="text-[11px] text-zinc-500">
+          Cuentan los de preparación, desarrollo y conflictos. Si hay más tarjetas, las demás esperan «En cola» y arrancan solas cuando acaba un agente.
+          Cuantos más a la vez, más deprisa se gasta tu límite de uso.
+        </div>
+      </div>
+      <div className="mt-0.5 flex shrink-0 items-center gap-1">
+        <button aria-label="Uno menos" className={step} disabled={current <= 1} onClick={() => save(current - 1)}>
+          −
+        </button>
+        <input
+          id="max-agents"
+          type="number"
+          min={1}
+          max={20}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={() => save(Number(value))}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.currentTarget.blur();
+            }
+          }}
+          className="ui-field w-12 rounded-md bg-ui-ink/[0.04] px-1 py-1 text-center text-sm text-zinc-100 ring-1 ring-ui-ink/[0.08] outline-none focus:ring-indigo-400"
+        />
+        <button aria-label="Uno más" className={step} disabled={current >= 20} onClick={() => save(current + 1)}>
+          +
+        </button>
+      </div>
+    </div>
   );
 }
 

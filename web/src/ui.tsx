@@ -3,6 +3,8 @@ import { MOD, readPreference } from "./preferences";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  Clock,
+  Coins,
   Eye,
   GitMerge,
   Hourglass,
@@ -14,7 +16,7 @@ import {
   TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
-import type { Card, Column } from "../../shared/types";
+import { formatTokens, type Card, type Column } from "../../shared/types";
 
 export function Markdown({ children }: { children: string }) {
   return (
@@ -90,6 +92,15 @@ export function StatusBadge({ card }: { card: Card }) {
         <Hourglass className="h-3 w-3" /> En espera
       </span>
     );
+  if (card.status === "queued")
+    return (
+      <span
+        title={card.status_text}
+        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-zinc-500/12 px-2 py-0.5 text-xs font-medium text-zinc-300 ring-1 ring-zinc-400/25"
+      >
+        <Clock className="h-3 w-3" /> En cola
+      </span>
+    );
   if (card.status === "error")
     return (
       <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-red-500/12 px-2 py-0.5 text-xs font-medium text-danger ring-1 ring-red-400/25">
@@ -97,6 +108,49 @@ export function StatusBadge({ card }: { card: Card }) {
       </span>
     );
   return null;
+}
+
+/** status_text without what the badge already says: "En cola (posición 2)" → "posición 2". */
+export function statusDetail(card: Pick<Card, "status" | "status_text">): string {
+  if (card.status !== "queued") return card.status_text;
+  return card.status_text.replace(/^En cola\s*(?:—\s*)?/, "").replace(/^\((.*)\)$/, "$1");
+}
+
+/** Tokens agents spent, "1,2M" (the tooltip says how many were cache reads and the cost at API prices). */
+export function TokensChip({
+  tokens,
+  cache,
+  cost,
+  who = "sus agentes",
+  long = false,
+  extra = "",
+  className = "",
+}: {
+  tokens: number;
+  cache: number;
+  cost: number;
+  who?: string;
+  long?: boolean;
+  /** more for the tooltip */
+  extra?: string;
+  className?: string;
+}) {
+  if (!tokens) return null;
+  const title = [
+    `Tokens que han gastado ${who}: ${tokens.toLocaleString("es-ES")}`,
+    cache ? `${formatTokens(cache)} de ellos releyendo su propia conversación (caché)` : "",
+    cost >= 0.005 ? `≈ ${cost.toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} US$ a precio de API` : "",
+    extra,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <span title={title} aria-label={title} className={`tabular flex shrink-0 items-center gap-1 text-[10.5px] text-zinc-500 ${className}`}>
+      <Coins className="h-3 w-3" />
+      {formatTokens(tokens)}
+      {long ? " tokens" : ""}
+    </span>
+  );
 }
 
 export function Spinner({ className = "h-3 w-3" }: { className?: string }) {

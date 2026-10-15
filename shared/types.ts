@@ -23,9 +23,10 @@ export const COLUMN_LABELS: Record<Column, string> = {
  * running  – an agent is working on the card
  * waiting  – the agent needs something from you (questions / a reply)
  * ready    – prepared and waiting to be moved to Doing (nothing needed from you)
+ * queued   – its agent waits for a free slot (the project's max_agents); starts by itself
  * error    – something failed; see status_text
  */
-export type CardStatus = "idle" | "running" | "waiting" | "ready" | "error";
+export type CardStatus = "idle" | "running" | "waiting" | "ready" | "queued" | "error";
 
 export interface Project {
   id: string;
@@ -55,7 +56,51 @@ export interface Project {
   auto_doing: boolean;
   /** Command that starts the app for the Vista (null = detected from package.json: `npm run dev`…) */
   preview_command: string | null;
+  /** Card agents (preparation, development, conflicts) running at once on each computer; the rest wait «En cola» */
+  max_agents: number;
   created_at: string;
+}
+
+export const DEFAULT_MAX_AGENTS = 3;
+
+/** Tokens an agent used (cache reads are what it re-reads of its own conversation on every call). */
+export interface Usage {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  /** estimate at API prices (US$); 0 when the engine doesn't say (Codex) */
+  cost_usd: number;
+}
+
+export const usageTotal = (u: Pick<Usage, "input" | "output" | "cache_read" | "cache_write">) => u.input + u.output + u.cache_read + u.cache_write;
+
+/** GET /api/projects/:id/usage: what this project's agents spent (on this computer). */
+export interface ProjectUsage {
+  total: Usage;
+  /** card agents (preparation, development, conflicts) */
+  cards: Usage;
+  /** project assistant (Tarjetas and Directo chats) */
+  assistant: Usage;
+  /** last 24 h */
+  today: Usage;
+  runs: number;
+}
+
+/** "1,2M", "980k", "512" */
+export function formatTokens(n: number): string {
+  const fmt = (x: number, unit: string) => `${(Math.round(x * 10) / 10).toLocaleString("es-ES", { maximumFractionDigits: x < 10 ? 1 : 0 })}${unit}`;
+  if (n >= 1e9) return fmt(n / 1e9, "B");
+  if (n >= 1e6) return fmt(n / 1e6, "M");
+  if (n >= 1e3) return fmt(n / 1e3, "k");
+  return String(Math.round(n));
+}
+
+/** "1,2M tokens (980k de caché) · ≈ 3,21 US$" */
+export function describeUsage(u: Usage): string {
+  const cache = u.cache_read ? ` (${formatTokens(u.cache_read)} de caché)` : "";
+  const cost = u.cost_usd >= 0.005 ? ` · ≈ ${u.cost_usd.toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} US$` : "";
+  return `${formatTokens(usageTotal(u))} tokens${cache}${cost}`;
 }
 
 export type BgMode = "none" | "color" | "image";
@@ -177,6 +222,11 @@ export interface Card {
   author: string | null;
   /** the project's "rama de retoques": small changes pointed at in the Vista of the base branch */
   touchup: boolean;
+  /** tokens its agents used, every run added up (on this computer), and how many of them were cache reads */
+  tokens: number;
+  tokens_cache: number;
+  /** estimate at API prices (US$) */
+  cost_usd: number;
   created_at: string;
   updated_at: string;
 }
@@ -402,6 +452,8 @@ export type ServerEvent =
   | { type: "sync" }
   /** the base branch was pulled automatically: refresh ahead/behind */
   | { type: "git" }
+  /** an agent finished a run and its tokens were added up: refresh the project's total */
+  | { type: "usage" }
   /** Trellai's own code changed (branch switch): a new UI build, or a restart pending */
   | { type: "build"; id: string };
 

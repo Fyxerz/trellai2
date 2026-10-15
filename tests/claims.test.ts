@@ -107,3 +107,57 @@ describe("claims", () => {
     expect(db.liveNotes(projectId)).toEqual([]);
   });
 });
+
+describe("what an agent hears about the others (it's re-read on every call, so it stays short)", () => {
+  let mine: string;
+  const doing = (title: string, files: string[], status?: import("../shared/types").CardStatus) => {
+    const c = db.createCard({ project_id: projectId, title, column: "doing" });
+    db.updateCard(c.id, { claims: files.map((file) => ({ file, area: "algo()", purpose: "cambiarlo", lines: "", source: "agent" as const })), status });
+    return c.id;
+  };
+  beforeAll(() => {
+    mine = doing("Mía", ["a.ts"]);
+    doing("Comparte", ["a.ts", "b.ts"]);
+    doing("Otra", ["z.ts"]);
+    doing("Rota", ["a.ts"], "error");
+    doing("Sin nada", []);
+  });
+
+  it("details only the cards on my files; the rest is one line; cards in error or idle without files are left out", () => {
+    const out = claims.othersWork(db.getCard(mine)!);
+    expect(out).toContain('- "Comparte"');
+    expect(out).toContain("a.ts: algo() — cambiarlo ⚠️ you're on it too");
+    expect(out).not.toContain("b.ts");
+    expect(out).not.toContain("Otra");
+    expect(out).not.toContain("Rota");
+    expect(out).not.toContain("Sin nada");
+    expect(out).toContain("- 1 other card in Doing doesn't touch your files.");
+  });
+
+  it("with no files of its own yet: just who is on which files", () => {
+    const out = claims.othersWork(db.getCard(doing("Nueva", []))!);
+    expect(out.split("\n")).toEqual(['- "Mía": a.ts', '- "Comparte": a.ts, b.ts', '- "Otra": z.ts']);
+  });
+
+  it("claim_files leaves the cards in error out too", () => {
+    const out = claims.claimFiles(mine, [{ file: "a.ts", area: "foo()" }]);
+    expect(out).toContain('"Comparte"');
+    expect(out).not.toContain("Rota");
+  });
+
+  it("injected notes are cut short, capped per injection and never repeated", () => {
+    const p = claims.notePoller(mine);
+    p.poll(); // what was there already
+    db.addNote(projectId, null, `Pedro: ${"x".repeat(2000)}`);
+    const one = p.poll()!;
+    expect(one.length).toBeLessThan(600);
+    expect(one).toContain("read_notes has them in full");
+    db.addNote(projectId, null, `Pedro: ${"x".repeat(2000)}`); // the same text again
+    expect(p.poll()).toBeNull();
+    for (let i = 0; i < 20; i++) db.addNote(projectId, null, `nota ${i} ${"y".repeat(380)}`);
+    const many = p.poll()!;
+    expect(many.length).toBeLessThan(3600);
+    expect(many).toMatch(/- 1\d more new notes: use read_notes to see them in full\./);
+    expect(p.poll()).toBeNull();
+  });
+});
