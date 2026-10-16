@@ -81,3 +81,46 @@ describe("codex logout", () => {
     expect(await engine.logout("codex")).toEqual({ ok: true });
   });
 });
+
+describe("choosing the Codex CLI", () => {
+  it("reads the version out of `codex --version`", () => {
+    expect(engine.parseCodexVersion("codex-cli 0.42.0\n")).toBe("0.42.0");
+    expect(engine.parseCodexVersion("codex-cli 0.140.0-alpha.2")).toBe("0.140.0-alpha.2");
+    expect(engine.parseCodexVersion("codex")).toBeNull();
+  });
+
+  it("orders versions like semver, pre-releases included", () => {
+    const sorted = ["0.140.0", "0.42.0", "0.140.0-alpha.10", "0.140.0-alpha.2", "0.140.0-beta", "1.0.0", "0.9.9"].sort(engine.compareVersions);
+    expect(sorted).toEqual(["0.9.9", "0.42.0", "0.140.0-alpha.2", "0.140.0-alpha.10", "0.140.0-beta", "0.140.0", "1.0.0"]);
+  });
+
+  it("prefers the app's newer Codex over an old one in the PATH", () => {
+    const app = "/Applications/Codex.app/Contents/Resources/codex";
+    expect(engine.pickCodexBin([{ bin: "codex", version: "0.42.0" }, { bin: app, version: "0.140.0-alpha.2" }])).toBe(app);
+    expect(engine.pickCodexBin([{ bin: "codex", version: "0.150.0" }, { bin: app, version: "0.140.0-alpha.2" }])).toBe("codex");
+  });
+
+  it("keeps the first one on a tie or without versions, and null with none", () => {
+    expect(engine.pickCodexBin([{ bin: "a", version: "1.0.0" }, { bin: "b", version: "1.0.0" }])).toBe("a");
+    expect(engine.pickCodexBin([{ bin: "a", version: null }, { bin: "b", version: null }])).toBe("a");
+    expect(engine.pickCodexBin([{ bin: "a", version: null }, { bin: "b", version: "0.1.0" }])).toBe("b");
+    expect(engine.pickCodexBin([])).toBeNull();
+  });
+});
+
+describe("Codex can't read its config.toml", () => {
+  const raw = "Error loading configuration: missing field `command` in `mcp_servers.stitch`";
+
+  it("explains it instead of showing the raw error", () => {
+    const msg = engine.codexConfigError(`some log\n${raw.replace(" in ", "\nin ")}\n\nmore`)!;
+    expect(msg).toContain("config.toml");
+    expect(msg).toContain("missing field `command` in `mcp_servers.stitch`");
+    expect(msg).toMatch(/Codex antiguo/);
+    expect(msg).toContain("npm i -g @openai/codex");
+    expect(engine.codexConfigError("Not logged in")).toBeNull();
+  });
+
+  it("also when `codex exec` dies of it", () => {
+    expect(engine.codexExitError(1, null, raw, [])).toMatch(/^Codex no puede leer .*config\.toml/);
+  });
+});

@@ -336,17 +336,57 @@ function codexCmd(args: string[]): [string, string[]] {
   return /\.m?js$/.test(bin) ? [process.execPath, [bin, ...args]] : [bin, args];
 }
 
+/** "codex-cli 0.140.0-alpha.2" → "0.140.0-alpha.2"; null if there's no version in it. */
+export function parseCodexVersion(out: string): string | null {
+  return out.match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/)?.[0] ?? null;
+}
+
+/** Semver order: 0.140.0-alpha.2 > 0.42.0, and a release beats its own pre-releases. */
+export function compareVersions(a: string, b: string): number {
+  const [ma, pa = ""] = a.split(/-(.*)/s);
+  const [mb, pb = ""] = b.split(/-(.*)/s);
+  const na = ma.split(".").map(Number);
+  const nb = mb.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((na[i] || 0) !== (nb[i] || 0)) return (na[i] || 0) - (nb[i] || 0);
+  if (!pa || !pb) return pa ? -1 : pb ? 1 : 0;
+  const xa = pa.split(".");
+  const xb = pb.split(".");
+  for (let i = 0; i < Math.max(xa.length, xb.length); i++) {
+    if (xa[i] === undefined) return -1;
+    if (xb[i] === undefined) return 1;
+    const da = /^\d+$/.test(xa[i]);
+    const db = /^\d+$/.test(xb[i]);
+    if (da && db && +xa[i] !== +xb[i]) return +xa[i] - +xb[i];
+    if (da !== db) return da ? -1 : 1;
+    if (!da && xa[i] !== xb[i]) return xa[i] < xb[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+/** The newest of the Codex CLIs that answered `--version` (on a tie, the first one); null if none did. */
+export function pickCodexBin(found: { bin: string; version: string | null }[]): string | null {
+  let best: { bin: string; version: string | null } | null = null;
+  for (const f of found) {
+    if (!best) best = f;
+    else if (f.version && (!best.version || compareVersions(f.version, best.version) > 0)) best = f;
+  }
+  return best?.bin ?? null;
+}
+
+/**
+ * Every Codex on this machine (PATH first, then the desktop app's) and the newest one wins: an old
+ * `codex` from Homebrew/npm can't read a config.toml written by a newer Codex app.
+ */
 function findCodexBin(): string {
-  const works = (bin: string) => {
+  const version = (bin: string): string | null | undefined => {
     try {
-      execFileSync(bin, ["--version"], { timeout: 10_000, stdio: "ignore" });
-      return true;
+      const out = execFileSync(bin, ["--version"], { timeout: 10_000, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      return parseCodexVersion(out);
     } catch {
-      return false;
+      return undefined; // doesn't run
     }
   };
-  if (works("codex")) return "codex";
-  const candidates: string[] = [];
+  const candidates: string[] = ["codex"];
   if (process.platform === "win32") {
     // Microsoft Store app: its folder can't be listed, so ask Windows where it lives
     try {
@@ -371,7 +411,13 @@ function findCodexBin(): string {
   } else if (process.platform === "darwin") {
     candidates.push("/Applications/Codex.app/Contents/Resources/codex", join(homedir(), "Applications/Codex.app/Contents/Resources/codex"));
   }
-  return candidates.find((c) => existsSync(c) && works(c)) ?? "codex";
+  const found: { bin: string; version: string | null }[] = [];
+  for (const bin of candidates) {
+    if (bin !== "codex" && !existsSync(bin)) continue;
+    const v = version(bin);
+    if (v !== undefined) found.push({ bin, version: v });
+  }
+  return pickCodexBin(found) ?? "codex";
 }
 
 /** Live tool sets for running Codex agents, keyed by a per-run token. */
@@ -393,10 +439,33 @@ export function mcpCallTool(token: string, name: string, args: unknown): string 
   return t.run(parsed);
 }
 
-let codexInfo: { at: number; installed: boolean; version?: string; loggedIn: boolean } | null = null;
+/**
+ * Codex couldn't load its config.toml ("Error loading configuration: missing field `command` in `mcp_servers.x`"):
+ * explained for Pedro, or null if that's not the problem.
+ */
+export function codexConfigError(text: string): string | null {
+  const m = text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").match(/Error loading config(?:uration)?(?:[:\s]+(.+(?:\r?\n.+)*))?/i);
+  if (!m) return null;
+  const file = process.env.CODEX_HOME ? join(process.env.CODEX_HOME, "config.toml") : "~/.codex/config.toml";
+  const detail = m[1]?.replace(/\s+/g, " ").trim(); // it can wrap onto the next lines
+  return `Codex no puede leer ${file}${detail ? ` (${detail})` : ""}. Suele pasar con un Codex antiguo que no entiende algo que escribió uno más nuevo: actualízalo (\`brew upgrade codex\` / \`npm i -g @openai/codex\`) o revisa esa entrada del archivo.`;
+}
+
+export interface CodexStatus {
+  installed: boolean;
+  /** what `codex --version` says, of the binary Trellai really uses */
+  version?: string;
+  /** that binary's path ("codex" = the one in the PATH) */
+  bin?: string;
+  loggedIn: boolean;
+  /** why Codex can't work (e.g. it can't read its config.toml) */
+  error?: string;
+}
+
+let codexInfo: (CodexStatus & { at: number }) | null = null;
 
 /** Is Codex installed, and is there a ChatGPT/OpenAI session (`codex login status`)? Cached 10 s. */
-export function codexStatus(): Promise<{ installed: boolean; version?: string; loggedIn: boolean }> {
+export function codexStatus(): Promise<CodexStatus> {
   if (codexInfo && Date.now() - codexInfo.at < 10_000) return Promise.resolve(codexInfo);
   return new Promise((res) =>
     execFile(...codexCmd(["--version"]), { timeout: 10_000 }, (err, out) => {
@@ -407,7 +476,8 @@ export function codexStatus(): Promise<{ installed: boolean; version?: string; l
         const text = `${out2}
 ${errOut2}`;
         const loggedIn = !err2 && !/not logged in/i.test(text);
-        codexInfo = { at: Date.now(), installed: true, version, loggedIn };
+        const error = codexConfigError(text) ?? undefined;
+        codexInfo = { at: Date.now(), installed: true, version, bin: codexBin(), loggedIn, error };
         res(codexInfo);
       });
     }),
@@ -509,9 +579,12 @@ export function startLogin(engine: Engine): LoginState {
     resetEngineCaches();
     if (code !== 0 && !l.error) {
       const tail = output.join("").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim().split("\n").slice(-2).join(" ").trim();
+      const configError = engine === "codex" ? codexConfigError(output.join("")) : null;
       l.error = signal
         ? `Se canceló el login de ${name}.`
-        : `El login de ${name} no se completó${tail ? `: ${tail}` : "."}`;
+        : configError
+          ? `El login de Codex no se completó: ${configError}`
+          : `El login de ${name} no se completó${tail ? `: ${tail}` : "."}`;
     }
   });
   // nobody finished in the browser: give up so the port and process don't linger
@@ -668,6 +741,8 @@ async function runCodex(r: EngineRun, model: string | undefined, resume: string 
 export function codexExitError(code: number | null, signal: string | null, stderr: string, stdoutTail: string[], lastErrorItem?: string): string {
   const clean = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim();
   const errLines = clean(stderr).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const configError = codexConfigError([stderr, ...stdoutTail].join("\n"));
+  if (configError) return configError;
   const reason =
     errLines.slice(-3).join(" ") ||
     stdoutTail.map(clean).filter(Boolean).slice(-3).join(" ") ||

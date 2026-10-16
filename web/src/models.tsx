@@ -44,7 +44,7 @@ interface LoginState {
 }
 interface Engines {
   claude: { models: ClaudeModel[]; loggedIn?: boolean; login?: LoginState };
-  codex: { installed: boolean; loggedIn?: boolean; version?: string; defaultModel?: string | null; models?: CodexModel[]; login?: LoginState };
+  codex: { installed: boolean; loggedIn?: boolean; version?: string; bin?: string; error?: string; defaultModel?: string | null; models?: CodexModel[]; login?: LoginState };
 }
 
 /** spec ("claude", "claude:opus", "codex", "codex:gpt-6-luna") → exact version name ("Opus 5.5", "GPT-6-Luna"), once /api/engines answers. */
@@ -807,8 +807,12 @@ function EngineStatus() {
         <div className="flex items-center gap-2">
           {dot(codexOn)}
           <span className="text-zinc-200">GPT · cuenta de ChatGPT</span>
-          <span>
-            {!codex ? "Comprobando…" : !codex.installed ? "No instalado" : codex.loggedIn === false ? "No conectado" : `Conectado · ${codex.version}`}
+          <span title={codex?.bin && codex.bin !== "codex" ? codex.bin : codex?.installed ? "codex (del PATH)" : undefined}>
+            {!codex
+              ? "Comprobando…"
+              : !codex.installed
+                ? "No instalado"
+                : `${codex.loggedIn === false ? "No conectado" : "Conectado"}${codex.version ? ` · ${codex.version}` : ""}`}
           </span>
           {codex?.installed && codex.loggedIn === false && button("codex", "Conectar GPT")}
           {codexOn && leaveButton("codex", "Desconectar GPT")}
@@ -819,6 +823,7 @@ function EngineStatus() {
             podrás conectarla aquí con tu cuenta de ChatGPT.
           </div>
         )}
+        {codex?.error && !errors.codex && <div className="text-[11px] text-danger">{codex.error}</div>}
         {waiting.codex && waitingHint}
         {error("codex")}
       </div>

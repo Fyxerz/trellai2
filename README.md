@@ -143,6 +143,8 @@ npm i -g @openai/codex
 codex login          # con tu cuenta de ChatGPT
 ```
 
+Si hay varios Codex (p. ej. un `codex` antiguo de Homebrew/npm en el PATH y el de la app), Trellai usa el de **versión más alta**, y en Ajustes se ve cuál («Conectado · codex-cli 0.140…»; la ruta al pasar el ratón). Si Codex no puede leer su `~/.codex/config.toml` (típico de un Codex antiguo frente a entradas nuevas, como un servidor MCP por `url`), Ajustes lo explica y dice cómo arreglarlo; Trellai nunca toca ese archivo.
+
 `codex` por defecto usa el modelo de tu `~/.codex/config.toml`; en el selector puedes poner otro con "Otro modelo GPT…".
 
 ## Vista de proyectos
@@ -185,7 +187,7 @@ Puedes ponerlas en un fichero `.env` en la carpeta de Trellai.
 | `PORT` | `4317` | |
 | `HOST` | `127.0.0.1` | Ponlo a `0.0.0.0` para abrirlo desde el móvil en tu red. **Ojo:** los agentes tienen permisos completos. |
 | `TRELLAI_MODEL` | el de tu Claude Code | modelo de Claude cuando el selector dice "Claude (por defecto)" |
-| `TRELLAI_CODEX_BIN` | `codex` | ruta al CLI de Codex si no está en el PATH (un `.mjs` se ejecuta con node: Codex simulado en tests) |
+| `TRELLAI_CODEX_BIN` | el Codex más nuevo | ruta al CLI de Codex (manda sobre la elección automática) (un `.mjs` se ejecuta con node: Codex simulado en tests) |
 | `TRELLAI_DB` | `data/trellai.db` | |
 | `TRELLAI_DATABASE_URL` | — | Postgres (Supabase) para compartir el tablero entre ordenadores |
 | `TRELLAI_MACHINE` | el hostname | nombre de este ordenador en el tablero |
